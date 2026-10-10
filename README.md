@@ -93,8 +93,12 @@ tested there yet), with or without a desktop.
 
 ### Before you start
 
-- A **host name** that points to your server — your own domain or the host name your provider gives
-  you (for example netcup's `v22…supersrv.de`). The HTTPS certificate is fetched automatically for it.
+- A **host name** that points to your server — your own domain, or a free name from
+  [DuckDNS](https://www.duckdns.org) (sign in, create e.g. `myvault.duckdns.org`, set its IP to your
+  server's IP). The HTTPS certificate is fetched automatically for it.
+  > ⚠️ Host names of your provider (netcup's `…supersrv.de`, Contabo's `…contaboserver.net`) often do **not**
+  > work: all customers share one Let's Encrypt limit of 50 certificates per week, and it is usually used up.
+  > DuckDNS names have a limit of their own.
 - **Ports 80 and 443** must be reachable (also in your provider's firewall, if it has one).
 
 ### Setup
@@ -185,6 +189,7 @@ them with every folder listing, so they cost nothing, and you can sort by date.
 | Drive letter in use | Choose another letter on the Settings tab. |
 | Quit warns about uploads | Files not yet in pCloud stay on this PC and are uploaded the next time you connect. Do not delete the cache folder in the meantime. |
 | Infuse cannot connect | `cryptbridge` on the server shows which service is not running; check ports 80/443 at your provider. |
+| No HTTPS certificate, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep keys and Infuse account). |
 
 Logs: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server `journalctl -u rclone-mount -u rclone-webdav -u caddy`
 

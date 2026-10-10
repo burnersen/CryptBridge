@@ -22,7 +22,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.1.0"
+readonly CRYPTBRIDGE_VERSION="0.1.1"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -625,11 +625,13 @@ public_dns_ipv4() {
 choose_address() {
 	step "Address for Infuse"
 	info "Infuse reaches this server over HTTPS. A free certificate is fetched automatically;"
-	info "that needs a name that points to this server, e.g. your netcup host name"
-	info "(v2202…supersrv.de) or your own domain."
+	info "that needs a name that points to this server: your own domain, or a free name"
+	info "from duckdns.org (e.g. myvault.duckdns.org — set its IP to this server's IP)."
+	info "Host names of your provider (…supersrv.de, …contaboserver.net) often do NOT work:"
+	info "all customers share one Let's Encrypt limit of 50 certificates per week."
 	ask CB_ADDRESS "Domain or host name of this server" "${CB_ADDRESS:-}"
 	CB_ADDRESS="${CB_ADDRESS,,}"
-	[[ "$CB_ADDRESS" =~ ^[a-z0-9.-]+$ && "$CB_ADDRESS" == *.* ]] || die "Please enter a host name such as v220….supersrv.de."
+	[[ "$CB_ADDRESS" =~ ^[a-z0-9.-]+$ && "$CB_ADDRESS" == *.* ]] || die "Please enter a host name such as myvault.duckdns.org."
 	local resolved mine
 	# "|| true": an unanswered query is handled below, not by set -e.
 	resolved="$(public_dns_ipv4 "$CB_ADDRESS" || true)"
@@ -815,6 +817,25 @@ wait_for() {
 	die "Timed out waiting for: $what"
 }
 
+# explain_certificate_problem reads Caddy's log and says in plain words why
+# no certificate came, instead of leaving the user with "see the log".
+explain_certificate_problem() {
+	local log
+	log="$(journalctl -u caddy --since "-15min" --no-pager -o cat 2>/dev/null || true)"
+	if [[ "$log" == *"rateLimited"* ]]; then
+		local domain
+		domain="$(grep -o 'already issued for \\"[^\\]*' <<<"$log" | tail -n1 | sed 's/.*\\"//' || true)"
+		warn "Let's Encrypt refuses: its limit of 50 certificates per week for '${domain:-this domain}' is used up."
+		warn "That happens with provider host names — all their customers share the limit."
+		warn "Fix: get a free name at duckdns.org pointing to this server, then run:  sudo cryptbridge setup"
+	elif [[ "$log" == *"Timeout during connect"* || "$log" == *"connection refused"* || "$log" == *"Connection refused"* ]]; then
+		warn "Let's Encrypt could not reach this server. Open ports 80 and 443 — also in your provider's firewall."
+	else
+		warn "Check that ports 80 and 443 are open (also in the provider's firewall). Details: journalctl -u caddy"
+	fi
+	info "Caddy keeps trying by itself; once it gets a certificate, Infuse works without running the setup again."
+}
+
 check_https() {
 	step "Checking HTTPS (the certificate can take a minute)"
 	local i code=""
@@ -828,7 +849,7 @@ check_https() {
 	printf '\n'
 	if [[ "$code" != "401" ]]; then
 		warn "https://$CB_ADDRESS does not answer yet (last answer: ${code:-none})."
-		warn "Check that ports 80 and 443 are open (also in the provider's firewall). See: journalctl -u caddy"
+		explain_certificate_problem
 		return
 	fi
 	ok "https://$CB_ADDRESS answers and asks for the password"
