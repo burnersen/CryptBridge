@@ -22,6 +22,12 @@ tmp/
 *.tmp
 *.part
 
+# --- Generated while building the Windows program ---
+windows/build/appicon.png
+windows/build/windows/icon.ico
+windows/build/windows/wails.exe.manifest
+windows/frontend/wailsjs/
+
 # --- Build output and downloaded tools ---
 windows/build/bin/
 dist/

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "CryptBridge",
+  "outputfilename": "CryptBridge",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": {
+    "name": "burnersen"
+  },
+  "info": {
+    "companyName": "burnersen",
+    "productName": "CryptBridge",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright 2026 burnersen",
+    "comments": "Encrypted pCloud vault as a Windows drive"
+  }
+}
