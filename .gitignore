@@ -30,7 +30,7 @@ windows/frontend/wailsjs/
 
 # --- Build output and downloaded tools ---
 windows/build/bin/
-dist/
+/dist/
 *.exe
 *.zip
 *.syso

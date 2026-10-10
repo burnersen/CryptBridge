@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<!--
+  CryptBridge (https://github.com/burnersen/CryptBridge)
+  Copyright (C) 2026 burnersen
+  SPDX-License-Identifier: GPL-3.0-only
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CryptBridge</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3z"/></svg>
+      <span class="name">CryptBridge</span>
+      <span class="version" id="version"></span>
+    </div>
+    <span class="pill" id="phase-pill">Starting…</span>
+  </header>
+
+  <nav>
+    <button class="tab active" data-tab="status">Status</button>
+    <button class="tab" data-tab="vault">Vault</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="about">About</button>
+  </nav>
+
+  <main>
+    <!-- ===== Status ===== -->
+    <section id="tab-status" class="tab-page active">
+      <div class="notice error hidden" id="status-message"></div>
+      <div class="notice warn hidden" id="winfsp-missing">
+        WinFsp is not installed. It lets Windows show the vault as a drive letter.
+        <button class="link" id="winfsp-download">Download WinFsp</button>
+        — install it, then click Connect.
+      </div>
+      <div class="notice info hidden" id="setup-needed">
+        CryptBridge is not set up yet. Open the <button class="link" data-goto="vault">Vault</button> tab to sign in to pCloud and choose a vault.
+      </div>
+
+      <div class="card drive-card">
+        <div class="drive-letter" id="drive-letter">Z:</div>
+        <div class="drive-info">
+          <div class="drive-state" id="drive-state">Disconnected</div>
+          <div class="muted" id="drive-detail"></div>
+        </div>
+        <div class="drive-actions">
+          <button class="primary" id="btn-connect">Connect</button>
+          <button id="btn-open-drive">Open drive</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Uploads</h2>
+        <div class="muted" id="uploads-summary">Nothing to upload.</div>
+        <ul class="transfers" id="transfers"></ul>
+        <p class="hint">Files copied to the drive are first stored on this PC and then uploaded to pCloud.
+          Keep CryptBridge connected until the uploads are finished.</p>
+      </div>
+
+      <div class="card">
+        <h2>Vault</h2>
+        <div class="grid2">
+          <div>
+            <div class="label">Folder in pCloud</div>
+            <div class="value" id="vault-path">–</div>
+          </div>
+          <div>
+            <div class="label">Check code</div>
+            <div class="value code" id="vault-fingerprint">–</div>
+          </div>
+        </div>
+        <p class="hint">The check code must be the same on your Linux server. If it differs, the keys differ.</p>
+        <div class="label">pCloud storage</div>
+        <div class="bar"><div class="bar-fill" id="usage-bar"></div></div>
+        <div class="muted" id="usage-text">–</div>
+      </div>
+    </section>
+
+    <!-- ===== Vault (setup) ===== -->
+    <section id="tab-vault" class="tab-page">
+      <div class="card">
+        <h2><span class="step">1</span> pCloud account</h2>
+        <div id="account-state" class="muted">Not signed in.</div>
+        <div class="row">
+          <button class="primary" id="btn-signin">Sign in to pCloud</button>
+          <button id="btn-signout" class="hidden">Sign out</button>
+        </div>
+        <div id="signin-waiting" class="notice info hidden">
+          Please sign in to pCloud in the browser window that has just opened.
+          <span id="signin-link-row" class="hidden">If no browser opened, <button class="link" id="signin-link">open the sign-in page</button>.</span>
+          <button id="btn-signin-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">2</span> Vault</h2>
+        <div class="segmented">
+          <label><input type="radio" name="vault-mode" value="new" checked> Create a new vault</label>
+          <label><input type="radio" name="vault-mode" value="existing"> Open an existing vault</label>
+        </div>
+
+        <div class="field">
+          <label for="vault-folder">Folder in pCloud</label>
+          <div class="row">
+            <input id="vault-folder" type="text" placeholder="CryptBridge" spellcheck="false">
+            <button id="btn-find" class="only-existing">Search pCloud</button>
+          </div>
+          <ul class="candidates hidden" id="candidates"></ul>
+        </div>
+
+        <div class="field">
+          <label for="vault-password">Password</label>
+          <div class="row">
+            <input id="vault-password" type="password" autocomplete="off" spellcheck="false">
+            <button class="icon-btn" data-reveal="vault-password" title="Show or hide">👁</button>
+            <button class="only-new" data-generate="vault-password">Generate</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="vault-salt">Salt (second password, optional for existing vaults)</label>
+          <div class="row">
+            <input id="vault-salt" type="password" autocomplete="off" spellcheck="false">
+            <button class="icon-btn" data-reveal="vault-salt" title="Show or hide">👁</button>
+            <button class="only-new" data-generate="vault-salt">Generate</button>
+          </div>
+        </div>
+
+        <details class="only-existing">
+          <summary>Advanced settings (only if your vault was made with other rclone settings)</summary>
+          <div class="grid2">
+            <div class="field">
+              <label for="adv-encryption">File name encryption</label>
+              <select id="adv-encryption">
+                <option value="standard">standard</option>
+                <option value="obfuscate">obfuscate</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="adv-encoding">File name encoding</label>
+              <select id="adv-encoding">
+                <option value="base32">base32</option>
+                <option value="base64">base64</option>
+                <option value="base32768">base32768</option>
+              </select>
+            </div>
+            <div class="field">
+              <label><input id="adv-dirnames" type="checkbox" checked> Encrypt folder names</label>
+            </div>
+            <div class="field">
+              <label for="adv-suffix">File ending (only with "off")</label>
+              <input id="adv-suffix" type="text" value=".bin" spellcheck="false">
+            </div>
+          </div>
+        </details>
+
+        <div class="notice warn only-new">
+          Write down the password and the salt, or print the emergency sheet afterwards.
+          <strong>Without them, the files in the vault can never be opened again — not even by pCloud.</strong>
+        </div>
+
+        <div class="row">
+          <button id="btn-check">Check keys</button>
+          <button class="primary" id="btn-save-vault">Use this vault</button>
+        </div>
+        <div id="vault-result" class="notice hidden"></div>
+      </div>
+    </section>
+
+    <!-- ===== Settings ===== -->
+    <section id="tab-settings" class="tab-page">
+      <div class="card">
+        <h2>Drive</h2>
+        <div class="grid2">
+          <div class="field">
+            <label for="opt-letter">Drive letter</label>
+            <select id="opt-letter"></select>
+          </div>
+          <div class="field">
+            <label for="opt-cache-max">Cache size (soft limit)</label>
+            <input id="opt-cache-max" type="text" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="opt-cache-free">Keep this much disk space free</label>
+            <input id="opt-cache-free" type="text" spellcheck="false">
+          </div>
+        </div>
+        <div class="field">
+          <label for="opt-cache-dir">Cache folder (needs room for the largest file you copy to the drive)</label>
+          <div class="row">
+            <input id="opt-cache-dir" type="text" spellcheck="false">
+            <button id="btn-browse-cache">Browse…</button>
+          </div>
+        </div>
+        <p class="hint">Drive letter and cache can only be changed while the drive is disconnected.
+          Files that are still waiting for upload stay in the old cache folder — finish uploads before you move it.</p>
+      </div>
+      <div class="card">
+        <h2>Behaviour</h2>
+        <label class="check"><input id="opt-autostart" type="checkbox"> Start CryptBridge with Windows</label>
+        <label class="check"><input id="opt-autoconnect" type="checkbox"> Connect the drive when CryptBridge starts</label>
+        <label class="check"><input id="opt-autoreconnect" type="checkbox"> Reconnect automatically after a problem</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="btn-save-settings">Save settings</button>
+        <span id="settings-result" class="muted"></span>
+      </div>
+    </section>
+
+    <!-- ===== About ===== -->
+    <section id="tab-about" class="tab-page">
+      <div class="card">
+        <h2>CryptBridge <span id="about-version"></span></h2>
+        <p>Copyright © 2026 burnersen</p>
+        <p>CryptBridge is free software: you can redistribute it and/or modify it under the terms of the
+          GNU General Public License, version 3 only (GPL-3.0-only).</p>
+        <p><strong>There is NO WARRANTY</strong>, to the extent permitted by law. You use CryptBridge at your own risk.</p>
+        <p>If you pass CryptBridge on, you must do so under the same licence and include the source code
+          (or a way to get it).</p>
+        <div class="row">
+          <button class="link" data-url="https://github.com/burnersen/CryptBridge">Source code on GitHub</button>
+          <button class="link" data-url="https://github.com/burnersen/CryptBridge/blob/main/LICENSE">Licence text</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Free of charge</h2>
+        <p>CryptBridge costs nothing. The official source is GitHub — if someone asks you for money, they are
+          selling what you can get there for free.</p>
+        <p>Companies that want to build CryptBridge into a product that is not under the GPL can ask for a separate licence.</p>
+      </div>
+      <div class="card">
+        <h2>Third-party software</h2>
+        <ul class="plain">
+          <li><button class="link" data-url="https://rclone.org/">rclone</button> (MIT licence) does the encryption and transfers. It runs as its own program.</li>
+          <li><button class="link" data-url="https://winfsp.dev/">WinFsp</button> (GPLv3 with FLOSS exception) lets Windows show the drive. Installed separately.</li>
+          <li>Wails (MIT), fyne systray (Apache 2.0), Go and golang.org/x (BSD-3-Clause) are built into this program.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
