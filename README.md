@@ -87,7 +87,9 @@ to the drive at once.
 
 ## 🐧 Linux server
 
-Made for **Ubuntu 24.04 and 26.04** and **Debian 12 and 13**, with or without a desktop (XFCE).
+Tested on **Ubuntu 26.04 with an XFCE desktop** — on a server that already had its own firewall rules,
+fail2ban jails and third-party package sources. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
+tested there yet), with or without a desktop.
 
 ### Before you start
 
@@ -106,11 +108,11 @@ The setup asks a few questions and then does everything else:
 
 | Step | What happens |
 |---|---|
-| Packages | rclone (checksum verified), Caddy, fuse3, ufw, fail2ban |
+| Packages | rclone (checksum verified), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
 | Keys | paste the **transfer block** from the Windows program (*Vault tab → Linux server*) and type its code — or enter everything by hand |
 | Check | keys checked against your vault; the **check code** must equal the one in the Windows program |
 | Vault | mounted at `~/CryptBridge` for your desktop user (`rclone-mount.service`) |
-| Infuse | WebDAV, read-only (`rclone-webdav.service`) behind Caddy with HTTPS |
+| Infuse | WebDAV, read-only (`rclone-webdav.service`) behind Caddy with HTTPS; if rclone crashes, both services come back by themselves |
 | Firewall | opens 80/443 — and keeps your SSH and remote-desktop ports open before switching ufw on |
 | Desktop | icons *CryptBridge Vault* and *CryptBridge*, a file-manager bookmark, no film thumbnails |
 

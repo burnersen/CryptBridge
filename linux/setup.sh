@@ -37,7 +37,6 @@ readonly CACHE_DIR="$ROOT/var/cache/cryptbridge"
 readonly MOUNT_UNIT="$ROOT/etc/systemd/system/rclone-mount.service"
 readonly WEBDAV_UNIT="$ROOT/etc/systemd/system/rclone-webdav.service"
 readonly CADDYFILE="$ROOT/etc/caddy/Caddyfile"
-readonly CADDY_LOG="$ROOT/var/log/caddy/cryptbridge-access.log"
 readonly F2B_FILTER="$ROOT/etc/fail2ban/filter.d/cryptbridge-webdav.conf"
 readonly F2B_JAIL="$ROOT/etc/fail2ban/jail.d/cryptbridge-webdav.conf"
 readonly SELF_INSTALLED="$ROOT/usr/local/sbin/cryptbridge"
@@ -64,6 +63,9 @@ readonly READ_AHEAD="128M"
 readonly DIR_CACHE_TIME="24h"
 readonly POLL_INTERVAL="1m"
 readonly DEFAULT_CACHE_MAX_GB=20
+
+# bcrypt cost of the Infuse password; see choose_webdav_account.
+readonly BCRYPT_COST=10
 
 # --- Transfer block from the Windows program -----------------------------
 readonly TRANSFER_BEGIN="-----BEGIN CRYPTBRIDGE TRANSFER-----"
@@ -214,13 +216,35 @@ choose_user() {
 # Packages, rclone, Caddy
 # ==========================================================================
 
+# apt_update refreshes the package lists. A broken source that has nothing to
+# do with CryptBridge (for example a third-party repository without packages
+# for this Ubuntu release) makes "apt-get update" fail as a whole; that must
+# not stop the setup. Only a package that really cannot be installed does.
+apt_update() {
+	info "Updating package lists …"
+	local out
+	out="$(mktemp)"
+	if apt-get update >"$out" 2>&1; then
+		cat "$out" >>"$LOG_FILE"
+		rm -f "$out"
+		return 0
+	fi
+	cat "$out" >>"$LOG_FILE"
+	warn "Some package sources could not be updated. CryptBridge does not need them; continuing."
+	local line
+	while IFS= read -r line; do
+		warn "  $line"
+	done < <(grep -E '^(E|Err):' "$out" || true)
+	rm -f "$out"
+}
+
 install_packages() {
 	step "Installing packages"
 	export DEBIAN_FRONTEND=noninteractive
-	run_logged "Updating package lists" apt-get update
+	apt_update
 	# Installed one by one: a single unknown package must not stop the others.
 	local package status
-	for package in ca-certificates curl unzip jq openssl fuse3 ufw fail2ban gnupg; do
+	for package in ca-certificates curl unzip jq openssl fuse3 ufw fail2ban apache2-utils; do
 		# Read into a variable: "| grep -q" can fail falsely under pipefail.
 		status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
 		if [[ "$status" != "install ok installed" ]]; then
@@ -232,25 +256,15 @@ install_packages() {
 }
 
 install_caddy() {
-	if command -v caddy >/dev/null; then
-		ok "Caddy already installed: $(caddy version | awk '{print $1}')"
-		return
+	if ! command -v caddy >/dev/null; then
+		# The distribution's package, on purpose: Caddy's own repository (on
+		# Cloudsmith) answered "402 Payment Required" on 2026-10-10, and a
+		# third-party source is one more thing that can break. Everything
+		# CryptBridge uses (automatic HTTPS, reverse_proxy, JSON logs,
+		# hash-password) works with the packaged version (2.6.2 on Ubuntu 26.04).
+		run_logged "Installing caddy" apt-get install -y caddy
 	fi
-	# The official Caddy repository gets security updates quickly; the
-	# distribution package is often years old (Ubuntu 26.04: 2.6.2).
-	local key="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-	local list="/etc/apt/sources.list.d/caddy-stable.list"
-	if curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" | gpg --batch --yes --dearmor -o "$key" &&
-		curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" -o "$list" &&
-		chmod o+r "$key" "$list" &&
-		apt-get update >>"$LOG_FILE" 2>&1 &&
-		apt-get install -y caddy >>"$LOG_FILE" 2>&1; then
-		ok "Caddy installed from the official repository: $(caddy version | awk '{print $1}')"
-		return
-	fi
-	warn "The official Caddy repository did not work; using the distribution package."
-	rm -f "$list"
-	run_logged "Installing caddy" apt-get install -y caddy
+	ok "Caddy $(caddy version | awk '{print $1}')"
 }
 
 # version_ge A B — true if version A >= B (numbers compared, not text):
@@ -568,7 +582,7 @@ choose_webdav_account() {
 	fi
 	ask CB_WEBDAV_USER "User name for Infuse" "${CB_WEBDAV_USER:-infuse}"
 	[[ "$CB_WEBDAV_USER" =~ ^[A-Za-z0-9._-]+$ ]] || die "Use letters, digits, dot, dash or underscore only."
-	local pw again hash
+	local pw again
 	while true; do
 		ask_secret pw "Password for Infuse (at least 12 characters)"
 		((${#pw} >= 12)) || {
@@ -579,17 +593,33 @@ choose_webdav_account() {
 		[[ "$pw" == "$again" ]] && break
 		warn "The passwords differ."
 	done
-	# bcrypt hash made by Caddy, password passed on stdin (not in the process list).
-	hash="$(printf '%s\n' "$pw" | caddy hash-password 2>/dev/null)" || die "Could not hash the password."
-	[[ "$hash" == '$2'* ]] || die "Unexpected password hash."
+	# bcrypt with cost 10, password passed on stdin (not in the process list).
+	# rclone checks the password on EVERY request; with cost 14 (Caddy's
+	# fixed default) each request took 1.1-1.7 s (measured), which makes
+	# seeking and browsing in Infuse sluggish. Cost 10 is ~16 times faster
+	# and, with a long password and fail2ban, still far out of reach.
+	local line
+	line="$(printf '%s\n' "$pw" | htpasswd -niBC "$BCRYPT_COST" "$CB_WEBDAV_USER" 2>/dev/null)" || die "Could not hash the password."
+	[[ "$line" == "$CB_WEBDAV_USER:\$2"* ]] || die "Unexpected password hash."
 	install -m 0640 -o root -g "$CB_GROUP" /dev/null "$HTPASSWD"
-	printf '%s:%s\n' "$CB_WEBDAV_USER" "$hash" >"$HTPASSWD"
+	printf '%s\n' "$line" >"$HTPASSWD"
 	WEBDAV_PASSWORD_FOR_TEST="$pw"
 	ok "Infuse account '$CB_WEBDAV_USER' saved"
 }
 
 public_ipv4() {
 	ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}'
+}
+
+# public_dns_ipv4 HOST — the IPv4 addresses of HOST in the PUBLIC DNS, which
+# is what Let's Encrypt sees. Asking the server itself is no good: Debian
+# and Ubuntu map the server's own name to 127.0.1.1 in /etc/hosts, and the
+# provider's resolver may fail (measured on a Contabo VPS: SERVFAIL).
+public_dns_ipv4() {
+	local json
+	json="$(curl -fsS --max-time 10 -H 'accept: application/dns-json' \
+		"https://1.1.1.1/dns-query?name=$1&type=A" 2>/dev/null)" || return 1
+	jq -r '.Answer[]? | select(.type == 1) | .data' <<<"$json"
 }
 
 choose_address() {
@@ -601,17 +631,17 @@ choose_address() {
 	CB_ADDRESS="${CB_ADDRESS,,}"
 	[[ "$CB_ADDRESS" =~ ^[a-z0-9.-]+$ && "$CB_ADDRESS" == *.* ]] || die "Please enter a host name such as v220….supersrv.de."
 	local resolved mine
-	# "|| true": a name that does not resolve is handled below, not by set -e.
-	resolved="$(getent ahostsv4 "$CB_ADDRESS" 2>/dev/null | awk '{print $1; exit}' || true)"
+	# "|| true": an unanswered query is handled below, not by set -e.
+	resolved="$(public_dns_ipv4 "$CB_ADDRESS" || true)"
 	mine="$(public_ipv4 || true)"
 	if [[ -z "$resolved" ]]; then
-		warn "'$CB_ADDRESS' cannot be resolved. The certificate will fail until it points to this server."
-		confirm "Continue anyway?" n || exit 1
-	elif [[ -n "$mine" && "$resolved" != "$mine" ]]; then
-		warn "'$CB_ADDRESS' points to $resolved, but this server is $mine."
+		info "Could not look up '$CB_ADDRESS' in the public DNS; the HTTPS check at the end shows whether it works."
+	elif [[ -n "$mine" && $'\n'"$resolved"$'\n' != *$'\n'"$mine"$'\n'* ]]; then
+		warn "'$CB_ADDRESS' points to $(tr '\n' ' ' <<<"$resolved")— but this server is $mine."
+		warn "The certificate will fail until the name points to this server."
 		confirm "Continue anyway?" n || exit 1
 	else
-		ok "$CB_ADDRESS points to this server ($resolved)"
+		ok "$CB_ADDRESS points to this server ($mine)"
 	fi
 }
 
@@ -621,7 +651,11 @@ choose_address() {
 
 write_units() {
 	step "Services"
-	install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$CB_MOUNT_DIR"
+	# On a repeated setup the vault is still mounted, and root may not even
+	# look into the user's FUSE mount: only create the folder when it is free.
+	if ! is_mounted; then
+		install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$CB_MOUNT_DIR"
+	fi
 
 	cat >"$MOUNT_UNIT" <<EOF
 $MARKER
@@ -630,6 +664,10 @@ Description=CryptBridge: encrypted pCloud vault at $CB_MOUNT_DIR
 Documentation=https://github.com/burnersen/CryptBridge
 Wants=network-online.target
 After=network-online.target
+# WebDAV stops together with the mount (BindsTo there). Upholds brings it back
+# once the mount runs again — without it, WebDAV stayed off after rclone had
+# crashed and was restarted (measured).
+Upholds=rclone-webdav.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -637,7 +675,7 @@ Type=notify
 User=$CB_USER
 Group=$CB_GROUP
 # A crash leaves a dead mount behind ("Transport endpoint is not connected"); clear it first.
-ExecStartPre=-/usr/bin/fusermount3 -uz $CB_MOUNT_DIR
+ExecStartPre=/bin/sh -c 'if findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null; then /usr/bin/fusermount3 -uz "$CB_MOUNT_DIR"; fi'
 ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: $CB_MOUNT_DIR \\
   --config $RCLONE_CONF \\
   --cache-dir $CACHE_DIR \\
@@ -678,7 +716,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=$CB_USER
 Group=$CB_GROUP
-ExecStartPre=/usr/bin/timeout 30 /bin/sh -c 'until mountpoint -q "$CB_MOUNT_DIR"; do sleep 1; done'
+ExecStartPre=/usr/bin/timeout 30 /bin/sh -c 'until findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null; do sleep 1; done'
 # Serves the mounted folder: one cache, and new files are visible at once.
 # The mount below already caches, so no second cache here.
 ExecStart=$RCLONE_BIN serve webdav $CB_MOUNT_DIR \\
@@ -717,11 +755,11 @@ $CB_ADDRESS {
 		# Send video data on immediately instead of buffering it.
 		flush_interval -1
 	}
+	# Access log into the systemd journal, where fail2ban reads it. A file
+	# under /var/log does not work: Ubuntu's /var/log is root:syslog 0750,
+	# so the caddy user cannot even reach it (measured on Ubuntu 26.04).
 	log {
-		output file $CADDY_LOG {
-			roll_size 10MiB
-			roll_keep 5
-		}
+		output stderr
 		format json
 	}
 }
@@ -732,14 +770,25 @@ EOF
 
 start_services() {
 	step "Starting"
-	systemctl enable --now rclone-mount.service >>"$LOG_FILE" 2>&1 || die "The vault could not be mounted. See: journalctl -u rclone-mount"
-	wait_for "vault mounted at $CB_MOUNT_DIR" 60 mountpoint -q "$CB_MOUNT_DIR"
-	systemctl enable --now rclone-webdav.service >>"$LOG_FILE" 2>&1 || die "WebDAV did not start. See: journalctl -u rclone-webdav"
+	# restart, not "enable --now": on a repeated setup the services already
+	# run and must pick up the new settings. Unfinished uploads stay in the
+	# cache and continue after the restart.
+	systemctl enable rclone-mount.service rclone-webdav.service >>"$LOG_FILE" 2>&1
+	systemctl restart rclone-mount.service >>"$LOG_FILE" 2>&1 || die "The vault could not be mounted. See: journalctl -u rclone-mount"
+	wait_for "vault mounted at $CB_MOUNT_DIR" 60 is_mounted
+	systemctl restart rclone-webdav.service >>"$LOG_FILE" 2>&1 || die "WebDAV did not start. See: journalctl -u rclone-webdav"
 	wait_for "WebDAV answering" 30 webdav_answers
 	write_caddyfile
 	systemctl enable caddy >>"$LOG_FILE" 2>&1
 	systemctl reload-or-restart caddy >>"$LOG_FILE" 2>&1 || die "Caddy did not start. See: journalctl -u caddy"
 	ok "Caddy configured for https://$CB_ADDRESS"
+}
+
+# is_mounted asks the kernel's mount table instead of looking into the
+# folder: a FUSE mount of the desktop user refuses everybody else — even
+# root — so "mountpoint" run as root would wrongly say "not mounted".
+is_mounted() {
+	findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null 2>&1
 }
 
 webdav_answers() {
@@ -837,16 +886,15 @@ setup_firewall() {
 
 setup_fail2ban() {
 	step "Protection against password guessing (fail2ban)"
-	touch "$CADDY_LOG"
-	chown caddy:caddy "$CADDY_LOG" 2>/dev/null || true
 	cat >"$F2B_FILTER" <<'EOF'
 # Managed by CryptBridge
-# Counts failed logins at the WebDAV server: answer 401 although the client
-# DID send a password. Requests without a password (the usual first request
-# of a WebDAV client) do not count, so Infuse never bans itself.
+# Counts failed logins at the WebDAV server in Caddy's access log (systemd
+# journal): answer 401 although the client DID send a password. Requests
+# without a password (the usual first request of a WebDAV client) do not
+# count, so Infuse never bans itself.
 [Definition]
 failregex = ^.*"remote_ip":"<HOST>".*"Authorization":\[.*"status":401\b
-datepattern = "ts":{EPOCH}
+journalmatch = _SYSTEMD_UNIT=caddy.service
 EOF
 	cat >"$F2B_JAIL" <<EOF
 $MARKER
@@ -854,8 +902,7 @@ $MARKER
 enabled  = true
 port     = http,https
 filter   = cryptbridge-webdav
-logpath  = $CADDY_LOG
-backend  = polling
+backend  = systemd
 maxretry = 8
 findtime = 10m
 bantime  = 1h
@@ -976,7 +1023,7 @@ show_status() {
 		state="$(systemctl is-active "$unit" 2>/dev/null || true)"
 		if [[ "$state" == "active" ]]; then ok "$unit: running"; else warn "$unit: $state"; fi
 	done
-	if mountpoint -q "${CB_MOUNT_DIR:-/nonexistent}" 2>/dev/null; then
+	if [[ -n "${CB_MOUNT_DIR:-}" ]] && is_mounted; then
 		ok "Vault folder: ${CB_MOUNT_DIR}"
 	else
 		warn "Vault folder ${CB_MOUNT_DIR:-?} is not mounted"
