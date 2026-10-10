@@ -108,6 +108,11 @@ type Status struct {
 }
 
 // PendingUploads is the number of files that are not safely in pCloud yet.
+//
+// rclone's count of open files ("inUse") is deliberately not used: Windows
+// keeps a written file open in its own cache long after the upload has
+// finished (measured: still 1 after 12 s), so it cannot tell whether
+// anything is really going on.
 func (s Status) PendingUploads() int {
 	return s.UploadsInProgress + s.UploadsQueued
 }
@@ -174,9 +179,14 @@ func isMounted(ctx context.Context, client *rcd.Client, letter string) (bool, er
 	return false, nil
 }
 
-// normaliseLetter turns "z", "Z:" or "Z:\" into "Z" and rejects anything
-// that is not a usable drive letter. A and B are reserved for floppy drives
-// and C is the system drive in practice.
+// NormaliseLetter turns "z", "Z:" or "Z:\" into "Z" and rejects anything
+// that is not a usable drive letter.
+func NormaliseLetter(letter string) (string, error) {
+	return normaliseLetter(letter)
+}
+
+// normaliseLetter is NormaliseLetter. A and B are reserved for floppy
+// drives and C is the system drive in practice.
 func normaliseLetter(letter string) (string, error) {
 	cleaned := strings.ToUpper(strings.TrimRight(strings.TrimSpace(letter), `:\`))
 	if len(cleaned) != 1 || cleaned[0] < 'D' || cleaned[0] > 'Z' {

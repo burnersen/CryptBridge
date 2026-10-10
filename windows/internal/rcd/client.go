@@ -150,6 +150,11 @@ func errorMessage(answer []byte, httpStatus string) string {
 	return httpStatus
 }
 
+// Ping checks that the rclone process is alive and answering.
+func (c *Client) Ping(ctx context.Context) error {
+	return c.ping(ctx)
+}
+
 // ping checks that the process answering on this port really is the rclone
 // process we started. A different program may have taken over the port after
 // a crash, so a mere answer is not enough — the process ID must match.
