@@ -1,0 +1,44 @@
+# --- Secrets and personal configuration: never commit ---
+rclone.conf
+*.rclone.conf
+.env
+.env.*
+*.cbtransfer
+htpasswd
+*.htpasswd
+*.key
+*.pem
+*.crt
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Caches and temporary files ---
+cache/
+vfs/
+vfsMeta/
+tmp/
+*.tmp
+*.part
+
+# --- Build output and downloaded tools ---
+windows/build/bin/
+dist/
+*.exe
+*.zip
+*.syso
+/rclone/
+/tools/
+
+# --- Backups ---
+_backup*/
+_archive/
+*.bak
+
+# --- Operating system and editor clutter ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

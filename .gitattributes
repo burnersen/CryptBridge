@@ -1,0 +1,28 @@
+# Shell scripts and systemd units run on Linux: a single CR breaks them
+# ("bad interpreter", "$'\r': command not found"). Always LF.
+*.sh       text eol=lf
+*.service  text eol=lf
+
+# Go sources are LF so that gofmt does not report every file as unformatted.
+*.go       text eol=lf
+go.mod     text eol=lf
+go.sum     text eol=lf
+
+# Frontend and config files: LF keeps diffs readable.
+*.html     text eol=lf
+*.css      text eol=lf
+*.js       text eol=lf
+*.json     text eol=lf
+VERSION    text eol=lf
+
+# PowerShell scripts are Windows-only.
+*.ps1      text eol=crlf
+
+# Documentation: normalise in the repository, check out native.
+*.md       text
+LICENSE    text
+
+# Never touch binary content.
+*.png      binary
+*.ico      binary
+*.exe      binary
