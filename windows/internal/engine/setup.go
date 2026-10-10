@@ -16,6 +16,7 @@ import (
 
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
@@ -44,6 +45,33 @@ func NewPassword() (string, error) {
 		out[i] = passwordAlphabet[n.Int64()]
 	}
 	return string(out), nil
+}
+
+// InstallRclone downloads rclone (checksum verified) into CryptBridge's own
+// folder and starts working with it.
+func (e *Engine) InstallRclone(ctx context.Context, progress prereq.Progress) error {
+	e.actionMu.Lock()
+	defer e.actionMu.Unlock()
+	rclone, err := prereq.DownloadRclone(ctx, e.paths.BinDir, progress)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.rclone = &rclone
+	e.mu.Unlock()
+	if err := e.prepareLocked(ctx); err != nil {
+		e.setPhase(PhaseError, err.Error())
+		return err
+	}
+	e.settlePhaseLocked(ctx, true)
+	return nil
+}
+
+// Fingerprint returns the check code of the stored vault ("" if none).
+func (e *Engine) Fingerprint() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.fingerprint
 }
 
 // SignIn opens the pCloud sign-in in the browser, finds the account's

@@ -37,6 +37,12 @@
         <button class="link" id="winfsp-download">Download WinFsp</button>
         — install it, then click Connect.
       </div>
+      <div class="notice warn hidden" id="rclone-missing">
+        rclone is needed and was not found on this PC.
+        <button class="primary" id="btn-download-rclone">Download rclone</button>
+        <span class="muted">from rclone.org, checked against rclone's published checksum.</span>
+        <div class="bar hidden" id="download-bar"><div class="bar-fill" id="download-fill"></div></div>
+      </div>
       <div class="notice info hidden" id="setup-needed">
         CryptBridge is not set up yet. Open the <button class="link" data-goto="vault">Vault</button> tab to sign in to pCloud and choose a vault.
       </div>
@@ -169,6 +175,36 @@
         </div>
         <div id="vault-result" class="notice hidden"></div>
       </div>
+
+      <div class="card">
+        <h2><span class="step">3</span> Linux server</h2>
+        <p class="muted">Bring the pCloud sign-in and the vault keys to your server without typing them:
+          create a transfer block, then run <code>sudo bash setup.sh</code> on the server and choose
+          "Paste the transfer block".</p>
+        <div class="row">
+          <button class="primary" id="btn-transfer">Create transfer block</button>
+        </div>
+        <div id="transfer-area" class="hidden">
+          <div class="label">Transfer code (type it on the server when asked)</div>
+          <div class="code big" id="transfer-code"></div>
+          <div class="label">Transfer block</div>
+          <textarea id="transfer-block" readonly spellcheck="false"></textarea>
+          <div class="row">
+            <button id="btn-copy-block">Copy block</button>
+            <button id="btn-save-block">Save as file…</button>
+            <span class="muted" id="transfer-result"></span>
+          </div>
+          <p class="hint">The block contains your keys, protected by the code. Never send block and code
+            the same way (for example, not both in one e-mail). Each click makes a new code.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Emergency sheet</h2>
+        <p class="muted">A page with everything needed to open the vault — even without CryptBridge.
+          Print it and keep it like a house key. It is not saved anywhere by CryptBridge.</p>
+        <button id="btn-sheet">Show emergency sheet</button>
+      </div>
     </section>
 
     <!-- ===== Settings ===== -->
@@ -242,6 +278,39 @@
       </div>
     </section>
   </main>
+
+  <!-- Emergency sheet: filled by app.js only when shown, removed when closed. -->
+  <div id="sheet" class="hidden">
+    <div class="sheet-actions no-print">
+      <button class="primary" id="btn-sheet-print">Print</button>
+      <button id="btn-sheet-close">Close</button>
+    </div>
+    <div class="sheet-page">
+      <h1>CryptBridge emergency sheet</h1>
+      <p class="sheet-warning">Keep this sheet like a house key. Anyone who has it — and access to your pCloud — can read your vault.
+        Without the password and the salt, nobody can open the vault, not even pCloud.</p>
+      <table>
+        <tr><th>Created</th><td id="s-created"></td></tr>
+        <tr><th>pCloud region</th><td id="s-region"></td></tr>
+        <tr><th>Vault folder in pCloud</th><td id="s-path" class="mono"></td></tr>
+        <tr><th>Password</th><td id="s-password" class="mono secret"></td></tr>
+        <tr><th>Salt (password 2)</th><td id="s-salt" class="mono secret"></td></tr>
+        <tr><th>File name encryption</th><td id="s-encryption" class="mono"></td></tr>
+        <tr><th>Encrypt folder names</th><td id="s-dirnames" class="mono"></td></tr>
+        <tr><th>File name encoding</th><td id="s-encoding" class="mono"></td></tr>
+        <tr><th>File ending (only if names are not encrypted)</th><td id="s-suffix" class="mono"></td></tr>
+        <tr><th>Check code</th><td id="s-fingerprint" class="mono"></td></tr>
+      </table>
+      <h2>Opening the vault again</h2>
+      <ol>
+        <li><strong>With CryptBridge</strong> (Windows or the Linux setup): sign in to pCloud, choose
+          "Open an existing vault", enter folder, password and salt. The check code must match the one above.</li>
+        <li><strong>With rclone alone</strong> (any computer, <span class="mono">rclone.org</span>):
+          <pre id="s-rclone"></pre></li>
+      </ol>
+      <p class="sheet-foot">CryptBridge — https://github.com/burnersen/CryptBridge</p>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

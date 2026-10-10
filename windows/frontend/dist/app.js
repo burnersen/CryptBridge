@@ -96,6 +96,7 @@ function render(s) {
   show($("status-message"), !!s.message && (s.phase === "error" || s.phase === "reconnecting"));
   $("status-message").textContent = s.message || "";
   show($("winfsp-missing"), !s.winFsp);
+  show($("rclone-missing"), !s.rclone && s.phase === "error");
   show($("setup-needed"), s.phase === "setup");
 
   renderUploads(s.drive || {});
@@ -263,6 +264,80 @@ $("btn-find").addEventListener("click", () => run($("vault-result"), async () =>
     "No vault found in your pCloud." : "Click a folder to use it, then enter password and salt.");
 }));
 
+// ---------- rclone download ----------
+
+$("btn-download-rclone").addEventListener("click", () => run($("status-message"), async () => {
+  show($("download-bar"), true);
+  $("download-fill").style.width = "0%";
+  try {
+    await api.DownloadRclone();
+  } finally {
+    show($("download-bar"), false);
+  }
+}));
+
+// ---------- transfer to the Linux server ----------
+
+$("btn-transfer").addEventListener("click", () => run($("vault-result"), async () => {
+  const t = await api.CreateTransfer();
+  $("transfer-code").textContent = t.code;
+  $("transfer-block").value = t.block;
+  $("transfer-result").textContent = "";
+  show($("transfer-area"), true);
+}));
+$("btn-copy-block").addEventListener("click", async () => {
+  await api.CopyText($("transfer-block").value);
+  $("transfer-result").textContent = "Copied. Paste it into the setup on the server.";
+});
+$("btn-save-block").addEventListener("click", () => run(null, async () => {
+  const path = await api.SaveTransfer($("transfer-block").value);
+  if (path) $("transfer-result").textContent = "Saved: " + path;
+}));
+
+// ---------- emergency sheet ----------
+
+// rcloneCommands: how to open the vault with plain rclone. "--obscure" is
+// essential: without it rclone stores a password that merely LOOKS obscured
+// (any 32 letters and digits do) unchanged, and the vault does not open
+// (measured with rclone 1.75.1).
+function rcloneCommands(d) {
+  const lines = [
+    `rclone config create cbpcloud pcloud hostname=${d.pcloudHost}`,
+    "    (a browser opens: sign in to pCloud)",
+    `rclone config create cbvault crypt remote="cbpcloud:${d.vaultPath}" ` +
+      `filename_encryption=${d.filenameEncryption} directory_name_encryption=${d.directoryNameEncryption} ` +
+      `filename_encoding=${d.filenameEncoding} suffix=${d.suffix} password="${d.password}"` +
+      (d.salt ? ` password2="${d.salt}"` : "") + " --obscure",
+    "    (keep --obscure: without it rclone may store the password wrongly)",
+    "rclone ls cbvault:",
+  ];
+  return lines.join("\n");
+}
+
+$("btn-sheet").addEventListener("click", () => run($("vault-result"), async () => {
+  const d = await api.EmergencySheet();
+  $("s-created").textContent = d.createdAt;
+  $("s-region").textContent = `${d.region} (${d.pcloudHost})`;
+  $("s-path").textContent = d.vaultPath;
+  $("s-password").textContent = d.password;
+  $("s-salt").textContent = d.salt || "(none)";
+  $("s-encryption").textContent = d.filenameEncryption;
+  $("s-dirnames").textContent = d.directoryNameEncryption ? "yes" : "no";
+  $("s-encoding").textContent = d.filenameEncoding;
+  $("s-suffix").textContent = d.suffix;
+  $("s-fingerprint").textContent = d.fingerprint || "–";
+  $("s-rclone").textContent = rcloneCommands(d);
+  show($("sheet"), true);
+}));
+
+function closeSheet() {
+  // Do not leave the keys in the page after the sheet is closed.
+  for (const id of ["s-password", "s-salt", "s-rclone"]) $(id).textContent = "";
+  show($("sheet"), false);
+}
+$("btn-sheet-print").addEventListener("click", () => window.print());
+$("btn-sheet-close").addEventListener("click", closeSheet);
+
 // ---------- settings ----------
 
 async function loadSettings() {
@@ -319,6 +394,7 @@ async function init() {
   api = window.go.main.App;
   window.runtime.EventsOn("snapshot", render);
   window.runtime.EventsOn("signin-link", (link) => { signInLink = link; show($("signin-link-row"), true); });
+  window.runtime.EventsOn("download-progress", (pct) => { $("download-fill").style.width = pct + "%"; });
   applyMode();
   $("vault-folder").value = "CryptBridge";
   const s = await api.GetSnapshot();
