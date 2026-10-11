@@ -50,7 +50,8 @@ if the codes match, the keys match.
 - **Uploads are never cut off silently.** Copying to the drive is fast because files land in a local
   cache first; CryptBridge shows the uploads and warns before you disconnect or quit while they run.
 - **The drive survives problems.** rclone runs as its own process: if the window crashes, the drive
-  stays; if rclone stops, CryptBridge brings the drive back.
+  stays; if rclone stops, CryptBridge brings the drive back. If pCloud refuses the sign-in, CryptBridge
+  says so plainly, keeps asking pCloud every minute and reconnects by itself once pCloud accepts it again.
 
 ---
 
@@ -68,7 +69,8 @@ if the codes match, the keys match.
 
 1. Install WinFsp, then start `CryptBridge.exe`. It lives in the system tray (bottom right).
 2. **Vault tab → Sign in to pCloud.** Your browser opens the pCloud sign-in page. CryptBridge finds out
-   by itself whether your account is in the EU or the US region.
+   by itself whether your account is in the EU or the US region. Recommended as well: request your
+   [own pCloud app](#-own-pcloud-app-recommended) — it can be added at any time later.
 3. **Create a new vault** (CryptBridge generates a strong password and salt — write them down or print
    the emergency sheet) **or open an existing one** ("Search pCloud" finds rclone vaults in your pCloud).
 4. **Status tab → Connect.** The vault appears as drive `Z:`.
@@ -82,6 +84,47 @@ Closing the window keeps CryptBridge running; **Quit** is in the tray menu.
 Drive letter, cache folder and size, *start with Windows*, *connect on start* and *reconnect
 automatically* are on the **Settings** tab. The cache folder needs room for the largest file you copy
 to the drive at once.
+
+### 🔑 Own pCloud app (recommended)
+
+CryptBridge signs in to pCloud through rclone. Out of the box that uses **rclone's shared pCloud
+access** — which pCloud has blocked for hours at a time before: on 5 October 2026, for about three hours,
+the browser showed *Invalid 'client_id'* and existing sign-ins failed with *error 2095*. With an app of
+your own, CryptBridge no longer depends on it. **Your vault does not change** — same keys, same files,
+same check code; you only sign in once more.
+
+Request the app **now, while everything works**: pCloud has to approve it, and that can take a while.
+
+1. Open **[My Apps on pCloud](https://docs.pcloud.com/my_apps/)**, log in with your pCloud account and
+   request a new application.
+2. Fill in the form like this and click **Create request**:
+
+   | Field | Enter |
+   |---|---|
+   | App name | `CryptBridge (personal)` |
+   | Application Type | **Personal use** |
+   | Folder access | **All folders** — your vault is a normal folder in your pCloud; *Private* would most likely limit the app to a folder of its own |
+   | Write access | **Yes** — needed to upload files |
+   | Website | `https://github.com/burnersen/CryptBridge` |
+   | Expected number of users | `1` |
+   | Reason | the text below (also on CryptBridge's Settings tab, with a Copy button) |
+
+   ```text
+   Personal use only. I use the open-source tool CryptBridge (https://github.com/burnersen/CryptBridge), which is based on rclone, to access my own pCloud account: it shows an encrypted folder of my pCloud as a drive on my own computers. Only my own pCloud account will use this app. It needs access to all folders because my existing encrypted folders are not inside an app folder, and write access to upload my files.
+   ```
+
+3. Once pCloud has approved the app, open it on My Apps and add `http://localhost:53682/` under
+   **Redirect URIs**. Without it, the sign-in ends with *redirect_uri is not authorized*.
+4. In CryptBridge: **Settings → Own pCloud app**, paste the **Client ID** and the **Client secret**,
+   click **Save app** and confirm the new sign-in. A connected drive is disconnected for the sign-in and
+   connected again afterwards. The Vault tab then says *… through your own pCloud app*.
+5. **Linux server** (not urgent — its sign-in keeps working until pCloud blocks rclone's shared access
+   again): create a new transfer block, run `sudo cryptbridge setup` on the server, answer **n** to
+   *Keep the pCloud sign-in and vault keys from the last setup?* and paste the block.
+
+The codes are stored encrypted with your Windows account like the rest of the settings. rclone gets them
+only for the sign-in itself, and they are not part of the transfer block: the server needs only the
+sign-in.
 
 ---
 
@@ -185,7 +228,9 @@ them with every folder listing, so they cost nothing, and you can sort by date.
 |---|---|
 | Check codes differ between PC and server | The keys or settings differ. Bring them over again with a transfer block. |
 | "These keys do NOT open the vault" | Password, salt, folder or an advanced setting does not match. Nothing was changed. |
-| "pCloud has revoked the sign-in" | Sign in again (Vault tab), then bring the keys to the server again. |
+| "pCloud no longer accepts the sign-in (error 2095)" | Often a passing problem at pCloud: CryptBridge asks again every minute and reconnects by itself. After a password change or "log out of all devices" it lasts — click **Sign in again** on the Status tab, then bring the sign-in to the server with a new transfer block. |
+| Browser shows "Invalid 'client_id'" during sign-in | pCloud is blocking rclone's shared access. Cancel and try again later, or use your [own pCloud app](#-own-pcloud-app-recommended). With your own app: check the client ID on the Settings tab. |
+| Browser shows "redirect_uri is not authorized" | Add `http://localhost:53682/` to the Redirect URIs of your app on pCloud. |
 | Drive letter in use | Choose another letter on the Settings tab. |
 | Quit warns about uploads | Files not yet in pCloud stay on this PC and are uploaded the next time you connect. Do not delete the cache folder in the meantime. |
 | Infuse cannot connect | `cryptbridge` on the server shows which service is not running; check ports 80/443 at your provider. |

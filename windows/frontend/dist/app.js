@@ -95,6 +95,9 @@ function render(s) {
 
   show($("status-message"), !!s.message && (s.phase === "error" || s.phase === "reconnecting"));
   $("status-message").textContent = s.message || "";
+  show($("signin-problem"), !!s.signInProblem);
+  $("signin-problem-text").textContent = s.signInProblem || "";
+  show($("signin-problem-tip"), !s.ownPCloudApp);
   show($("winfsp-missing"), !s.winFsp);
   show($("rclone-missing"), !s.rclone && s.phase === "error");
   show($("setup-needed"), s.phase === "setup");
@@ -110,6 +113,11 @@ function render(s) {
   }
 
   renderAccount(s);
+  renderApp(s);
+}
+
+function isConnected() {
+  return !!snapshot && (snapshot.phase === "connected" || snapshot.phase === "reconnecting");
 }
 
 function renderUploads(d) {
@@ -138,15 +146,20 @@ function renderUploads(d) {
   }
 }
 
+// disconnect removes the drive, asking first while uploads are running.
+// It returns false if the user chose to keep the drive.
+async function disconnect() {
+  const pending = await api.Disconnect(false);
+  if (pending === 0) return true;
+  const ok = confirm(`${pending} file(s) are still being uploaded to pCloud.\n\n` +
+    "If you disconnect now, they stay on this PC and are uploaded the next time you connect.\n\nDisconnect anyway?");
+  if (ok) await api.Disconnect(true);
+  return ok;
+}
+
 $("btn-connect").addEventListener("click", () => run($("status-message"), async () => {
-  const connected = snapshot && (snapshot.phase === "connected" || snapshot.phase === "reconnecting");
-  if (!connected) return api.Connect();
-  let pending = await api.Disconnect(false);
-  if (pending > 0) {
-    const ok = confirm(`${pending} file(s) are still being uploaded to pCloud.\n\n` +
-      "If you disconnect now, they stay on this PC and are uploaded the next time you connect.\n\nDisconnect anyway?");
-    if (ok) await api.Disconnect(true);
-  }
+  if (!isConnected()) return api.Connect();
+  await disconnect();
 }));
 $("btn-open-drive").addEventListener("click", () => run($("status-message"), () => api.OpenDrive()));
 $("winfsp-download").addEventListener("click", () => api.OpenWinFspDownload());
@@ -155,21 +168,47 @@ $("winfsp-download").addEventListener("click", () => api.OpenWinFspDownload());
 
 function renderAccount(s) {
   const region = s.pcloudHost === "eapi.pcloud.com" ? "EU" : (s.pcloudHost ? "US" : "");
-  $("account-state").textContent = s.signedIn ? `Signed in (pCloud ${region} region).` : "Not signed in.";
+  const via = s.signInAppId ? "your own pCloud app" : "rclone's shared access";
+  $("account-state").textContent = s.signedIn ? `Signed in (pCloud ${region} region) through ${via}.` : "Not signed in.";
   $("btn-signin").textContent = s.signedIn ? "Sign in again" : "Sign in to pCloud";
   show($("btn-signout"), s.signedIn);
+  show($("signin-hint-shared"), !s.ownPCloudApp);
+  show($("signin-hint-own"), s.ownPCloudApp);
 }
 
-let signInLink = "";
-$("btn-signin").addEventListener("click", () => run($("vault-result"), async () => {
+// signIn runs the pCloud sign-in in the browser. A mounted drive keeps
+// using the old sign-in, so a connected drive is disconnected first and
+// connected again afterwards — also when the sign-in fails or is
+// cancelled, so that nothing is left worse than before.
+async function signIn() {
+  openTab("vault");
+  const wasConnected = isConnected();
+  if (wasConnected && !(await disconnect())) return;
+
+  let failure = null;
   show($("signin-waiting"), true);
   show($("signin-link-row"), false);
   try {
     await api.SignIn();
+  } catch (err) {
+    failure = err;
   } finally {
     show($("signin-waiting"), false);
   }
-}));
+  if (wasConnected) {
+    try {
+      await api.Connect();
+    } catch (err) {
+      failure = failure || err;
+    }
+  }
+  if (failure) throw failure;
+  setNotice($("vault-result"), "good", wasConnected ? "Signed in to pCloud. The drive is connected again." : "Signed in to pCloud.");
+}
+
+let signInLink = "";
+$("btn-signin").addEventListener("click", () => run($("vault-result"), signIn));
+$("btn-resignin").addEventListener("click", () => run($("vault-result"), signIn));
 $("btn-signin-cancel").addEventListener("click", () => api.CancelSignIn());
 $("signin-link").addEventListener("click", () => signInLink && api.OpenURL(signInLink));
 $("btn-signout").addEventListener("click", () => run($("vault-result"), async () => {
@@ -359,12 +398,71 @@ async function loadSettings() {
   $("opt-autoreconnect").checked = snapshot.autoReconnect;
   $("opt-autostart").checked = await api.AutostartEnabled();
   $("settings-result").textContent = "";
+  loadAppFields();
 }
 
 $("btn-browse-cache").addEventListener("click", async () => {
   const folder = await api.ChooseFolder($("opt-cache-dir").value);
   if (folder) $("opt-cache-dir").value = folder;
 });
+
+// ---------- own pCloud app ----------
+
+function renderApp(s) {
+  let state = "rclone's shared access (no own app saved).";
+  if (s.ownPCloudApp && s.signedIn && s.signInAppId === s.pcloudClientId) {
+    state = `Your own pCloud app (client ID ${s.pcloudClientId}).`;
+  } else if (s.ownPCloudApp && s.signedIn) {
+    state = `Your own app (client ID ${s.pcloudClientId}) is saved, but the current sign-in was made without it. ` +
+      "Sign in again to use it.";
+  } else if (s.ownPCloudApp) {
+    state = `Your own app (client ID ${s.pcloudClientId}) is saved and is used when you sign in.`;
+  }
+  $("app-state").textContent = state;
+  show($("btn-remove-app"), s.ownPCloudApp);
+}
+
+function loadAppFields() {
+  $("app-client-id").value = snapshot.pcloudClientId || "";
+  $("app-client-secret").value = "";
+  $("app-client-secret").type = "password";
+  $("app-client-secret").placeholder = snapshot.ownPCloudApp ? "saved — enter it again only to change it" : "";
+  show($("app-result"), false);
+}
+
+$("btn-save-app").addEventListener("click", () => run($("app-result"), async () => {
+  await api.SetPCloudApp($("app-client-id").value, $("app-client-secret").value);
+  render(await api.GetSnapshot()); // the snapshot event may arrive only after this
+  loadAppFields();
+  if (!snapshot.signedIn) {
+    setNotice($("app-result"), "good", "Saved. Your app is used when you sign in on the Vault tab.");
+    return;
+  }
+  if (confirm("Your pCloud app is saved.\n\nSign in again now, so that CryptBridge uses it? " +
+      "If the drive is connected, it is disconnected for the sign-in and connected again afterwards.")) {
+    await signIn();
+    return;
+  }
+  setNotice($("app-result"), "good", "Saved. CryptBridge uses your app from the next sign-in (Vault tab → Sign in again).");
+}));
+
+$("btn-remove-app").addEventListener("click", () => run($("app-result"), async () => {
+  if (!confirm("Use rclone's shared access again instead of your own pCloud app?\n\n" +
+      "Your current sign-in keeps working; the shared access is used from the next sign-in.")) return;
+  await api.SetPCloudApp("", "");
+  render(await api.GetSnapshot());
+  loadAppFields();
+  setNotice($("app-result"), "info", "Removed. The next sign-in uses rclone's shared access.");
+}));
+
+// The page is not selectable, so texts to paste into pCloud's form have a
+// Copy button. Line breaks of the HTML source are not part of the text.
+document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+  await api.CopyText($(b.dataset.copy).textContent.replace(/\s+/g, " ").trim());
+  const label = b.dataset.label || (b.dataset.label = b.textContent);
+  b.textContent = "Copied";
+  setTimeout(() => { b.textContent = label; }, 1500);
+}));
 
 $("btn-save-settings").addEventListener("click", () => run(null, async () => {
   const result = $("settings-result");
@@ -397,6 +495,8 @@ async function init() {
   window.runtime.EventsOn("download-progress", (pct) => { $("download-fill").style.width = pct + "%"; });
   applyMode();
   $("vault-folder").value = "CryptBridge";
+  const redirectURL = await api.PCloudRedirectURL();
+  document.querySelectorAll(".redirect-url").forEach((el) => { el.textContent = redirectURL; });
   const s = await api.GetSnapshot();
   render(s);
   if (s.phase === "setup") openTab("vault");

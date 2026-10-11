@@ -74,8 +74,9 @@ func (e *Engine) Fingerprint() string {
 	return e.fingerprint
 }
 
-// SignIn opens the pCloud sign-in in the browser, finds the account's
-// region and stores the sign-in.
+// SignIn opens the pCloud sign-in in the browser (through the user's own
+// pCloud app, if one is set), finds the account's region and stores the
+// sign-in.
 func (e *Engine) SignIn(ctx context.Context, onLink func(string)) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
@@ -86,8 +87,9 @@ func (e *Engine) SignIn(ctx context.Context, onLink func(string)) error {
 
 	e.mu.Lock()
 	exe := e.rclone.Path
+	app := e.settings.PCloudApp
 	e.mu.Unlock()
-	token, err := pcloud.Authorize(ctx, exe, onLink)
+	token, err := pcloud.Authorize(ctx, exe, app, onLink)
 	if err != nil {
 		return err
 	}
@@ -102,6 +104,8 @@ func (e *Engine) SignIn(ctx context.Context, onLink func(string)) error {
 
 	e.mu.Lock()
 	e.settings.PCloud = account
+	e.settings.SignInAppID = app.ClientID
+	e.signInProblem = "" // FindRegion has just seen pCloud accept it
 	s := e.settings
 	e.mu.Unlock()
 	e.lastUsage = time.Time{} // ask pCloud for the free space right away
@@ -132,13 +136,41 @@ func (e *Engine) SignOut(ctx context.Context) error {
 
 	e.mu.Lock()
 	e.settings.PCloud = pcloud.Account{}
+	e.settings.SignInAppID = ""
 	e.usage = nil
+	e.signInProblem = ""
 	s := e.settings
 	e.mu.Unlock()
 	if err := settings.Save(e.paths.SettingsFile, s); err != nil {
 		return err
 	}
 	e.settlePhaseLocked(ctx, false)
+	return nil
+}
+
+// SetPCloudApp stores the codes of the user's own pCloud app; empty codes
+// mean rclone's built-in app again. It takes effect with the next sign-in;
+// the current sign-in keeps working until then, so the drive may stay
+// connected.
+func (e *Engine) SetPCloudApp(clientID, clientSecret string) error {
+	app, err := pcloud.NewApp(clientID, clientSecret)
+	if err != nil {
+		return err
+	}
+	e.actionMu.Lock()
+	defer e.actionMu.Unlock()
+
+	e.mu.Lock()
+	updated := e.settings
+	e.mu.Unlock()
+	updated.PCloudApp = app
+	if err := settings.Save(e.paths.SettingsFile, updated); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.settings = updated
+	e.mu.Unlock()
+	e.publish()
 	return nil
 }
 
@@ -150,7 +182,8 @@ func (e *Engine) FindVaults(ctx context.Context) ([]vault.Candidate, error) {
 	if err != nil {
 		return nil, err
 	}
-	return vault.Detect(ctx, client, pcloudRemote+":")
+	candidates, err := vault.Detect(ctx, client, pcloudRemote+":")
+	return candidates, e.explain(err)
 }
 
 // VaultCheck is the result of testing keys against a folder.
@@ -167,7 +200,8 @@ func (e *Engine) CheckVault(ctx context.Context, cfg vault.Config) (VaultCheck, 
 	if err != nil {
 		return VaultCheck{}, err
 	}
-	return checkVault(ctx, client, cfg)
+	check, err := checkVault(ctx, client, cfg)
+	return check, e.explain(err)
 }
 
 func checkVault(ctx context.Context, client *rcd.Client, cfg vault.Config) (VaultCheck, error) {
@@ -198,7 +232,7 @@ func (e *Engine) UseVault(ctx context.Context, cfg vault.Config, create, acceptU
 	}
 	check, err := checkVault(ctx, client, cfg)
 	if err != nil {
-		return check, err
+		return check, e.explain(err)
 	}
 
 	verdict := check.Verification.Verdict

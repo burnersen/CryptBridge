@@ -18,6 +18,8 @@ import (
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
+	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
 )
@@ -32,15 +34,7 @@ func TestLiveLifecycle(t *testing.T) {
 		t.Skip("no free drive letter")
 	}
 	letter := free[len(free)-2] // leave Z: alone if it is free
-	root := t.TempDir()
-	paths := appdir.Paths{
-		SettingsFile: filepath.Join(root, "roaming", "settings.dat"),
-		StateFile:    filepath.Join(root, "local", "run", "rcd.json"),
-		LogDir:       filepath.Join(root, "local", "logs"),
-		RcloneLog:    filepath.Join(root, "local", "logs", "rclone.log"),
-		CacheDir:     filepath.Join(root, "local", "cache"),
-		BinDir:       filepath.Join(root, "local", "bin"),
-	}
+	paths := testPaths(t.TempDir())
 	s := settings.Defaults(paths.CacheDir)
 	s.PCloud = account
 	s.Vault = vaultCfg
@@ -134,6 +128,113 @@ func TestLiveLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(letter + `:\`); err == nil {
 		t.Fatalf("drive %s: still there after shutdown", letter)
+	}
+}
+
+// TestLiveSignInProblem plays the outage of 2026-10-05 against the real test
+// vault: pCloud refuses the sign-in while the drive is connected, and later
+// accepts it again. The refusal is simulated by giving the running rclone a
+// sign-in that pCloud rejects; the stored sign-in is not touched.
+func TestLiveSignInProblem(t *testing.T) {
+	_, account, vaultCfg := testenv.Live(t)
+	free, err := drive.FreeLetters()
+	if err != nil || len(free) == 0 {
+		t.Skip("no free drive letter")
+	}
+	letter := free[len(free)-2]
+	paths := testPaths(t.TempDir())
+	s := settings.Defaults(paths.CacheDir)
+	s.PCloud = account
+	s.Vault = vaultCfg
+	s.Drive.Letter = letter
+	if err := settings.Save(paths.SettingsFile, s); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	e := New(paths, "test")
+	if err := e.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
+	waitPhase(t, e, PhaseConnected, 60*time.Second)
+
+	// 1. pCloud starts refusing the sign-in while the drive is connected.
+	refused := pcloud.Account{Hostname: account.Hostname, Token: `{"access_token":"refused","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}`}
+	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, refused); err != nil {
+		t.Fatal(err)
+	}
+	askPCloudNow(e)
+	waitFor(t, "sign-in warning", 15*time.Second, func() bool { return e.Snapshot().SignInProblem != "" })
+	t.Logf("warning: %s", e.Snapshot().SignInProblem)
+
+	// 2. The warning must stay, and the drive must stay connected (until
+	// version 0.1.1 the next status round hid the warning after 2 s).
+	for end := time.Now().Add(3 * pollEvery); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
+		if snap := e.Snapshot(); snap.SignInProblem == "" || snap.Phase != PhaseConnected {
+			t.Fatalf("warning %q, phase %q; want the warning to stay while connected", snap.SignInProblem, snap.Phase)
+		}
+	}
+
+	// 3. A connect while pCloud refuses must not mount an empty drive, and
+	// with automatic reconnects on it keeps trying in the background.
+	if err := e.Disconnect(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Connect(ctx); !pcloud.IsSignInProblem(err) {
+		t.Fatalf("connect while refused: got %v, want a sign-in problem", err)
+	}
+	if _, err := os.Stat(letter + `:\`); err == nil {
+		t.Fatalf("drive %s: was mounted although pCloud refuses the sign-in", letter)
+	}
+	waitPhase(t, e, PhaseReconnecting, 15*time.Second)
+
+	// 4. pCloud accepts the sign-in again: the drive comes back by itself
+	// and the warning goes away.
+	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, account); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, e, PhaseConnected, 90*time.Second)
+	if problem := e.Snapshot().SignInProblem; problem != "" {
+		t.Fatalf("warning still shown after pCloud accepted the sign-in: %s", problem)
+	}
+}
+
+// clientOf returns the engine's current rclone client.
+func clientOf(e *Engine) *rcd.Client {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.client
+}
+
+// askPCloudNow makes the next status round ask pCloud right away instead of
+// waiting for the usual interval.
+func askPCloudNow(e *Engine) {
+	e.actionMu.Lock()
+	e.lastUsage = time.Time{}
+	e.actionMu.Unlock()
+}
+
+func waitFor(t *testing.T, what string, timeout time.Duration, done func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		if done() {
+			return
+		}
+	}
+	t.Fatalf("%s not seen within %s", what, timeout)
+}
+
+// testPaths puts every file of a test engine below root.
+func testPaths(root string) appdir.Paths {
+	return appdir.Paths{
+		SettingsFile: filepath.Join(root, "roaming", "settings.dat"),
+		StateFile:    filepath.Join(root, "local", "run", "rcd.json"),
+		LogDir:       filepath.Join(root, "local", "logs"),
+		RcloneLog:    filepath.Join(root, "local", "logs", "rclone.log"),
+		CacheDir:     filepath.Join(root, "local", "cache"),
+		BinDir:       filepath.Join(root, "local", "bin"),
 	}
 }
 

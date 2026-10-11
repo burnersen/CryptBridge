@@ -28,6 +28,8 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.dat")
 	want := Defaults(`C:\cache`)
 	want.PCloud = pcloud.Account{Hostname: pcloud.HostEU, Token: `{"access_token":"VERY-SECRET-TOKEN"}`}
+	want.PCloudApp = pcloud.App{ClientID: "OwnClientId", ClientSecret: "VERY-SECRET-CLIENT-SECRET"}
+	want.SignInAppID = "OwnClientId"
 	want.Vault = vault.NewDefault("Vault")
 	want.Vault.Password = "VERY-SECRET-PASSWORD"
 	want.Vault.Password2 = "VERY-SECRET-SALT"
@@ -40,7 +42,7 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"VERY-SECRET-TOKEN", "VERY-SECRET-PASSWORD", "VERY-SECRET-SALT", "Vault"} {
+	for _, secret := range []string{"VERY-SECRET-TOKEN", "VERY-SECRET-CLIENT-SECRET", "VERY-SECRET-PASSWORD", "VERY-SECRET-SALT", "Vault"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("settings file contains %q in readable form", secret)
 		}
@@ -52,6 +54,26 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("round trip changed settings:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// A file written by version 0.1.x has no own pCloud app: it must load with
+// the sign-in intact and rclone's built-in app.
+func TestLoadFileWithoutPCloudApp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.dat")
+	protected, err := protect([]byte(`{"pcloud":{"hostname":"eapi.pcloud.com","token":"OLD-TOKEN"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte{}, fileHeader...), protected...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path, `C:\cache`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PCloud.Token != "OLD-TOKEN" || got.PCloudApp.IsSet() {
+		t.Fatalf("got sign-in %+v and app %+v; want the old token and no own app", got.PCloud, got.PCloudApp)
 	}
 }
 

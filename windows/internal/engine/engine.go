@@ -38,6 +38,14 @@ const (
 	// usageEvery is how often pCloud is asked for the free space.
 	usageEvery = 5 * time.Minute
 
+	// signInRecheckEvery is how often pCloud is asked again while it refuses
+	// the sign-in: the refusal can be a passing outage at pCloud.
+	signInRecheckEvery = time.Minute
+
+	// signInCheckTimeout limits the sign-in check before connecting. If
+	// pCloud answers more slowly than this, the drive is connected anyway.
+	signInCheckTimeout = 10 * time.Second
+
 	// lostAfterFailures: so many failed health checks in a row mean the
 	// rclone process is gone (one failure may just be a busy moment).
 	lostAfterFailures = 2
@@ -72,7 +80,11 @@ type Snapshot struct {
 	Message           string         `json:"message"`
 	Version           string         `json:"version"`
 	SignedIn          bool           `json:"signedIn"`
+	SignInProblem     string         `json:"signInProblem"` // why pCloud refuses the sign-in; "" while it accepts it
 	PCloudHost        string         `json:"pcloudHost"`
+	OwnPCloudApp      bool           `json:"ownPCloudApp"`
+	PCloudClientID    string         `json:"pcloudClientId"` // not a secret; the client secret is never sent
+	SignInAppID       string         `json:"signInAppId"`    // client ID of the current sign-in; "" = rclone's app
 	Usage             *pcloud.Usage  `json:"usage"`
 	HasVault          bool           `json:"hasVault"`
 	VaultPath         string         `json:"vaultPath"`
@@ -125,6 +137,7 @@ type Engine struct {
 	wantConnected bool
 	fingerprint   string
 	usage         *pcloud.Usage
+	signInProblem string
 	phase         Phase
 	message       string
 	driveStatus   drive.Status
@@ -164,7 +177,11 @@ func (e *Engine) snapshotLocked() Snapshot {
 		Message:           e.message,
 		Version:           e.version,
 		SignedIn:          s.SignedIn(),
+		SignInProblem:     e.signInProblem,
 		PCloudHost:        s.PCloud.Hostname,
+		OwnPCloudApp:      s.PCloudApp.IsSet(),
+		PCloudClientID:    s.PCloudApp.ClientID,
+		SignInAppID:       s.SignInAppID,
 		Usage:             e.usage,
 		HasVault:          s.HasVault(),
 		VaultPath:         s.Vault.NormalisedPath(),
@@ -401,6 +418,9 @@ func (e *Engine) connectLocked(ctx context.Context) error {
 		e.markConnected(status)
 		return nil
 	}
+	if err := e.checkSignInLocked(ctx, client, s); err != nil {
+		return err
+	}
 	err := drive.Mount(ctx, client, drive.Settings{
 		Remote:            vaultRemote + ":",
 		Letter:            s.Drive.Letter,
@@ -414,6 +434,28 @@ func (e *Engine) connectLocked(ctx context.Context) error {
 	status, _ := drive.ReadStatus(ctx, client, vaultRemote+":", s.Drive.Letter)
 	e.markConnected(status)
 	return nil
+}
+
+// checkSignInLocked asks pCloud whether it accepts the sign-in before the
+// drive is mounted; otherwise the drive would appear but stay empty without
+// a word of explanation. Other problems (offline, pCloud busy, a slow
+// answer) do not stop the connect: rclone copes with them, and the drive
+// works as soon as pCloud can be reached. With automatic reconnects on, a
+// refused connect is tried again in the background, so that the drive comes
+// by itself once pCloud accepts the sign-in again.
+func (e *Engine) checkSignInLocked(ctx context.Context, client *rcd.Client, s settings.Settings) error {
+	checkCtx, cancel := context.WithTimeout(ctx, signInCheckTimeout)
+	defer cancel()
+	err := e.readUsageLocked(checkCtx, client)
+	if !pcloud.IsSignInProblem(err) {
+		return nil
+	}
+	if s.AutoReconnect {
+		e.mu.Lock()
+		e.wantConnected = true
+		e.mu.Unlock()
+	}
+	return err
 }
 
 func (e *Engine) markConnected(status drive.Status) {
@@ -598,24 +640,66 @@ func (e *Engine) reconnectLocked(ctx context.Context, s settings.Settings, reaso
 	}
 }
 
-// refreshUsage asks pCloud for the free space now and then.
+// refreshUsage asks pCloud for the free space now and then — every minute
+// while pCloud refuses the sign-in, so that the warning goes away soon after
+// pCloud accepts it again. The warning is kept apart from the phase: a
+// connected drive stays "connected" and the warning stays visible.
 func (e *Engine) refreshUsage(ctx context.Context, client *rcd.Client, s settings.Settings) {
-	if !s.SignedIn() || time.Since(e.lastUsage) < usageEvery {
+	e.mu.Lock()
+	every := usageEvery
+	if e.signInProblem != "" {
+		every = signInRecheckEvery
+	}
+	e.mu.Unlock()
+	if !s.SignedIn() || time.Since(e.lastUsage) < every {
 		return
 	}
+	_ = e.readUsageLocked(ctx, client) // a refused sign-in is shown by readUsageLocked
+}
+
+// readUsageLocked asks pCloud for the free space. The answer also tells
+// whether pCloud accepts the sign-in, and the warning is set or removed
+// accordingly. The caller holds actionMu.
+func (e *Engine) readUsageLocked(ctx context.Context, client *rcd.Client) error {
 	e.lastUsage = time.Now()
 	usage, err := pcloud.ReadUsage(ctx, client, pcloudRemote+":")
-	if errors.Is(err, pcloud.ErrSignInRevoked) || errors.Is(err, pcloud.ErrSignInRejected) {
-		e.setPhase(PhaseError, err.Error())
-		return
-	}
 	if err != nil {
-		return
+		return e.explain(err)
 	}
 	e.mu.Lock()
 	e.usage = &usage
+	e.signInProblem = ""
 	e.mu.Unlock()
 	e.publish()
+	return nil
+}
+
+// explain turns pCloud's numbered errors into plain words and remembers a
+// refused sign-in, so that the window keeps showing it.
+func (e *Engine) explain(err error) error {
+	err = pcloud.Classify(err)
+	if !pcloud.IsSignInProblem(err) {
+		return err
+	}
+	advice := signInAdvice(err)
+	e.mu.Lock()
+	changed := e.signInProblem != advice
+	e.signInProblem = advice
+	e.mu.Unlock()
+	if changed {
+		e.publish()
+	}
+	return err
+}
+
+// signInAdvice says what a refused sign-in means and what helps.
+func signInAdvice(err error) string {
+	if errors.Is(err, pcloud.ErrSignInRevoked) {
+		return err.Error() + `. This follows a password change or "log out of all devices" — but pCloud has also ` +
+			"caused it during outages that ended by themselves. CryptBridge asks pCloud again every minute and " +
+			"removes this message as soon as the sign-in works again. If it lasts, sign in again."
+	}
+	return err.Error() + ". Please sign in again."
 }
 
 // rotateLog moves an oversized log aside so that it cannot grow forever.

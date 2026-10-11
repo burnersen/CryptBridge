@@ -42,6 +42,8 @@ type Drive struct {
 // Settings is everything CryptBridge remembers.
 type Settings struct {
 	PCloud        pcloud.Account `json:"pcloud"`
+	PCloudApp     pcloud.App     `json:"pcloudApp"`   // empty: rclone's built-in app
+	SignInAppID   string         `json:"signInAppId"` // client ID the sign-in was made with; empty: rclone's app
 	Vault         vault.Config   `json:"vault"`
 	Drive         Drive          `json:"drive"`
 	AutoConnect   bool           `json:"autoConnect"`   // connect the drive when CryptBridge starts

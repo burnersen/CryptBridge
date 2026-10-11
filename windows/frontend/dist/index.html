@@ -32,6 +32,14 @@
     <!-- ===== Status ===== -->
     <section id="tab-status" class="tab-page active">
       <div class="notice error hidden" id="status-message"></div>
+      <div class="notice warn hidden" id="signin-problem">
+        <div id="signin-problem-text"></div>
+        <div class="row">
+          <button class="primary" id="btn-resignin">Sign in again</button>
+          <span class="muted hidden" id="signin-problem-tip">Tip: your own pCloud app makes CryptBridge independent
+            of rclone's shared access — <button class="link" data-goto="settings">set it up in Settings</button>.</span>
+        </div>
+      </div>
       <div class="notice warn hidden" id="winfsp-missing">
         WinFsp is not installed. It lets Windows show the vault as a drive letter.
         <button class="link" id="winfsp-download">Download WinFsp</button>
@@ -99,6 +107,11 @@
           Please sign in to pCloud in the browser window that has just opened.
           <span id="signin-link-row" class="hidden">If no browser opened, <button class="link" id="signin-link">open the sign-in page</button>.</span>
           <button id="btn-signin-cancel">Cancel</button>
+          <p class="hint" id="signin-hint-shared">If the pCloud page shows “Invalid 'client_id'”, pCloud is blocking
+            rclone's shared access at the moment: click Cancel and try again later — or set up your own pCloud app in Settings.</p>
+          <p class="hint hidden" id="signin-hint-own">If the pCloud page shows “redirect_uri is not authorized”, add
+            <code class="redirect-url"></code> to the Redirect URIs of your app on pCloud. If it shows
+            “Invalid 'client_id'”, check the client ID in Settings.</p>
         </div>
       </div>
 
@@ -244,6 +257,75 @@
       <div class="row">
         <button class="primary" id="btn-save-settings">Save settings</button>
         <span id="settings-result" class="muted"></span>
+      </div>
+
+      <div class="card">
+        <h2>Own pCloud app <span class="muted">— recommended</span></h2>
+        <p class="muted">CryptBridge signs in to pCloud through rclone. Without an own app it uses rclone's shared
+          access, which pCloud has blocked for hours at a time before (most recently on 5 October 2026). With your own
+          app, CryptBridge no longer depends on it. Your vault stays exactly as it is — same keys, same files;
+          you only sign in once more.</p>
+        <div class="label">In use now</div>
+        <div class="value" id="app-state">rclone's shared access</div>
+
+        <details>
+          <summary>How to get your own pCloud app (once; pCloud has to approve it)</summary>
+          <ol class="steps">
+            <li>Open <button class="link" data-url="https://docs.pcloud.com/my_apps/">My Apps on pCloud</button>,
+              log in with your pCloud account and request a new application.</li>
+            <li>Fill in the request exactly like this, then click <strong>Create request</strong>:
+              <table class="form-guide">
+                <tr><th>App name</th><td><span class="copy-text" id="guide-name">CryptBridge (personal)</span>
+                  <button class="link" data-copy="guide-name">Copy</button></td></tr>
+                <tr><th>Application Type</th><td><strong>Personal use</strong></td></tr>
+                <tr><th>Folder access</th><td><strong>All folders</strong> — your vault is a normal folder in your pCloud</td></tr>
+                <tr><th>Write access</th><td><strong>Yes</strong> — needed to upload files</td></tr>
+                <tr><th>Website</th><td><span class="copy-text" id="guide-website">https://github.com/burnersen/CryptBridge</span>
+                  <button class="link" data-copy="guide-website">Copy</button></td></tr>
+                <tr><th>Expected number of users</th><td><strong>1</strong></td></tr>
+                <tr><th>Reason</th><td><span class="copy-text" id="guide-reason">Personal use only. I use the open-source tool
+                  CryptBridge (https://github.com/burnersen/CryptBridge), which is based on rclone, to access my own pCloud
+                  account: it shows an encrypted folder of my pCloud as a drive on my own computers. Only my own pCloud
+                  account will use this app. It needs access to all folders because my existing encrypted folders are not
+                  inside an app folder, and write access to upload my files.</span>
+                  <button class="link" data-copy="guide-reason">Copy</button></td></tr>
+              </table></li>
+            <li>Wait until pCloud approves the app. This can take a while — so request it now, before you need it.</li>
+            <li>Open the approved app on My Apps and add this address under <strong>Redirect URIs</strong>:
+              <code class="copy-text redirect-url" id="guide-redirect"></code>
+              <button class="link" data-copy="guide-redirect">Copy</button><br>
+              <span class="muted">Without it, pCloud answers the sign-in with “redirect_uri is not authorized”.</span></li>
+            <li>Copy the app's <strong>Client ID</strong> and <strong>Client secret</strong> into the fields below and click
+              <strong>Save app</strong>, then sign in again when CryptBridge asks.</li>
+            <li><span class="muted">Linux server (not urgent — its sign-in keeps working until pCloud blocks rclone's shared
+              access again): create a new transfer block on the Vault tab, run <code>sudo cryptbridge setup</code> on the
+              server, answer <strong>n</strong> to “Keep the pCloud sign-in and vault keys from the last setup?” and paste
+              the block.</span></li>
+          </ol>
+        </details>
+
+        <div class="grid2">
+          <div class="field">
+            <label for="app-client-id">Client ID</label>
+            <div class="row">
+              <input id="app-client-id" type="text" spellcheck="false" autocomplete="off">
+            </div>
+          </div>
+          <div class="field">
+            <label for="app-client-secret">Client secret</label>
+            <div class="row">
+              <input id="app-client-secret" type="password" spellcheck="false" autocomplete="off">
+              <button class="icon-btn" data-reveal="app-client-secret" title="Show or hide">👁</button>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <button class="primary" id="btn-save-app">Save app</button>
+          <button id="btn-remove-app" class="hidden">Use rclone's shared access again</button>
+        </div>
+        <div id="app-result" class="notice hidden"></div>
+        <p class="hint">The codes are stored encrypted with your Windows account, like your pCloud sign-in. They are not
+          part of the transfer block: the server needs only the sign-in itself.</p>
       </div>
     </section>
 

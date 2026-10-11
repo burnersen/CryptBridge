@@ -16,6 +16,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
 	"github.com/burnersen/CryptBridge/windows/internal/engine"
+	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -116,6 +117,17 @@ func (a *App) SignOut() error {
 	return a.core.SignOut(a.coreCtx)
 }
 
+// SetPCloudApp stores the codes of the user's own pCloud app (both empty:
+// rclone's built-in app again). It takes effect with the next sign-in.
+func (a *App) SetPCloudApp(clientID, clientSecret string) error {
+	return a.core.SetPCloudApp(clientID, clientSecret)
+}
+
+// PCloudRedirectURL is the address an own pCloud app must allow.
+func (a *App) PCloudRedirectURL() string {
+	return pcloud.RedirectURL
+}
+
 // NewPassword returns a strong random password.
 func (a *App) NewPassword() (string, error) {
 	return engine.NewPassword()
@@ -212,6 +224,7 @@ func (a *App) OpenWinFspDownload() {
 func (a *App) OpenURL(url string) error {
 	for _, allowed := range []string{
 		"https://github.com/burnersen/CryptBridge",
+		"https://docs.pcloud.com/my_apps/", // where users request their own pCloud app
 		"https://winfsp.dev/",
 		"https://rclone.org/",
 		"https://www.gnu.org/licenses/",
