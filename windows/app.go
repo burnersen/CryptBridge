@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
@@ -26,6 +27,10 @@ import (
 // shutdownTimeout limits how long quitting may take (unmount + stop rclone).
 const shutdownTimeout = 30 * time.Second
 
+// sessionEndTimeout: when the user signs out, Windows ends the program a
+// few seconds after telling it.
+const sessionEndTimeout = 4 * time.Second
+
 // App connects the window and the tray icon to the engine. Its exported
 // methods are called from the window's JavaScript.
 type App struct {
@@ -33,6 +38,7 @@ type App struct {
 	paths       appdir.Paths
 	startHidden bool
 	tray        *tray
+	session     atomic.Pointer[sessionWatcher] // empty if Windows' lock messages are not available
 
 	// ctx is Wails' context (needed for dialogs and events); coreCtx lives
 	// as long as the engine should run.
@@ -63,12 +69,23 @@ func (a *App) startup(ctx context.Context) {
 	go func() {
 		if err := a.core.Start(a.coreCtx); err != nil {
 			a.showError("CryptBridge could not start", err)
+			return
 		}
+		a.askForPasswordIfWanted()
+		session, err := startSessionWatcher(a.onSessionEvent)
+		if err != nil {
+			a.showError("CryptBridge cannot notice when Windows is locked", err)
+			return
+		}
+		a.session.Store(session)
 	}()
 }
 
 // shutdown is called by Wails when the program ends.
 func (a *App) shutdown(context.Context) {
+	if session := a.session.Load(); session != nil {
+		session.stop()
+	}
 	a.tray.stop()
 	if a.stopCore != nil {
 		a.stopCore()
@@ -89,6 +106,71 @@ func (a *App) ShowWindow() {
 // GetSnapshot returns the current state for the window.
 func (a *App) GetSnapshot() engine.Snapshot {
 	return a.core.Snapshot()
+}
+
+// onSessionEvent locks CryptBridge together with Windows (Win+L, screen
+// lock, signing out) and asks for the app password when the user is back
+// and the drive was connected before.
+func (a *App) onSessionEvent(event sessionEvent) {
+	snap := a.core.Snapshot()
+	if !snap.AppLock {
+		return
+	}
+	switch event {
+	case sessionLocked:
+		if !snap.Locked {
+			_ = a.core.Lock(a.coreCtx) // problems show up in the window
+		}
+	case sessionEnding:
+		ctx, cancel := context.WithTimeout(a.coreCtx, sessionEndTimeout)
+		defer cancel()
+		_ = a.core.LockNow(ctx)
+	case sessionUnlocked:
+		a.askForPasswordIfWanted()
+	}
+}
+
+// askForPasswordIfWanted shows the window with the password field when the
+// drive is to be connected after unlocking.
+func (a *App) askForPasswordIfWanted() {
+	if snap := a.core.Snapshot(); snap.Locked && snap.UnlockConnects {
+		a.ShowWindow()
+	}
+}
+
+// Unlock opens CryptBridge with the app password.
+func (a *App) Unlock(password string) error {
+	return a.core.Unlock(a.coreCtx, password)
+}
+
+// Lock locks CryptBridge now.
+func (a *App) Lock() error {
+	return a.core.Lock(a.coreCtx)
+}
+
+// EnableLock sets the app password.
+func (a *App) EnableLock(password string) error {
+	return a.core.EnableLock(password)
+}
+
+// ChangePassword replaces the app password.
+func (a *App) ChangePassword(oldPassword, newPassword string) error {
+	return a.core.ChangePassword(oldPassword, newPassword)
+}
+
+// DisableLock turns the app lock off.
+func (a *App) DisableLock(password string) error {
+	return a.core.DisableLock(password)
+}
+
+// DeclineLock: the user does not want an app password now.
+func (a *App) DeclineLock() error {
+	return a.core.DeclineLock()
+}
+
+// ResetApp forgets sign-in, keys and app password (forgotten app password).
+func (a *App) ResetApp() error {
+	return a.core.Reset(a.coreCtx)
 }
 
 // SignIn opens the pCloud sign-in in the browser and waits for it. The link
@@ -278,6 +360,10 @@ func (a *App) quitFromTray() {
 // toggleFromTray connects or disconnects, asking before interrupting uploads.
 func (a *App) toggleFromTray() {
 	snap := a.core.Snapshot()
+	if snap.Locked {
+		a.ShowWindow() // the window asks for the app password
+		return
+	}
 	if snap.Phase != engine.PhaseConnected && snap.Phase != engine.PhaseReconnecting {
 		if err := a.Connect(); err != nil {
 			a.showError("Could not connect the drive", err)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
 )
 
@@ -30,8 +31,18 @@ func TestSeedDevProfile(t *testing.T) {
 	if letter := os.Getenv("CRYPTBRIDGE_SEED_LETTER"); letter != "" {
 		s.Drive.Letter = letter
 	}
+	// CRYPTBRIDGE_SEED_APP_PASSWORD turns the app lock on with that password.
+	var key *passlock.Key
+	if password := os.Getenv("CRYPTBRIDGE_SEED_APP_PASSWORD"); password != "" {
+		var err error
+		if key, err = passlock.NewKey(password); err != nil {
+			t.Fatal(err)
+		}
+		s.AppLock = true
+		s.LockOffered = true
+	}
 	path := filepath.Join(profile, "CryptBridge", "settings.dat")
-	if err := Save(path, s); err != nil {
+	if err := Save(path, s, key); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("wrote %s", path)

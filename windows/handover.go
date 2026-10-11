@@ -26,8 +26,12 @@ type TransferResult struct {
 }
 
 // CreateTransfer packs sign-in and vault keys into an encrypted block for
-// the Linux setup. Each call makes a new code.
-func (a *App) CreateTransfer() (TransferResult, error) {
+// the Linux setup. Each call makes a new code. With the app lock on, the
+// app password is asked for again, as the block hands the keys on.
+func (a *App) CreateTransfer(appPassword string) (TransferResult, error) {
+	if err := a.core.VerifyPassword(appPassword); err != nil {
+		return TransferResult{}, err
+	}
 	snap := a.core.Snapshot()
 	if !snap.SignedIn || !snap.HasVault {
 		return TransferResult{}, errors.New("sign in to pCloud and choose a vault first")
@@ -84,8 +88,12 @@ type SheetData struct {
 }
 
 // EmergencySheet returns the data for the printable emergency sheet. It is
-// only rendered in the window for printing and never written to disk.
-func (a *App) EmergencySheet() (SheetData, error) {
+// only rendered in the window for printing and never written to disk. With
+// the app lock on, the app password is asked for again.
+func (a *App) EmergencySheet(appPassword string) (SheetData, error) {
+	if err := a.core.VerifyPassword(appPassword); err != nil {
+		return SheetData{}, err
+	}
 	snap := a.core.Snapshot()
 	if !snap.HasVault {
 		return SheetData{}, errors.New("choose a vault first")

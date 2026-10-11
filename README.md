@@ -44,7 +44,9 @@ if the codes match, the keys match.
 - **Emergency sheet.** One printable page with everything needed to open the vault again — even
   without CryptBridge, with plain rclone.
 - **Your keys stay yours.** On Windows the settings file is encrypted with your Windows account
-  (DPAPI) and rclone keeps its configuration in memory only. On the server, keys are readable only by
+  (DPAPI) and rclone keeps its configuration in memory only. With the optional
+  [app lock](#-app-lock-recommended), sign-in and keys are also sealed with a password of your own, and
+  CryptBridge locks itself together with Windows. On the server, keys are readable only by
   your user. Infuse gets read-only access, so a guessed or stolen Infuse password cannot delete
   anything; repeated wrong passwords are blocked by fail2ban.
 - **Uploads are never cut off silently.** Copying to the drive is fast because files land in a local
@@ -76,7 +78,7 @@ if the codes match, the keys match.
 4. **Status tab → Connect.** The vault appears as drive `Z:`.
 
 The tray icon shows the state at a glance: **green** connected · **amber** working or uploading
-(do not switch the PC off) · **red** problem · **grey** disconnected.
+(do not switch the PC off) · **red** problem · **grey** disconnected or locked.
 Closing the window keeps CryptBridge running; **Quit** is in the tray menu.
 
 ### Settings
@@ -84,6 +86,32 @@ Closing the window keeps CryptBridge running; **Quit** is in the tray menu.
 Drive letter, cache folder and size, *start with Windows*, *connect on start* and *reconnect
 automatically* are on the **Settings** tab. The cache folder needs room for the largest file you copy
 to the drive at once.
+
+### 🔒 App lock (recommended)
+
+Without it, anyone who uses your Windows account — or sits at your unlocked PC — can open the drive and
+the emergency sheet: Windows decrypts CryptBridge's settings for everyone signed in to that account.
+With an **app password** (Settings → *App lock*; CryptBridge offers it once after setup):
+
+- CryptBridge **starts locked** and asks for the app password once after Windows starts. With *connect
+  on start*, the window with the password field appears by itself.
+- It **locks itself again with Windows** — `Win+L`, the automatic screen lock, signing out — and asks
+  again when you are back (if the drive was connected).
+- **Locked means nothing readable is left behind:** the drive is closed (running uploads are finished
+  first; when you sign out there is no time for that — waiting files stay in the cache and are uploaded
+  after the next unlock), rclone is stopped, the cache with readable copies of recently used files and
+  rclone's log are deleted, and sign-in and keys exist only sealed with the app password (Argon2id +
+  AES-256, inside the Windows encryption).
+- The **emergency sheet** and the **transfer block** ask for the app password again.
+- Wrong passwords make the next try wait longer (up to 30 seconds).
+
+**Forgot the app password?** It cannot be recovered, but your files are not lost: *Forgot the app
+password? → Reset CryptBridge* on the lock screen, then sign in to pCloud again and open the vault with
+password and salt from your **emergency sheet**.
+
+What the app lock cannot cover: Windows itself remembers recently opened file names and preview
+pictures, and deleted files can be recovered from an unencrypted disk. Turn on **BitLocker** for the
+disk with the cache folder, and lock Windows when you leave the PC.
 
 ### 🔑 Own pCloud app (recommended)
 

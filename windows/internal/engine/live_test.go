@@ -12,12 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
+	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
@@ -39,7 +41,7 @@ func TestLiveLifecycle(t *testing.T) {
 	s.PCloud = account
 	s.Vault = vaultCfg
 	s.Drive.Letter = letter
-	if err := settings.Save(paths.SettingsFile, s); err != nil {
+	if err := settings.Save(paths.SettingsFile, s, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,7 +149,7 @@ func TestLiveSignInProblem(t *testing.T) {
 	s.PCloud = account
 	s.Vault = vaultCfg
 	s.Drive.Letter = letter
-	if err := settings.Save(paths.SettingsFile, s); err != nil {
+	if err := settings.Save(paths.SettingsFile, s, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -199,6 +201,131 @@ func TestLiveSignInProblem(t *testing.T) {
 	if problem := e.Snapshot().SignInProblem; problem != "" {
 		t.Fatalf("warning still shown after pCloud accepted the sign-in: %s", problem)
 	}
+}
+
+// TestLiveAppLock plays the app lock against the real test vault: locked
+// start, wrong and right password, locking while an upload runs (the drive
+// waits for it), and locking without waiting, as when signing out of
+// Windows (the file stays in the cache and is uploaded after unlocking).
+func TestLiveAppLock(t *testing.T) {
+	_, account, vaultCfg := testenv.Live(t)
+	free, err := drive.FreeLetters()
+	if err != nil || len(free) == 0 {
+		t.Skip("no free drive letter")
+	}
+	letter := free[len(free)-2]
+	paths := testPaths(t.TempDir())
+	const appPassword = "test app password"
+	s := settings.Defaults(paths.CacheDir)
+	s.PCloud = account
+	s.Vault = vaultCfg
+	s.Drive.Letter = letter
+	s.AppLock = true
+	key, err := passlock.NewKey(appPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Save(paths.SettingsFile, s, key); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	t.Cleanup(func() { removeTestFiles(t) })
+
+	// 1. Locked start: nothing known, nothing running.
+	e := New(paths, "test")
+	if err := e.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
+	if snap := e.Snapshot(); !snap.Locked || snap.Phase != PhaseLocked || snap.SignedIn || snap.HasVault || clientOf(e) != nil {
+		t.Fatalf("start: %+v; want locked without secrets and without rclone", snap)
+	}
+	if err := e.Connect(ctx); !errors.Is(err, errLocked) {
+		t.Fatalf("connect while locked: got %v", err)
+	}
+
+	// 2. A wrong password makes the next try wait.
+	if err := e.Unlock(ctx, "wrong password"); err == nil {
+		t.Fatal("wrong password accepted")
+	}
+	if err := e.Unlock(ctx, appPassword); err == nil || !e.isLocked() {
+		t.Fatalf("right password right after a wrong one: got %v, want a pause", err)
+	}
+	time.Sleep(unlockPause(1) + 100*time.Millisecond)
+	if err := e.Unlock(ctx, appPassword); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, e, PhaseConnected, 60*time.Second) // "connect on start" is on
+
+	// 3. Lock while an upload runs: the drive stays until it is done.
+	name := fmt.Sprintf("engine-test-%d.bin", time.Now().UnixNano())
+	if err := os.WriteFile(letter+`:\`+name, make([]byte, 8<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := os.ReadFile(filepath.Join(paths.CacheDir, "vfsMeta", vaultRemote, name))
+	t.Logf("cache marker right after writing: %s (err %v)", strings.Join(strings.Fields(string(meta)), " "), err)
+	if err := e.Lock(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snap := e.Snapshot(); !snap.Locked || snap.SignedIn || snap.HasVault {
+		t.Fatalf("right after Lock: %+v; want the secrets gone at once", snap)
+	}
+	t.Logf("right after Lock: %q", e.Snapshot().Message)
+	waitFor(t, "drive closed, rclone stopped", 3*time.Minute, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return !e.closing && e.client == nil
+	})
+	if _, err := os.Stat(letter + `:\`); err == nil {
+		t.Fatalf("drive %s: still there after locking", letter)
+	}
+	if _, err := rcd.Attach(ctx, paths.StateFile); err == nil {
+		t.Fatal("rclone still running after locking")
+	}
+	for _, path := range []string{filepath.Join(paths.CacheDir, "vfs", vaultRemote), paths.RcloneLog} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s still there after locking", path)
+		}
+	}
+
+	// 4. Unlock: the drive comes back with the uploaded file.
+	if err := e.Unlock(ctx, appPassword); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, e, PhaseConnected, 60*time.Second)
+	if _, err := os.Stat(letter + `:\` + name); err != nil {
+		t.Fatalf("file uploaded before locking is missing: %v", err)
+	}
+
+	// 5. Lock without waiting (signing out): the new file stays in the
+	// cache, nothing is deleted, and it is uploaded after unlocking.
+	late := fmt.Sprintf("engine-test-%d.bin", time.Now().UnixNano())
+	if err := os.WriteFile(letter+`:\`+late, make([]byte, 8<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LockNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("after LockNow: %q", e.Snapshot().Message)
+	if _, err := os.Stat(filepath.Join(paths.CacheDir, "vfs", vaultRemote, late)); err != nil {
+		t.Fatalf("waiting file was not kept in the cache: %v", err)
+	}
+	if err := e.Unlock(ctx, appPassword); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, e, PhaseConnected, 60*time.Second)
+	waitUploadsDone(t, e, 2*time.Minute)
+	out, err := exec.Command("rclone", "--config", os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF"), "lsf", "cbvault:", "--include", late).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != late {
+		t.Fatalf("file held back by LockNow is not in pCloud after unlocking: %q %v", out, err)
+	}
+	for _, n := range []string{name, late} {
+		if err := os.Remove(letter + `:\` + n); err != nil {
+			t.Errorf("remove %s: %v", n, err)
+		}
+	}
+	waitUploadsDone(t, e, time.Minute)
 }
 
 // clientOf returns the engine's current rclone client.

@@ -6,10 +6,12 @@ package settings
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
@@ -35,7 +37,7 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	want.Vault.Password2 = "VERY-SECRET-SALT"
 	want.Drive.Letter = "X"
 
-	if err := Save(path, want); err != nil {
+	if err := Save(path, want, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -54,6 +56,73 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("round trip changed settings:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// With the app lock on, the secrets must not be readable even inside the
+// DPAPI layer, which anyone signed in to the Windows account can open.
+func TestAppLockSealsSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.dat")
+	want := Defaults(`C:\cache`)
+	want.PCloud = pcloud.Account{Hostname: pcloud.HostEU, Token: `{"access_token":"VERY-SECRET-TOKEN"}`}
+	want.PCloudApp = pcloud.App{ClientID: "OwnClientId", ClientSecret: "VERY-SECRET-CLIENT-SECRET"}
+	want.Vault = vault.NewDefault("SecretFolderName")
+	want.Vault.Password = "VERY-SECRET-PASSWORD"
+	want.Vault.Password2 = "VERY-SECRET-SALT"
+	want.Drive.Letter = "X"
+	want.AppLock = true
+	want.LockOffered = true
+
+	if err := Save(path, want, nil); !errors.Is(err, ErrNeedsKey) {
+		t.Fatalf("save without key: got %v, want ErrNeedsKey", err)
+	}
+	key, err := passlock.NewKey("app password for the test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, want, key); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := unprotect(raw[len(fileHeader):]) // what DPAPI shows anyone in the account
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"VERY-SECRET-TOKEN", "VERY-SECRET-CLIENT-SECRET", "OwnClientId", "VERY-SECRET-PASSWORD", "VERY-SECRET-SALT", "SecretFolderName"} {
+		if bytes.Contains(inner, []byte(secret)) {
+			t.Fatalf("%q readable behind DPAPI although the app lock is on", secret)
+		}
+	}
+
+	locked, err := Load(path, `C:\other`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !locked.AppLock || locked.SignedIn() || locked.HasVault() || locked.Drive.Letter != "X" {
+		t.Fatalf("locked load: %+v; want drive settings only", locked)
+	}
+	if _, _, err := Unlock(path, `C:\other`, "wrong password!"); !errors.Is(err, passlock.ErrWrongPassword) {
+		t.Fatalf("wrong password: got %v", err)
+	}
+	got, gotKey, err := Unlock(path, `C:\other`, "app password for the test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("unlock changed settings:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Changes saved with the key from Unlock open with the same password.
+	got.Drive.Letter = "Y"
+	if err := Save(path, got, gotKey); err != nil {
+		t.Fatal(err)
+	}
+	if again, _, err := Unlock(path, `C:\other`, "app password for the test"); err != nil || again.Drive.Letter != "Y" || again.Vault.Password != want.Vault.Password {
+		t.Fatalf("after resave: %+v, %v", again, err)
 	}
 }
 

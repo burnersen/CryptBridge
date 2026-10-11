@@ -53,6 +53,7 @@ type Options struct {
 	RcloneExe  string   // full path of rclone.exe
 	StateFile  string   // where State is stored between starts
 	LogFile    string   // rclone's own log file
+	LogLevel   string   // rclone's --log-level; "" means INFO
 	CacheDir   string   // root of rclone's cache (the VFS cache lives below)
 	ConfigFile string   // rclone.conf; may be a path that does not exist
 	Env        []string // extra environment, e.g. RCLONE_CONFIG_<NAME>_TYPE=...
@@ -129,7 +130,11 @@ func startOnce(ctx context.Context, opts Options) (*Client, error) {
 		args = append(args, "--cache-dir", opts.CacheDir)
 	}
 	if opts.LogFile != "" {
-		args = append(args, "--log-file", opts.LogFile, "--log-level", "INFO")
+		level := opts.LogLevel
+		if level == "" {
+			level = "INFO"
+		}
+		args = append(args, "--log-file", opts.LogFile, "--log-level", level)
 	}
 	args = append(args, opts.ExtraArgs...)
 

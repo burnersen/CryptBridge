@@ -40,6 +40,15 @@
             of rclone's shared access — <button class="link" data-goto="settings">set it up in Settings</button>.</span>
         </div>
       </div>
+      <div class="notice info hidden" id="lock-offer">
+        <strong>Protect CryptBridge with an app password?</strong> Anyone who uses your Windows account could
+        otherwise open the drive and the emergency sheet. With an app password, CryptBridge starts locked, locks
+        itself again with Windows (Win+L, signing out) and leaves nothing readable behind while locked.
+        <div class="row">
+          <button class="primary" id="btn-offer-lock">Set an app password</button>
+          <button id="btn-decline-lock">Not now</button>
+        </div>
+      </div>
       <div class="notice warn hidden" id="winfsp-missing">
         WinFsp is not installed. It lets Windows show the vault as a drive letter.
         <button class="link" id="winfsp-download">Download WinFsp</button>
@@ -260,6 +269,66 @@
       </div>
 
       <div class="card">
+        <h2>App lock <span class="muted">— recommended</span></h2>
+        <p class="muted">With an app password, CryptBridge starts locked and locks itself again when you lock
+          Windows (Win+L) or sign out. Locked, the drive is closed (after running uploads are done), rclone is
+          stopped, and the cache with readable copies of your files is deleted. The pCloud sign-in and the vault
+          keys are stored sealed with the app password. The emergency sheet and the transfer block ask for it, too.</p>
+        <p class="hint">The app password is not the vault password: if you forget it, your files are not lost —
+          you set CryptBridge up again with the emergency sheet.</p>
+        <div class="label">State</div>
+        <div class="value" id="lock-state">Off</div>
+
+        <div id="lock-off">
+          <div class="grid2">
+            <div class="field">
+              <label for="lock-new">App password (at least 8 characters; a sentence of a few words is best)</label>
+              <input id="lock-new" type="password" autocomplete="new-password" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="lock-repeat">Repeat the app password</label>
+              <input id="lock-repeat" type="password" autocomplete="new-password" spellcheck="false">
+            </div>
+          </div>
+          <button class="primary" id="btn-enable-lock">Turn the app lock on</button>
+        </div>
+
+        <div id="lock-on" class="hidden">
+          <div class="row">
+            <button class="primary" id="btn-lock-now">Lock now</button>
+          </div>
+          <details>
+            <summary>Change the app password</summary>
+            <div class="grid2">
+              <div class="field">
+                <label for="lock-change-old">Current app password</label>
+                <input id="lock-change-old" type="password" autocomplete="current-password" spellcheck="false">
+              </div>
+              <div class="field"></div>
+              <div class="field">
+                <label for="lock-change-new">New app password</label>
+                <input id="lock-change-new" type="password" autocomplete="new-password" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="lock-change-repeat">Repeat the new app password</label>
+                <input id="lock-change-repeat" type="password" autocomplete="new-password" spellcheck="false">
+              </div>
+            </div>
+            <button id="btn-change-lock">Change the app password</button>
+          </details>
+          <details>
+            <summary>Turn the app lock off</summary>
+            <div class="field">
+              <label for="lock-off-password">Current app password</label>
+              <input id="lock-off-password" type="password" autocomplete="current-password" spellcheck="false">
+            </div>
+            <button id="btn-disable-lock">Turn the app lock off</button>
+          </details>
+        </div>
+        <div id="lock-result" class="notice hidden"></div>
+      </div>
+
+      <div class="card">
         <h2>Own pCloud app <span class="muted">— recommended</span></h2>
         <p class="muted">CryptBridge signs in to pCloud through rclone. Without an own app it uses rclone's shared
           access, which pCloud has blocked for hours at a time before (most recently on 5 October 2026). With your own
@@ -393,6 +462,48 @@
           <pre id="s-rclone"></pre></li>
       </ol>
       <p class="sheet-foot">CryptBridge — https://github.com/burnersen/CryptBridge</p>
+    </div>
+  </div>
+
+  <!-- Lock screen: covers everything while CryptBridge is locked. -->
+  <div id="lock-screen" class="hidden">
+    <div class="lock-box">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3z"/></svg>
+      <h1>CryptBridge is locked</h1>
+      <p class="muted" id="lock-hint">Enter your app password to open the vault.</p>
+      <div class="field">
+        <label for="unlock-password">App password</label>
+        <input id="unlock-password" type="password" autocomplete="current-password" spellcheck="false">
+      </div>
+      <div class="row">
+        <button class="primary" id="btn-unlock">Unlock</button>
+      </div>
+      <div id="unlock-result" class="notice hidden"></div>
+      <div id="lock-status" class="notice info hidden"></div>
+      <details>
+        <summary>Forgot the app password?</summary>
+        <p class="hint">The app password cannot be recovered — CryptBridge stores the keys only sealed with it.
+          Your files in pCloud are not affected: reset CryptBridge, then sign in to pCloud again and open your
+          vault with <strong>password and salt from your emergency sheet</strong>. Without the emergency sheet
+          (or the keys written down elsewhere), the vault cannot be opened again.</p>
+        <button id="btn-reset-app">Reset CryptBridge</button>
+      </details>
+    </div>
+  </div>
+
+  <!-- Asks for the app password before the keys are shown or handed on. -->
+  <div id="pw-dialog" class="hidden">
+    <div class="lock-box">
+      <h1 id="pw-title">App password</h1>
+      <p class="muted" id="pw-text"></p>
+      <div class="field">
+        <label for="pw-input">App password</label>
+        <input id="pw-input" type="password" autocomplete="current-password" spellcheck="false">
+      </div>
+      <div class="row">
+        <button class="primary" id="pw-ok">Continue</button>
+        <button id="pw-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 

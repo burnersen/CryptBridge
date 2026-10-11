@@ -19,6 +19,7 @@ import (
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
+	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
@@ -72,6 +73,7 @@ const (
 	PhaseConnected    Phase = "connected"
 	PhaseReconnecting Phase = "reconnecting"
 	PhaseError        Phase = "error"
+	PhaseLocked       Phase = "locked" // the app password is needed first
 )
 
 // Snapshot is everything a window or tray icon needs to show.
@@ -98,6 +100,10 @@ type Snapshot struct {
 	CacheDir          string         `json:"cacheDir"`
 	CacheMaxSize      string         `json:"cacheMaxSize"`
 	CacheMinFreeSpace string         `json:"cacheMinFreeSpace"`
+	AppLock           bool           `json:"appLock"`        // an app password is set
+	LockOffered       bool           `json:"lockOffered"`    // the app password was offered once
+	Locked            bool           `json:"locked"`         // the app password is needed first
+	UnlockConnects    bool           `json:"unlockConnects"` // unlocking connects the drive
 }
 
 // UploadsPendingError is returned when disconnecting or quitting would
@@ -143,11 +149,19 @@ type Engine struct {
 	driveStatus   drive.Status
 	listeners     []func(Snapshot)
 
+	// App lock (see lock.go), guarded by mu.
+	locked         bool          // no secrets in memory; the app password is needed
+	key            *passlock.Key // from the app password while unlocked; nil without app lock
+	closing        bool          // locked, but the drive stays until its uploads are done
+	unlockConnects bool          // connect the drive after unlocking
+
 	// Guarded by actionMu (the monitor holds it while checking).
-	failures      int
-	nextReconnect time.Time
-	reconnectTry  int
-	lastUsage     time.Time
+	failures       int
+	nextReconnect  time.Time
+	reconnectTry   int
+	lastUsage      time.Time
+	unlockFailures int
+	nextUnlock     time.Time
 }
 
 // New creates an engine; nothing happens until Start.
@@ -195,6 +209,10 @@ func (e *Engine) snapshotLocked() Snapshot {
 		CacheDir:          s.Drive.CacheDir,
 		CacheMaxSize:      s.Drive.CacheMaxSize,
 		CacheMinFreeSpace: s.Drive.CacheMinFreeSpace,
+		AppLock:           s.AppLock,
+		LockOffered:       s.LockOffered,
+		Locked:            e.locked,
+		UnlockConnects:    e.unlockConnects,
 	}
 }
 
@@ -231,6 +249,8 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	e.settings = loaded
 	e.winFsp = winFsp
+	e.locked = loaded.AppLock
+	e.unlockConnects = loaded.AutoConnect // the first unlock counts as the start
 	e.mu.Unlock()
 
 	go e.monitor(ctx)
@@ -241,6 +261,10 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if loaded.AppLock {
+		e.startLockedLocked(ctx)
+		return nil
+	}
 	if err := e.prepareLocked(ctx); err != nil {
 		e.setPhase(PhaseError, err.Error())
 		return nil
@@ -252,6 +276,9 @@ func (e *Engine) Start(ctx context.Context) error {
 // prepareLocked makes sure rclone runs and knows the account and vault.
 // The caller holds actionMu.
 func (e *Engine) prepareLocked(ctx context.Context) error {
+	if e.isLocked() {
+		return errLocked
+	}
 	if err := e.ensureRcloneFoundLocked(); err != nil {
 		return err
 	}
@@ -287,6 +314,10 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	client := e.client
 	exe := e.rclone.Path
 	cacheDir := e.settings.Drive.CacheDir
+	logLevel := "" // rclone's default for CryptBridge: INFO
+	if e.settings.AppLock {
+		logLevel = lockedLogLevel
+	}
 	e.mu.Unlock()
 
 	if client != nil && client.Ping(ctx) == nil {
@@ -300,6 +331,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 			RcloneExe:  exe,
 			StateFile:  e.paths.StateFile,
 			LogFile:    e.paths.RcloneLog,
+			LogLevel:   logLevel,
 			CacheDir:   cacheDir,
 			ConfigFile: "NUL", // keep the configuration in memory only
 			ExtraArgs:  []string{"--buffer-size", drive.BufferSize},
@@ -392,8 +424,12 @@ func (e *Engine) connectLocked(ctx context.Context) error {
 	e.mu.Lock()
 	s := e.settings
 	winFsp := e.winFsp
+	locked := e.locked
 	e.mu.Unlock()
 
+	if locked {
+		return errLocked
+	}
 	if !s.SignedIn() || !s.HasVault() {
 		return errors.New("sign in to pCloud and choose a vault first")
 	}
@@ -472,6 +508,9 @@ func (e *Engine) markConnected(status drive.Status) {
 func (e *Engine) Disconnect(ctx context.Context, force bool) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if e.isLocked() {
+		return nil // the lock closes the drive by itself
+	}
 	return e.disconnectLocked(ctx, force)
 }
 
@@ -545,11 +584,17 @@ func (e *Engine) Shutdown(ctx context.Context, force bool) error {
 	e.mu.Lock()
 	client := e.client
 	e.client = nil
+	appLock := e.settings.AppLock
 	e.mu.Unlock()
-	if client == nil {
-		return nil
+	if client != nil {
+		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
+			return err
+		}
 	}
-	return rcd.Stop(ctx, client, e.paths.StateFile)
+	if appLock {
+		e.wipeTraces() // quitting leaves as little behind as locking
+	}
+	return nil
 }
 
 // monitor refreshes the status and reconnects when rclone got lost.
@@ -578,8 +623,17 @@ func (e *Engine) checkOnce(ctx context.Context) {
 	want := e.wantConnected
 	s := e.settings
 	phase := e.phase
+	locked, closing := e.locked, e.closing
 	e.mu.Unlock()
 
+	if locked {
+		// Nothing to watch while locked, except a drive that still finishes
+		// its uploads before it closes.
+		if closing {
+			e.finishLockLocked(ctx, false)
+		}
+		return
+	}
 	if client == nil || client.Ping(ctx) != nil {
 		e.failures++
 		if e.failures >= lostAfterFailures && want {

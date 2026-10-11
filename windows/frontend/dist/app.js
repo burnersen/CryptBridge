@@ -71,6 +71,7 @@ const PHASES = {
   connected: ["Connected", "good"],
   reconnecting: ["Reconnecting…", "warn"],
   error: ["Problem", "bad"],
+  locked: ["Locked", ""],
 };
 
 function render(s) {
@@ -114,6 +115,7 @@ function render(s) {
 
   renderAccount(s);
   renderApp(s);
+  renderLock(s);
 }
 
 function isConnected() {
@@ -318,7 +320,9 @@ $("btn-download-rclone").addEventListener("click", () => run($("status-message")
 // ---------- transfer to the Linux server ----------
 
 $("btn-transfer").addEventListener("click", () => run($("vault-result"), async () => {
-  const t = await api.CreateTransfer();
+  const password = await askAppPassword("The transfer block hands your keys on. Please confirm with your app password.");
+  if (password === null) return;
+  const t = await api.CreateTransfer(password);
   $("transfer-code").textContent = t.code;
   $("transfer-block").value = t.block;
   $("transfer-result").textContent = "";
@@ -354,7 +358,9 @@ function rcloneCommands(d) {
 }
 
 $("btn-sheet").addEventListener("click", () => run($("vault-result"), async () => {
-  const d = await api.EmergencySheet();
+  const password = await askAppPassword("The emergency sheet shows your vault keys. Please confirm with your app password.");
+  if (password === null) return;
+  const d = await api.EmergencySheet(password);
   $("s-created").textContent = d.createdAt;
   $("s-region").textContent = `${d.region} (${d.pcloudHost})`;
   $("s-path").textContent = d.vaultPath;
@@ -399,6 +405,7 @@ async function loadSettings() {
   $("opt-autostart").checked = await api.AutostartEnabled();
   $("settings-result").textContent = "";
   loadAppFields();
+  show($("lock-result"), false);
 }
 
 $("btn-browse-cache").addEventListener("click", async () => {
@@ -481,6 +488,135 @@ $("btn-save-settings").addEventListener("click", () => run(null, async () => {
     result.textContent = errorText(err);
   }
 }));
+
+// ---------- app lock ----------
+
+let wasLocked = false;
+
+function renderLock(s) {
+  show($("lock-screen"), s.locked);
+  if (s.locked && !wasLocked) {
+    wipePage();
+    $("unlock-password").focus();
+  }
+  wasLocked = s.locked;
+
+  const letter = (s.driveLetter || "Z") + ":";
+  $("lock-hint").textContent = s.unlockConnects ?
+    `Enter your app password to open the vault. The drive ${letter} connects afterwards.` :
+    "Enter your app password to open the vault.";
+  show($("lock-status"), s.locked && !!s.message);
+  $("lock-status").textContent = s.locked ? s.message || "" : "";
+
+  show($("lock-offer"), !s.appLock && !s.lockOffered && s.hasVault && !s.locked);
+  $("lock-state").textContent = s.appLock ?
+    "On — CryptBridge locks itself with Windows and asks for the app password after starting." : "Off";
+  show($("lock-off"), !s.appLock);
+  show($("lock-on"), s.appLock);
+}
+
+// wipePage removes everything from the page that could show keys: the lock
+// screen covers the window, but the page itself must not keep them either.
+let cancelPasswordDialog = null;
+function wipePage() {
+  for (const id of ["vault-password", "vault-salt", "transfer-block", "app-client-secret", "lock-new", "lock-repeat",
+    "lock-change-old", "lock-change-new", "lock-change-repeat", "lock-off-password"]) {
+    $(id).value = "";
+  }
+  $("transfer-code").textContent = "";
+  show($("transfer-area"), false);
+  show($("vault-result"), false);
+  closeSheet();
+  if (cancelPasswordDialog) cancelPasswordDialog();
+}
+
+async function unlock() {
+  const field = $("unlock-password");
+  await run($("unlock-result"), async () => {
+    setNotice($("unlock-result"), "info", snapshot && snapshot.unlockConnects ?
+      "Unlocking and connecting the drive…" : "Unlocking…");
+    try {
+      await api.Unlock(field.value);
+      show($("unlock-result"), false);
+    } finally {
+      field.value = "";
+    }
+  });
+}
+$("btn-unlock").addEventListener("click", unlock);
+$("unlock-password").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
+
+$("btn-reset-app").addEventListener("click", () => run($("unlock-result"), async () => {
+  if (!confirm("Reset CryptBridge?\n\nThe pCloud sign-in, the vault keys and the app password are deleted " +
+      "from this PC. Your files in pCloud stay untouched.\n\nTo open your vault again you need password and salt " +
+      "from your emergency sheet.")) return;
+  if (!confirm("Really reset CryptBridge? This cannot be undone.")) return;
+  await api.ResetApp();
+}));
+
+// askAppPassword asks for the app password before keys are shown or handed
+// on. It resolves to the password, to "" without app lock, or to null if
+// the user cancels.
+function askAppPassword(text) {
+  if (!snapshot || !snapshot.appLock) return Promise.resolve("");
+  return new Promise((resolve) => {
+    const input = $("pw-input");
+    const finish = (value) => {
+      show($("pw-dialog"), false);
+      input.value = "";
+      $("pw-ok").onclick = $("pw-cancel").onclick = input.onkeydown = null;
+      cancelPasswordDialog = null;
+      resolve(value);
+    };
+    $("pw-text").textContent = text;
+    input.value = "";
+    $("pw-ok").onclick = () => finish(input.value);
+    $("pw-cancel").onclick = () => finish(null);
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") finish(input.value);
+      if (e.key === "Escape") finish(null);
+    };
+    cancelPasswordDialog = () => finish(null);
+    show($("pw-dialog"), true);
+    input.focus();
+  });
+}
+
+function takeValues(...ids) {
+  const values = ids.map((id) => $(id).value);
+  for (const id of ids) $(id).value = "";
+  return values;
+}
+
+$("btn-enable-lock").addEventListener("click", () => run($("lock-result"), async () => {
+  const [password, again] = takeValues("lock-new", "lock-repeat");
+  if (password !== again) throw "The two passwords are not the same.";
+  await api.EnableLock(password);
+  setNotice($("lock-result"), "good", "The app lock is on. CryptBridge now locks itself with Windows and asks " +
+    "for the app password after starting. Keep your emergency sheet: it opens the vault even if you forget the app password.");
+}));
+
+$("btn-change-lock").addEventListener("click", () => run($("lock-result"), async () => {
+  const [current, password, again] = takeValues("lock-change-old", "lock-change-new", "lock-change-repeat");
+  if (password !== again) throw "The two new passwords are not the same.";
+  await api.ChangePassword(current, password);
+  setNotice($("lock-result"), "good", "The app password is changed.");
+}));
+
+$("btn-disable-lock").addEventListener("click", () => run($("lock-result"), async () => {
+  const [current] = takeValues("lock-off-password");
+  if (!confirm("Turn the app lock off?\n\nCryptBridge then starts without asking and no longer locks itself with Windows.")) return;
+  await api.DisableLock(current);
+  setNotice($("lock-result"), "info", "The app lock is off.");
+}));
+
+$("btn-lock-now").addEventListener("click", () => run($("lock-result"), () => api.Lock()));
+
+$("btn-offer-lock").addEventListener("click", () => {
+  openTab("settings");
+  $("lock-new").focus();
+});
+$("btn-decline-lock").addEventListener("click", () => run($("status-message"), () => api.DeclineLock()));
 
 // ---------- start ----------
 

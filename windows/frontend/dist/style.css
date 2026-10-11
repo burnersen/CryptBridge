@@ -241,6 +241,31 @@ textarea {
 .sheet-page pre { background: #f2f2f2; padding: 8px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .sheet-foot { margin-top: 18px; color: #555; font-size: 11px; }
 
+/* Lock screen and password question: they cover the whole window, so that
+   nothing behind them can be read or clicked. */
+#lock-screen, #pw-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 20px;
+}
+#pw-dialog { z-index: 30; background: rgba(0, 0, 0, 0.75); }
+.lock-box {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+}
+.lock-box h1 { font-size: 20px; margin: 8px 0 6px; }
+.lock-box .logo { width: 36px; height: 36px; fill: var(--accent); }
+.lock-box input[type=password] { width: 100%; }
+
 @media print {
   body > *:not(#sheet) { display: none !important; }
   #sheet { position: static; padding: 0; }

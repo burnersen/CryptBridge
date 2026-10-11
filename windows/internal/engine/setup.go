@@ -52,6 +52,9 @@ func NewPassword() (string, error) {
 func (e *Engine) InstallRclone(ctx context.Context, progress prereq.Progress) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if e.isLocked() {
+		return errLocked
+	}
 	rclone, err := prereq.DownloadRclone(ctx, e.paths.BinDir, progress)
 	if err != nil {
 		return err
@@ -109,7 +112,7 @@ func (e *Engine) SignIn(ctx context.Context, onLink func(string)) error {
 	s := e.settings
 	e.mu.Unlock()
 	e.lastUsage = time.Time{} // ask pCloud for the free space right away
-	if err := settings.Save(e.paths.SettingsFile, s); err != nil {
+	if err := e.saveSettings(s); err != nil {
 		return err
 	}
 	// The vault sits on top of the account: register it again so that it
@@ -141,7 +144,7 @@ func (e *Engine) SignOut(ctx context.Context) error {
 	e.signInProblem = ""
 	s := e.settings
 	e.mu.Unlock()
-	if err := settings.Save(e.paths.SettingsFile, s); err != nil {
+	if err := e.saveSettings(s); err != nil {
 		return err
 	}
 	e.settlePhaseLocked(ctx, false)
@@ -159,12 +162,15 @@ func (e *Engine) SetPCloudApp(clientID, clientSecret string) error {
 	}
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if e.isLocked() {
+		return errLocked
+	}
 
 	e.mu.Lock()
 	updated := e.settings
 	e.mu.Unlock()
 	updated.PCloudApp = app
-	if err := settings.Save(e.paths.SettingsFile, updated); err != nil {
+	if err := e.saveSettings(updated); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -262,7 +268,7 @@ func (e *Engine) UseVault(ctx context.Context, cfg vault.Config, create, acceptU
 	e.fingerprint = check.Fingerprint
 	s := e.settings
 	e.mu.Unlock()
-	if err := settings.Save(e.paths.SettingsFile, s); err != nil {
+	if err := e.saveSettings(s); err != nil {
 		return check, err
 	}
 	e.settlePhaseLocked(ctx, false)
@@ -302,6 +308,9 @@ var sizePattern = regexp.MustCompile(`^[1-9][0-9]*[KMGT]?$`)
 func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if e.isLocked() {
+		return errLocked
+	}
 
 	letter, err := drive.NormaliseLetter(o.Letter)
 	if err != nil {
@@ -329,7 +338,7 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	updated.Drive = settings.Drive{Letter: letter, CacheDir: o.CacheDir, CacheMaxSize: o.CacheMaxSize, CacheMinFreeSpace: o.CacheMinFreeSpace}
 	updated.AutoConnect = o.AutoConnect
 	updated.AutoReconnect = o.AutoReconnect
-	if err := settings.Save(e.paths.SettingsFile, updated); err != nil {
+	if err := e.saveSettings(updated); err != nil {
 		return err
 	}
 
@@ -354,6 +363,9 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 
 // idleClientLocked returns a running rclone while the drive is not connected.
 func (e *Engine) idleClientLocked(ctx context.Context) (*rcd.Client, error) {
+	if e.isLocked() {
+		return nil, errLocked
+	}
 	e.mu.Lock()
 	connected := e.wantConnected
 	e.mu.Unlock()
@@ -370,7 +382,11 @@ func (e *Engine) idleClientLocked(ctx context.Context) (*rcd.Client, error) {
 func (e *Engine) signedInClientLocked(ctx context.Context) (*rcd.Client, error) {
 	e.mu.Lock()
 	signedIn := e.settings.SignedIn()
+	locked := e.locked
 	e.mu.Unlock()
+	if locked {
+		return nil, errLocked
+	}
 	if !signedIn {
 		return nil, errors.New("sign in to pCloud first")
 	}

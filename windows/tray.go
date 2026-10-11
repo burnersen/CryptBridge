@@ -32,6 +32,7 @@ type tray struct {
 	open    *systray.MenuItem
 	toggle  *systray.MenuItem
 	explore *systray.MenuItem
+	lock    *systray.MenuItem
 	quit    *systray.MenuItem
 }
 
@@ -64,6 +65,8 @@ func (t *tray) onReady() {
 	t.toggle = systray.AddMenuItem("Connect drive", "Connect or disconnect the vault drive")
 	t.explore = systray.AddMenuItem("Open drive", "Open the drive in Explorer")
 	t.explore.Disable()
+	t.lock = systray.AddMenuItem("Lock CryptBridge", "Close the drive and ask for the app password")
+	t.lock.Hide()
 	systray.AddSeparator()
 	t.quit = systray.AddMenuItem("Quit CryptBridge", "Disconnect the drive and quit")
 
@@ -90,6 +93,8 @@ func (t *tray) handleClicks() {
 			go t.app.toggleFromTray()
 		case <-t.explore.ClickedCh:
 			go func() { _ = t.app.OpenDrive() }()
+		case <-t.lock.ClickedCh:
+			go func() { _ = t.app.Lock() }()
 		case <-t.quit.ClickedCh:
 			go t.app.quitFromTray()
 		}
@@ -118,11 +123,15 @@ func (t *tray) update(s engine.Snapshot) {
 
 	letter := s.DriveLetter + ":"
 	connected := s.Phase == engine.PhaseConnected || s.Phase == engine.PhaseReconnecting
-	if connected {
+	switch {
+	case s.Locked:
+		t.toggle.SetTitle("Unlock…")
+		t.explore.Disable()
+	case connected:
 		t.toggle.SetTitle("Disconnect drive " + letter)
 		t.explore.SetTitle("Open drive " + letter)
 		t.explore.Enable()
-	} else {
+	default:
 		t.toggle.SetTitle("Connect drive " + letter)
 		t.explore.Disable()
 	}
@@ -130,6 +139,11 @@ func (t *tray) update(s engine.Snapshot) {
 		t.toggle.Disable()
 	} else {
 		t.toggle.Enable()
+	}
+	if s.AppLock && !s.Locked {
+		t.lock.Show()
+	} else {
+		t.lock.Hide()
 	}
 }
 
@@ -145,6 +159,8 @@ func trayState(s engine.Snapshot) (string, icon.Colour) {
 		return "busy", icon.Busy
 	case s.Phase == engine.PhaseConnected:
 		return "connected", icon.Connected
+	case s.Phase == engine.PhaseLocked && s.Drive.PendingUploads() > 0:
+		return "busy", icon.Busy // still uploading before the drive closes
 	}
 	return "disconnected", icon.Disconnected
 }
@@ -168,6 +184,11 @@ func trayText(s engine.Snapshot) string {
 		return "Problem – open CryptBridge for details"
 	case engine.PhaseStarting:
 		return "Starting…"
+	case engine.PhaseLocked:
+		if n := s.Drive.PendingUploads(); n > 0 {
+			return fmt.Sprintf("Locked, finishing %d upload(s)", n)
+		}
+		return "Locked"
 	}
 	return "Disconnected"
 }
