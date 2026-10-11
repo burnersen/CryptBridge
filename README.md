@@ -7,6 +7,9 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4)
 ![Ubuntu / Debian](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Debian-E95420)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/burnersen)
+
+**[⬇️ Download the latest release](https://github.com/burnersen/CryptBridge/releases/latest)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
 
 </div>
 
@@ -425,6 +428,15 @@ compatible with the GPLv3:
 - **MIT License:** [Wails](https://github.com/wailsapp/wails) with [go-webview2](https://github.com/wailsapp/go-webview2) and [mimetype](https://github.com/wailsapp/mimetype), [go-toast](https://git.sr.ht/~jackmordaunt/go-toast), [bep/debounce](https://github.com/bep/debounce), [go-ole](https://github.com/go-ole/go-ole), [leaanthony/go-ansi-parser](https://github.com/leaanthony/go-ansi-parser), [leaanthony/slicer](https://github.com/leaanthony/slicer), [leaanthony/u](https://github.com/leaanthony/u), [rivo/uniseg](https://github.com/rivo/uniseg), [samber/lo](https://github.com/samber/lo)
 - **Apache License 2.0:** [fyne.io/systray](https://github.com/fyne-io/systray), [tkrajina/go-reflector](https://github.com/tkrajina/go-reflector)
 - **BSD 2-Clause License:** [godbus/dbus](https://github.com/godbus/dbus), [pkg/browser](https://github.com/pkg/browser), [pkg/errors](https://github.com/pkg/errors)
-- **BSD 3-Clause License:** the [Go standard library](https://go.dev/LICENSE), [golang.org/x/net](https://github.com/golang/net), [x/sys](https://github.com/golang/sys), [x/text](https://github.com/golang/text), [google/uuid](https://github.com/google/uuid)
+- **BSD 3-Clause License:** the [Go standard library](https://go.dev/LICENSE), [golang.org/x/crypto](https://github.com/golang/crypto), [x/net](https://github.com/golang/net), [x/sys](https://github.com/golang/sys), [x/text](https://github.com/golang/text), [google/uuid](https://github.com/google/uuid)
 
 Their copyright notices and full license texts are in the repositories linked above.
+
+---
+
+## ☕ Support
+
+CryptBridge is free and made in my spare time, on my own hardware and electricity bill. If it keeps your
+files safe and your films playing and you'd like to say thanks, you can
+[buy me a coffee on Ko-fi](https://ko-fi.com/burnersen). Completely optional — and either way: thank you
+for using it!
