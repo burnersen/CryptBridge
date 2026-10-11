@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // Package engine is the heart of CryptBridge. It keeps the rclone process,
-// the pCloud sign-in, the vault and the drive together and watches over
+// the pCloud sign-in, the vaults and their drives together and watches over
 // them. It knows nothing about windows or tray icons; those only call its
 // methods and listen to its snapshots.
 package engine
@@ -26,14 +26,8 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 )
 
-// Names of the remotes in rclone's in-memory configuration.
 const (
-	pcloudRemote = "cbpcloud"
-	vaultRemote  = "cbvault"
-)
-
-const (
-	// pollEvery is how often the drive status is refreshed.
+	// pollEvery is how often the drives are looked at.
 	pollEvery = 2 * time.Second
 
 	// usageEvery is how often pCloud is asked for the free space.
@@ -53,57 +47,58 @@ const (
 
 	// maxLogSize: a larger rclone log is moved aside before rclone starts.
 	maxLogSize = 10 << 20
-
-	// volumeName is how the drive appears in Explorer: "Vault (\\CryptBridge)".
-	volumeName = `\\CryptBridge\Vault`
 )
 
 // reconnectDelays is the waiting time before each automatic reconnect
 // attempt; the last value repeats.
 var reconnectDelays = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute}
 
-// Phase is what the engine is doing, in one word.
+// Phase is what CryptBridge as a whole is doing, in one word. What each
+// drive does is its VaultState.
 type Phase string
 
 const (
-	PhaseStarting     Phase = "starting"
-	PhaseSetup        Phase = "setup" // sign-in or vault still missing
-	PhaseDisconnected Phase = "disconnected"
-	PhaseConnecting   Phase = "connecting"
-	PhaseConnected    Phase = "connected"
-	PhaseReconnecting Phase = "reconnecting"
-	PhaseError        Phase = "error"
-	PhaseLocked       Phase = "locked" // the app password is needed first
+	PhaseStarting Phase = "starting"
+	PhaseSetup    Phase = "setup" // no vault yet
+	PhaseReady    Phase = "ready"
+	PhaseError    Phase = "error"  // CryptBridge cannot work (no rclone, unreadable settings)
+	PhaseLocked   Phase = "locked" // the app password is needed first
 )
 
 // Snapshot is everything a window or tray icon needs to show.
 type Snapshot struct {
-	Phase             Phase          `json:"phase"`
-	Message           string         `json:"message"`
-	Version           string         `json:"version"`
-	SignedIn          bool           `json:"signedIn"`
-	SignInProblem     string         `json:"signInProblem"` // why pCloud refuses the sign-in; "" while it accepts it
-	PCloudHost        string         `json:"pcloudHost"`
-	OwnPCloudApp      bool           `json:"ownPCloudApp"`
-	PCloudClientID    string         `json:"pcloudClientId"` // not a secret; the client secret is never sent
-	SignInAppID       string         `json:"signInAppId"`    // client ID of the current sign-in; "" = rclone's app
-	Usage             *pcloud.Usage  `json:"usage"`
-	HasVault          bool           `json:"hasVault"`
-	VaultPath         string         `json:"vaultPath"`
-	Fingerprint       string         `json:"fingerprint"`
-	DriveLetter       string         `json:"driveLetter"`
-	Drive             drive.Status   `json:"drive"`
-	Rclone            *prereq.Rclone `json:"rclone"`
-	WinFsp            bool           `json:"winFsp"`
-	AutoConnect       bool           `json:"autoConnect"`
-	AutoReconnect     bool           `json:"autoReconnect"`
-	CacheDir          string         `json:"cacheDir"`
-	CacheMaxSize      string         `json:"cacheMaxSize"`
-	CacheMinFreeSpace string         `json:"cacheMinFreeSpace"`
-	AppLock           bool           `json:"appLock"`        // an app password is set
-	LockOffered       bool           `json:"lockOffered"`    // the app password was offered once
-	Locked            bool           `json:"locked"`         // the app password is needed first
-	UnlockConnects    bool           `json:"unlockConnects"` // unlocking connects the drive
+	Phase             Phase           `json:"phase"`
+	Message           string          `json:"message"`
+	Version           string          `json:"version"`
+	SignedIn          bool            `json:"signedIn"`
+	SignInProblem     string          `json:"signInProblem"` // why pCloud refuses the sign-in; "" while it accepts it
+	PCloudHost        string          `json:"pcloudHost"`
+	OwnPCloudApp      bool            `json:"ownPCloudApp"`
+	PCloudClientID    string          `json:"pcloudClientId"` // not a secret; the client secret is never sent
+	SignInAppID       string          `json:"signInAppId"`    // client ID of the current sign-in; "" = rclone's app
+	Usage             *pcloud.Usage   `json:"usage"`          // the pCloud account
+	Vaults            []VaultSnapshot `json:"vaults"`
+	Rclone            *prereq.Rclone  `json:"rclone"`
+	WinFsp            bool            `json:"winFsp"`
+	AutoReconnect     bool            `json:"autoReconnect"`
+	CacheDir          string          `json:"cacheDir"`
+	CacheMaxSize      string          `json:"cacheMaxSize"`
+	CacheMinFreeSpace string          `json:"cacheMinFreeSpace"`
+	Theme             string          `json:"theme"`
+	AppLock           bool            `json:"appLock"`        // an app password is set
+	LockOffered       bool            `json:"lockOffered"`    // the app password was offered once
+	Locked            bool            `json:"locked"`         // the app password is needed first
+	UnlockConnects    []string        `json:"unlockConnects"` // letters of the drives that connect after unlocking
+}
+
+// PendingUploads counts the files of all drives that are not safely in
+// their vault yet.
+func (s Snapshot) PendingUploads() int {
+	total := 0
+	for _, v := range s.Vaults {
+		total += v.Drive.PendingUploads()
+	}
+	return total
 }
 
 // UploadsPendingError is returned when disconnecting or quitting would
@@ -117,7 +112,7 @@ type UploadsPendingError struct {
 }
 
 func (e *UploadsPendingError) Error() string {
-	return fmt.Sprintf("%d file(s) are still being uploaded to pCloud", e.Count)
+	return fmt.Sprintf("%d file(s) are still being written into the vault", e.Count)
 }
 
 // settleTime is how long a disconnect waits for a second look at the
@@ -129,6 +124,7 @@ const settleTime = 1500 * time.Millisecond
 type Engine struct {
 	paths   appdir.Paths
 	version string
+	ctx     context.Context // from Start; background work ends with it
 
 	// actionMu serialises user actions and automatic reconnects, so that
 	// "connect" and "disconnect" can never run at the same time.
@@ -140,25 +136,21 @@ type Engine struct {
 	rclone        *prereq.Rclone
 	winFsp        bool
 	client        *rcd.Client
-	wantConnected bool
-	fingerprint   string
 	usage         *pcloud.Usage
 	signInProblem string
 	phase         Phase
 	message       string
-	driveStatus   drive.Status
+	vaults        map[string]*vaultRuntime // by vault ID
 	listeners     []func(Snapshot)
 
 	// App lock (see lock.go), guarded by mu.
 	locked         bool          // no secrets in memory; the app password is needed
 	key            *passlock.Key // from the app password while unlocked; nil without app lock
-	closing        bool          // locked, but the drive stays until its uploads are done
-	unlockConnects bool          // connect the drive after unlocking
+	closing        bool          // locked, but drives stay until their uploads are done
+	unlockConnects []string      // IDs of the vaults to connect after unlocking
 
 	// Guarded by actionMu (the monitor holds it while checking).
 	failures       int
-	nextReconnect  time.Time
-	reconnectTry   int
 	lastUsage      time.Time
 	unlockFailures int
 	nextUnlock     time.Time
@@ -166,7 +158,7 @@ type Engine struct {
 
 // New creates an engine; nothing happens until Start.
 func New(paths appdir.Paths, version string) *Engine {
-	return &Engine{paths: paths, version: version, phase: PhaseStarting}
+	return &Engine{paths: paths, version: version, phase: PhaseStarting, vaults: map[string]*vaultRuntime{}, ctx: context.Background()}
 }
 
 // Subscribe registers a function that receives every new snapshot. It is
@@ -186,7 +178,7 @@ func (e *Engine) Snapshot() Snapshot {
 
 func (e *Engine) snapshotLocked() Snapshot {
 	s := e.settings
-	return Snapshot{
+	snap := Snapshot{
 		Phase:             e.phase,
 		Message:           e.message,
 		Version:           e.version,
@@ -197,23 +189,26 @@ func (e *Engine) snapshotLocked() Snapshot {
 		PCloudClientID:    s.PCloudApp.ClientID,
 		SignInAppID:       s.SignInAppID,
 		Usage:             e.usage,
-		HasVault:          s.HasVault(),
-		VaultPath:         s.Vault.NormalisedPath(),
-		Fingerprint:       e.fingerprint,
-		DriveLetter:       s.Drive.Letter,
-		Drive:             e.driveStatus,
+		Vaults:            make([]VaultSnapshot, 0, len(s.Vaults)),
 		Rclone:            e.rclone,
 		WinFsp:            e.winFsp,
-		AutoConnect:       s.AutoConnect,
 		AutoReconnect:     s.AutoReconnect,
-		CacheDir:          s.Drive.CacheDir,
-		CacheMaxSize:      s.Drive.CacheMaxSize,
-		CacheMinFreeSpace: s.Drive.CacheMinFreeSpace,
+		CacheDir:          s.Cache.Dir,
+		CacheMaxSize:      s.Cache.MaxSize,
+		CacheMinFreeSpace: s.Cache.MinFreeSpace,
+		Theme:             s.Theme,
 		AppLock:           s.AppLock,
 		LockOffered:       s.LockOffered,
 		Locked:            e.locked,
-		UnlockConnects:    e.unlockConnects,
+		UnlockConnects:    []string{},
 	}
+	for _, v := range s.Vaults {
+		snap.Vaults = append(snap.Vaults, e.vaultSnapshotLocked(v))
+		if slices.Contains(e.unlockConnects, v.ID) {
+			snap.UnlockConnects = append(snap.UnlockConnects, v.Letter)
+		}
+	}
+	return snap
 }
 
 // setPhase changes phase and message and tells every listener.
@@ -236,27 +231,40 @@ func (e *Engine) publish() {
 	}
 }
 
+// currentSettings returns a copy of the settings that may be changed.
+func (e *Engine) currentSettings() settings.Settings {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.settings.Clone()
+}
+
 // Start loads the settings, finds rclone and WinFsp, starts or re-attaches
-// rclone, connects the drive if wanted and starts watching. Problems are
-// reported through the snapshot; only a broken installation is an error.
+// rclone, connects the drives that should connect and starts watching.
+// Problems are reported through the snapshot; only a broken installation is
+// an error.
 func (e *Engine) Start(ctx context.Context) error {
 	if err := e.paths.Ensure(); err != nil {
 		return fmt.Errorf("create CryptBridge folders: %w", err)
 	}
+	e.ctx = ctx
 
 	loaded, loadErr := settings.Load(e.paths.SettingsFile, e.paths.CacheDir)
+	if loadErr != nil {
+		loadErr = e.setAsideUnreadable(loadErr)
+	}
+	legacy := loadErr == nil && settings.IsLegacy(e.paths.SettingsFile)
 	_, winFsp := prereq.WinFspInstalled()
 	e.mu.Lock()
 	e.settings = loaded
 	e.winFsp = winFsp
 	e.locked = loaded.AppLock
-	e.unlockConnects = loaded.AutoConnect // the first unlock counts as the start
+	e.unlockConnects = autoConnectIDs(loaded) // the first unlock counts as the start
 	e.mu.Unlock()
 
 	go e.monitor(ctx)
 
 	if loadErr != nil {
-		e.setPhase(PhaseError, "Your saved settings could not be read: "+loadErr.Error()+". Please set CryptBridge up again.")
+		e.setPhase(PhaseError, loadErr.Error())
 	}
 
 	e.actionMu.Lock()
@@ -265,15 +273,47 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.startLockedLocked(ctx)
 		return nil
 	}
+	if legacy {
+		// Write the new format now (the old file is kept as a backup), so
+		// that every later change starts from the converted settings.
+		if err := e.saveSettings(loaded); err != nil {
+			e.setPhase(PhaseError, "Your settings could not be converted for this version: "+err.Error())
+			return nil
+		}
+	}
 	if err := e.prepareLocked(ctx); err != nil {
 		e.setPhase(PhaseError, err.Error())
 		return nil
 	}
-	e.settlePhaseLocked(ctx, true)
+	e.settleLocked(ctx, true)
 	return nil
 }
 
-// prepareLocked makes sure rclone runs and knows the account and vault.
+// setAsideUnreadable keeps a settings file that could not be read under a
+// new name, so that setting CryptBridge up again never overwrites it — it
+// may come from a newer version, or be readable again later. It returns the
+// message for the user.
+func (e *Engine) setAsideUnreadable(loadErr error) error {
+	kept, err := settings.SetAside(e.paths.SettingsFile)
+	if err != nil {
+		return fmt.Errorf("your saved settings could not be read: %v. CryptBridge could not keep them aside either (%v); "+
+			"please copy %s somewhere safe before you set CryptBridge up again", loadErr, err, e.paths.SettingsFile)
+	}
+	return fmt.Errorf("your saved settings could not be read: %v. They were kept as %s. Please set CryptBridge up again", loadErr, kept)
+}
+
+// autoConnectIDs lists the vaults that connect when CryptBridge starts.
+func autoConnectIDs(s settings.Settings) []string {
+	var ids []string
+	for _, v := range s.Vaults {
+		if v.AutoConnect {
+			ids = append(ids, v.ID)
+		}
+	}
+	return ids
+}
+
+// prepareLocked makes sure rclone runs and knows the account and vaults.
 // The caller holds actionMu.
 func (e *Engine) prepareLocked(ctx context.Context) error {
 	if e.isLocked() {
@@ -313,7 +353,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	e.mu.Lock()
 	client := e.client
 	exe := e.rclone.Path
-	cacheDir := e.settings.Drive.CacheDir
+	cacheDir := e.settings.Cache.Dir
 	logLevel := "" // rclone's default for CryptBridge: INFO
 	if e.settings.AppLock {
 		logLevel = lockedLogLevel
@@ -347,7 +387,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	return client, nil
 }
 
-// ensureRemotesLocked registers account and vault with rclone unless they
+// ensureRemotesLocked registers account and vaults with rclone unless they
 // are already there. An rclone that kept running after a crash of the
 // window still knows them, and re-registering a mounted vault could detach
 // the drive from its status.
@@ -358,227 +398,61 @@ func (e *Engine) ensureRemotesLocked(ctx context.Context, client *rcd.Client) er
 	if err := client.Call(ctx, "config/listremotes", nil, &answer); err != nil {
 		return err
 	}
-
-	e.mu.Lock()
-	s := e.settings
-	e.mu.Unlock()
+	s := e.currentSettings()
 
 	if s.SignedIn() && !slices.Contains(answer.Remotes, pcloudRemote) {
 		if err := pcloud.Configure(ctx, client, pcloudRemote, s.PCloud); err != nil {
 			return err
 		}
 	}
-	if s.HasVault() && !slices.Contains(answer.Remotes, vaultRemote) {
-		if err := configureVault(ctx, client, s); err != nil {
-			return err
+	for _, v := range s.Vaults {
+		if !v.HasKeys() || slices.Contains(answer.Remotes, remoteName(v.ID)) {
+			continue
+		}
+		if err := configureVault(ctx, client, v); err != nil {
+			return fmt.Errorf("vault %q: %w", v.Name, err)
 		}
 	}
 	return nil
 }
 
-// settlePhaseLocked decides the phase after start or after setup changes,
-// and connects automatically when the user wants that.
-func (e *Engine) settlePhaseLocked(ctx context.Context, startup bool) {
-	e.mu.Lock()
-	s := e.settings
-	client := e.client
-	e.mu.Unlock()
-
-	if !s.SignedIn() || !s.HasVault() {
-		e.setPhase(PhaseSetup, "Sign in to pCloud and choose a vault to get started.")
+// settleLocked decides the phase after the start or after setup changes,
+// finds drives that rclone kept while the window was gone, and with startup
+// connects the drives that should connect when CryptBridge starts.
+func (e *Engine) settleLocked(ctx context.Context, startup bool) {
+	s := e.currentSettings()
+	if len(s.Vaults) == 0 {
+		e.setPhase(PhaseSetup, "Add a vault to get started.")
 		return
 	}
-	e.refreshFingerprint(ctx, client, s)
+	e.setPhase(PhaseReady, "")
 
-	status, err := drive.ReadStatus(ctx, client, vaultRemote+":", s.Drive.Letter)
-	if err == nil && status.Mounted {
-		// rclone kept the drive while the window was gone.
-		e.mu.Lock()
-		e.wantConnected = true
-		e.driveStatus = status
-		e.mu.Unlock()
-		e.setPhase(PhaseConnected, "")
-		return
-	}
-	if startup && s.AutoConnect {
-		if err := e.connectLocked(ctx); err != nil {
-			e.setPhase(PhaseError, err.Error())
-		}
-		return
-	}
-	e.setPhase(PhaseDisconnected, "")
-}
-
-// Connect mounts the drive.
-func (e *Engine) Connect(ctx context.Context) error {
-	e.actionMu.Lock()
-	defer e.actionMu.Unlock()
-	err := e.connectLocked(ctx)
-	if err != nil {
-		e.setPhase(PhaseError, err.Error())
-	}
-	return err
-}
-
-func (e *Engine) connectLocked(ctx context.Context) error {
-	e.mu.Lock()
-	s := e.settings
-	winFsp := e.winFsp
-	locked := e.locked
-	e.mu.Unlock()
-
-	if locked {
-		return errLocked
-	}
-	if !s.SignedIn() || !s.HasVault() {
-		return errors.New("sign in to pCloud and choose a vault first")
-	}
-	if !winFsp {
-		if _, ok := prereq.WinFspInstalled(); !ok {
-			return fmt.Errorf("WinFsp is not installed. It lets Windows show the vault as a drive; download it from %s", prereq.WinFspDownloadURL)
-		}
-		e.mu.Lock()
-		e.winFsp = true
-		e.mu.Unlock()
-	}
-
-	e.setPhase(PhaseConnecting, "")
-	if err := e.prepareLocked(ctx); err != nil {
-		return err
-	}
 	e.mu.Lock()
 	client := e.client
 	e.mu.Unlock()
-
-	if status, err := drive.ReadStatus(ctx, client, vaultRemote+":", s.Drive.Letter); err == nil && status.Mounted {
-		e.markConnected(status)
-		return nil
-	}
-	if err := e.checkSignInLocked(ctx, client, s); err != nil {
-		return err
-	}
-	err := drive.Mount(ctx, client, drive.Settings{
-		Remote:            vaultRemote + ":",
-		Letter:            s.Drive.Letter,
-		VolumeName:        volumeName,
-		CacheMaxSize:      s.Drive.CacheMaxSize,
-		CacheMinFreeSpace: s.Drive.CacheMinFreeSpace,
-	})
-	if err != nil {
-		return err
-	}
-	status, _ := drive.ReadStatus(ctx, client, vaultRemote+":", s.Drive.Letter)
-	e.markConnected(status)
-	return nil
-}
-
-// checkSignInLocked asks pCloud whether it accepts the sign-in before the
-// drive is mounted; otherwise the drive would appear but stay empty without
-// a word of explanation. Other problems (offline, pCloud busy, a slow
-// answer) do not stop the connect: rclone copes with them, and the drive
-// works as soon as pCloud can be reached. With automatic reconnects on, a
-// refused connect is tried again in the background, so that the drive comes
-// by itself once pCloud accepts the sign-in again.
-func (e *Engine) checkSignInLocked(ctx context.Context, client *rcd.Client, s settings.Settings) error {
-	checkCtx, cancel := context.WithTimeout(ctx, signInCheckTimeout)
-	defer cancel()
-	err := e.readUsageLocked(checkCtx, client)
-	if !pcloud.IsSignInProblem(err) {
-		return nil
-	}
-	if s.AutoReconnect {
-		e.mu.Lock()
-		e.wantConnected = true
-		e.mu.Unlock()
-	}
-	return err
-}
-
-func (e *Engine) markConnected(status drive.Status) {
-	e.mu.Lock()
-	e.wantConnected = true
-	e.driveStatus = status
-	e.reconnectTry = 0
-	e.mu.Unlock()
-	e.setPhase(PhaseConnected, "")
-}
-
-// Disconnect removes the drive. Without force it refuses while uploads are
-// still running and returns an *UploadsPendingError.
-func (e *Engine) Disconnect(ctx context.Context, force bool) error {
-	e.actionMu.Lock()
-	defer e.actionMu.Unlock()
-	if e.isLocked() {
-		return nil // the lock closes the drive by itself
-	}
-	return e.disconnectLocked(ctx, force)
-}
-
-func (e *Engine) disconnectLocked(ctx context.Context, force bool) error {
-	e.mu.Lock()
-	client := e.client
-	letter := e.settings.Drive.Letter
-	e.mu.Unlock()
-	if client == nil {
-		e.setDisconnected()
-		return nil
-	}
-
-	status, err := drive.ReadStatus(ctx, client, vaultRemote+":", letter)
-	if err != nil {
-		return err
-	}
-	if !status.Mounted {
-		e.setDisconnected()
-		return nil
-	}
-	if !force {
-		if err := e.ensureNoUploads(ctx, client, letter, status); err != nil {
-			return err
+	for _, v := range s.Vaults {
+		if !v.HasKeys() {
+			continue
+		}
+		e.refreshFingerprint(ctx, client, s, v)
+		status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter)
+		switch {
+		case err == nil && status.Mounted:
+			// rclone kept the drive while the window was gone.
+			e.markConnected(v, status, currentFolderID(v))
+		case startup && v.AutoConnect:
+			_ = e.connectVaultLocked(ctx, v.ID) // problems show up at the drive
 		}
 	}
-	if err := drive.Unmount(ctx, client, letter); err != nil {
-		return err
-	}
-	e.setDisconnected()
-	return nil
+	e.publish()
 }
 
-// ensureNoUploads returns an *UploadsPendingError if uploads are running,
-// looking twice so that a file written a moment ago is not missed.
-func (e *Engine) ensureNoUploads(ctx context.Context, client *rcd.Client, letter string, first drive.Status) error {
-	if pending := first.PendingUploads(); pending > 0 {
-		return &UploadsPendingError{Count: pending}
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(settleTime):
-	}
-	second, err := drive.ReadStatus(ctx, client, vaultRemote+":", letter)
-	if err != nil {
-		return err
-	}
-	if pending := second.PendingUploads(); pending > 0 {
-		return &UploadsPendingError{Count: pending}
-	}
-	return nil
-}
-
-func (e *Engine) setDisconnected() {
-	e.mu.Lock()
-	e.wantConnected = false
-	e.driveStatus = drive.Status{}
-	e.mu.Unlock()
-	e.setPhase(PhaseDisconnected, "")
-}
-
-// Shutdown disconnects and stops rclone; used when the user quits
-// CryptBridge. Without force it refuses while uploads are running.
+// Shutdown disconnects every drive and stops rclone; used when the user
+// quits CryptBridge. Without force it refuses while uploads are running.
 func (e *Engine) Shutdown(ctx context.Context, force bool) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
-	if err := e.disconnectLocked(ctx, force); err != nil {
+	if err := e.disconnectAllLocked(ctx, force); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -620,15 +494,13 @@ func (e *Engine) checkOnce(ctx context.Context) {
 
 	e.mu.Lock()
 	client := e.client
-	want := e.wantConnected
-	s := e.settings
-	phase := e.phase
 	locked, closing := e.locked, e.closing
 	e.mu.Unlock()
+	s := e.currentSettings()
 
 	if locked {
-		// Nothing to watch while locked, except a drive that still finishes
-		// its uploads before it closes.
+		// Nothing to watch while locked, except drives that still finish
+		// their uploads before they close.
 		if closing {
 			e.finishLockLocked(ctx, false)
 		}
@@ -636,67 +508,32 @@ func (e *Engine) checkOnce(ctx context.Context) {
 	}
 	if client == nil || client.Ping(ctx) != nil {
 		e.failures++
-		if e.failures >= lostAfterFailures && want {
-			e.reconnectLocked(ctx, s, "rclone stopped unexpectedly")
+		if e.failures >= lostAfterFailures {
+			e.mu.Lock()
+			e.client = nil
+			e.mu.Unlock()
+			for _, v := range s.Vaults {
+				if e.wants(v.ID) {
+					e.reconnectLocked(ctx, v, "rclone stopped unexpectedly", false)
+				}
+			}
 		}
 		return
 	}
 	e.failures = 0
 
-	status, err := drive.ReadStatus(ctx, client, vaultRemote+":", s.Drive.Letter)
-	if err != nil {
-		return
-	}
-	e.mu.Lock()
-	e.driveStatus = status
-	e.mu.Unlock()
-
-	switch {
-	case want && !status.Mounted:
-		e.reconnectLocked(ctx, s, "the drive disappeared")
-	case want && status.Mounted && phase != PhaseConnected:
-		e.markConnected(status)
-	default:
-		e.publish()
+	for _, v := range s.Vaults {
+		if v.HasKeys() {
+			e.watchVaultLocked(ctx, client, s, v)
+		}
 	}
 	e.refreshUsage(ctx, client, s)
-}
-
-// reconnectLocked brings the drive back after rclone or the mount got lost,
-// with growing pauses between attempts.
-func (e *Engine) reconnectLocked(ctx context.Context, s settings.Settings, reason string) {
-	if !s.AutoReconnect {
-		e.mu.Lock()
-		e.wantConnected = false
-		e.client = nil
-		e.mu.Unlock()
-		e.setPhase(PhaseError, "The drive was lost: "+reason+". Click Connect to try again.")
-		return
-	}
-	if time.Now().Before(e.nextReconnect) {
-		return
-	}
-	delay := reconnectDelays[min(e.reconnectTry, len(reconnectDelays)-1)]
-	e.reconnectTry++
-	e.nextReconnect = time.Now().Add(delay)
-	e.setPhase(PhaseReconnecting, fmt.Sprintf("Reconnecting (attempt %d): %s.", e.reconnectTry, reason))
-
-	e.mu.Lock()
-	if e.client != nil && e.client.Ping(ctx) != nil {
-		e.client = nil
-	}
-	e.mu.Unlock()
-	if err := e.connectLocked(ctx); err != nil {
-		e.setPhase(PhaseReconnecting, fmt.Sprintf("Reconnect attempt %d failed: %v. Next try in %s.", e.reconnectTry, err, delay))
-		e.mu.Lock()
-		e.wantConnected = true // keep trying
-		e.mu.Unlock()
-	}
+	e.publish()
 }
 
 // refreshUsage asks pCloud for the free space now and then — every minute
 // while pCloud refuses the sign-in, so that the warning goes away soon after
-// pCloud accepts it again. The warning is kept apart from the phase: a
+// pCloud accepts it again. The warning is kept apart from the drives: a
 // connected drive stays "connected" and the warning stays visible.
 func (e *Engine) refreshUsage(ctx context.Context, client *rcd.Client, s settings.Settings) {
 	e.mu.Lock()

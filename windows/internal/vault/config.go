@@ -38,7 +38,7 @@ const (
 // identical on every computer that opens the vault — password and salt are
 // not enough.
 type Config struct {
-	Path                    string `json:"path"`                    // folder in pCloud, e.g. "CryptBridge"
+	Path                    string `json:"path"`                    // folder in pCloud ("CryptBridge") or on this PC (`E:\Vault`)
 	FilenameEncryption      string `json:"filenameEncryption"`      // standard, obfuscate or off
 	DirectoryNameEncryption bool   `json:"directoryNameEncryption"` // encrypt folder names too
 	FilenameEncoding        string `json:"filenameEncoding"`        // base32, base64 or base32768
@@ -67,7 +67,7 @@ func (c Config) NormalisedPath() string {
 // Validate rejects configurations rclone would misread or that cannot work.
 func (c Config) Validate() error {
 	if c.NormalisedPath() == "" {
-		return errors.New("choose a folder in pCloud for the vault (the top level cannot be used)")
+		return errors.New("choose a folder for the vault (the top level of pCloud or of a drive cannot be used)")
 	}
 	if c.Password == "" {
 		return errors.New("the encryption password must not be empty")

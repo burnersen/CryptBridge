@@ -14,6 +14,11 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/icon"
 )
 
+// traySlots is how many vaults get their own entry in the tray menu; more
+// can be reached through the window. Menu entries are created once, in
+// order, and only shown or hidden afterwards.
+const traySlots = 12
+
 // tray is the icon in the notification area and its menu.
 //
 // Windows delivers the messages of the tray icon to the thread that created
@@ -27,13 +32,23 @@ type tray struct {
 	ready    bool
 	pending  *engine.Snapshot // update that arrived before the menu existed
 	lastIcon string
+	slotIDs  [traySlots]string // the vault shown in each slot
 
-	status  *systray.MenuItem
-	open    *systray.MenuItem
+	status        *systray.MenuItem
+	open          *systray.MenuItem
+	connectAll    *systray.MenuItem
+	disconnectAll *systray.MenuItem
+	slots         [traySlots]traySlot
+	more          *systray.MenuItem
+	lock          *systray.MenuItem
+	quit          *systray.MenuItem
+}
+
+// traySlot is the entry of one vault with its submenu.
+type traySlot struct {
+	entry   *systray.MenuItem
 	toggle  *systray.MenuItem
 	explore *systray.MenuItem
-	lock    *systray.MenuItem
-	quit    *systray.MenuItem
 }
 
 func newTray(app *App) *tray {
@@ -62,15 +77,29 @@ func (t *tray) onReady() {
 	t.status.Disable()
 	systray.AddSeparator()
 	t.open = systray.AddMenuItem("Open CryptBridge", "Show the window")
-	t.toggle = systray.AddMenuItem("Connect drive", "Connect or disconnect the vault drive")
-	t.explore = systray.AddMenuItem("Open drive", "Open the drive in Explorer")
-	t.explore.Disable()
-	t.lock = systray.AddMenuItem("Lock CryptBridge", "Close the drive and ask for the app password")
-	t.lock.Hide()
+	t.connectAll = systray.AddMenuItem("Connect all drives", "Connect every vault")
+	t.disconnectAll = systray.AddMenuItem("Disconnect all drives", "Disconnect every vault")
 	systray.AddSeparator()
-	t.quit = systray.AddMenuItem("Quit CryptBridge", "Disconnect the drive and quit")
+	for i := range t.slots {
+		entry := systray.AddMenuItem("", "")
+		t.slots[i] = traySlot{
+			entry:   entry,
+			toggle:  entry.AddSubMenuItem("Connect", "Connect or disconnect this drive"),
+			explore: entry.AddSubMenuItem("Open drive", "Open the drive in Explorer"),
+		}
+		entry.Hide()
+	}
+	t.more = systray.AddMenuItem("More vaults in the window…", "Show the window")
+	t.more.Hide()
+	systray.AddSeparator()
+	t.lock = systray.AddMenuItem("Lock CryptBridge", "Close the drives and ask for the app password")
+	t.lock.Hide()
+	t.quit = systray.AddMenuItem("Quit CryptBridge", "Disconnect all drives and quit")
 
 	go t.handleClicks()
+	for i := range t.slots {
+		go t.handleSlot(i)
+	}
 
 	t.mu.Lock()
 	t.ready = true
@@ -89,16 +118,41 @@ func (t *tray) handleClicks() {
 		select {
 		case <-t.open.ClickedCh:
 			t.app.ShowWindow()
-		case <-t.toggle.ClickedCh:
-			go t.app.toggleFromTray()
-		case <-t.explore.ClickedCh:
-			go func() { _ = t.app.OpenDrive() }()
+		case <-t.more.ClickedCh:
+			t.app.ShowWindow()
+		case <-t.connectAll.ClickedCh:
+			go t.app.connectAllFromTray()
+		case <-t.disconnectAll.ClickedCh:
+			go t.app.disconnectAllFromTray()
 		case <-t.lock.ClickedCh:
 			go func() { _ = t.app.Lock() }()
 		case <-t.quit.ClickedCh:
 			go t.app.quitFromTray()
 		}
 	}
+}
+
+// handleSlot runs the actions of one vault's submenu.
+func (t *tray) handleSlot(i int) {
+	slot := t.slots[i]
+	for {
+		select {
+		case <-slot.toggle.ClickedCh:
+			if id := t.slotID(i); id != "" {
+				go t.app.toggleFromTray(id)
+			}
+		case <-slot.explore.ClickedCh:
+			if id := t.slotID(i); id != "" {
+				go func() { _ = t.app.OpenDrive(id) }()
+			}
+		}
+	}
+}
+
+func (t *tray) slotID(i int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.slotIDs[i]
 }
 
 // update shows a new snapshot in icon, tooltip and menu.
@@ -112,6 +166,12 @@ func (t *tray) update(s engine.Snapshot) {
 	state, colour := trayState(s)
 	changed := state != t.lastIcon
 	t.lastIcon = state
+	for i := range t.slotIDs {
+		t.slotIDs[i] = ""
+		if i < len(s.Vaults) && !s.Locked {
+			t.slotIDs[i] = s.Vaults[i].ID
+		}
+	}
 	t.mu.Unlock()
 
 	if changed {
@@ -121,24 +181,27 @@ func (t *tray) update(s engine.Snapshot) {
 	systray.SetTooltip("CryptBridge – " + text)
 	t.status.SetTitle(text)
 
-	letter := s.DriveLetter + ":"
-	connected := s.Phase == engine.PhaseConnected || s.Phase == engine.PhaseReconnecting
-	switch {
-	case s.Locked:
-		t.toggle.SetTitle("Unlock…")
-		t.explore.Disable()
-	case connected:
-		t.toggle.SetTitle("Disconnect drive " + letter)
-		t.explore.SetTitle("Open drive " + letter)
-		t.explore.Enable()
-	default:
-		t.toggle.SetTitle("Connect drive " + letter)
-		t.explore.Disable()
-	}
-	if s.Phase == engine.PhaseSetup || s.Phase == engine.PhaseStarting {
-		t.toggle.Disable()
+	usable := !s.Locked && len(s.Vaults) > 0 && s.Phase != engine.PhaseStarting
+	enable(t.connectAll, usable)
+	enable(t.disconnectAll, usable && connectedCount(s) > 0)
+	if s.Locked {
+		t.connectAll.SetTitle("Unlock…")
+		enable(t.connectAll, true)
 	} else {
-		t.toggle.Enable()
+		t.connectAll.SetTitle("Connect all drives")
+	}
+
+	for i := range t.slots {
+		if i >= len(s.Vaults) || s.Locked {
+			t.slots[i].entry.Hide()
+			continue
+		}
+		t.showSlot(t.slots[i], s.Vaults[i])
+	}
+	if len(s.Vaults) > traySlots && !s.Locked {
+		t.more.Show()
+	} else {
+		t.more.Hide()
 	}
 	if s.AppLock && !s.Locked {
 		t.lock.Show()
@@ -147,48 +210,132 @@ func (t *tray) update(s engine.Snapshot) {
 	}
 }
 
-// trayState picks the icon colour: green connected, amber while working or
-// uploading (do not switch the PC off), red on errors, grey otherwise.
+// showSlot shows one vault: "Films (Z:) – connected", with its actions.
+func (t *tray) showSlot(slot traySlot, v engine.VaultSnapshot) {
+	letter := v.Letter + ":"
+	slot.entry.SetTitle(fmt.Sprintf("%s (%s) – %s", v.Name, letter, stateWord(v)))
+	slot.entry.Show()
+	switch {
+	case v.State == engine.StateWaiting:
+		slot.toggle.SetTitle("Stop waiting for " + letter)
+	case isActive(v):
+		slot.toggle.SetTitle("Disconnect " + letter)
+	default:
+		slot.toggle.SetTitle("Connect " + letter)
+	}
+	enable(slot.toggle, v.HasKeys)
+	enable(slot.explore, v.Drive.Mounted)
+}
+
+func enable(item *systray.MenuItem, on bool) {
+	if on {
+		item.Enable()
+	} else {
+		item.Disable()
+	}
+}
+
+// isActive: the drive is connected or CryptBridge is trying to connect it,
+// so the action offered is "disconnect".
+func isActive(v engine.VaultSnapshot) bool {
+	switch v.State {
+	case engine.StateConnected, engine.StateReconnecting, engine.StateWaiting, engine.StateConnecting:
+		return true
+	}
+	return false
+}
+
+func connectedCount(s engine.Snapshot) int {
+	n := 0
+	for _, v := range s.Vaults {
+		if isActive(v) {
+			n++
+		}
+	}
+	return n
+}
+
+// stateWord is the state of a drive in a word or two.
+func stateWord(v engine.VaultSnapshot) string {
+	switch v.State {
+	case engine.StateConnected:
+		if n := v.Drive.PendingUploads(); n > 0 {
+			return fmt.Sprintf("writing %d file(s)", n)
+		}
+		return "connected"
+	case engine.StateConnecting:
+		return "connecting…"
+	case engine.StateReconnecting:
+		return "reconnecting…"
+	case engine.StateWaiting:
+		return "waiting for its folder"
+	case engine.StateError:
+		return "problem"
+	}
+	return "disconnected"
+}
+
+// trayState picks the icon colour: green while drives are connected, amber
+// while working or uploading (do not switch the PC off), red when CryptBridge
+// or a drive has a problem, grey otherwise.
 func trayState(s engine.Snapshot) (string, icon.Colour) {
+	busy, connected := false, false
+	for _, v := range s.Vaults {
+		switch v.State {
+		case engine.StateError:
+			return "failed", icon.Failed
+		case engine.StateConnecting, engine.StateReconnecting:
+			busy = true
+		case engine.StateConnected:
+			connected = true
+		}
+	}
 	switch {
 	case s.Phase == engine.PhaseError:
 		return "failed", icon.Failed
-	case s.Phase == engine.PhaseConnecting || s.Phase == engine.PhaseReconnecting || s.Phase == engine.PhaseStarting:
+	case busy || s.Phase == engine.PhaseStarting || s.PendingUploads() > 0:
 		return "busy", icon.Busy
-	case s.Phase == engine.PhaseConnected && s.Drive.PendingUploads() > 0:
-		return "busy", icon.Busy
-	case s.Phase == engine.PhaseConnected:
+	case connected:
 		return "connected", icon.Connected
-	case s.Phase == engine.PhaseLocked && s.Drive.PendingUploads() > 0:
-		return "busy", icon.Busy // still uploading before the drive closes
 	}
 	return "disconnected", icon.Disconnected
 }
 
 // trayText is the one-line status for tooltip and menu.
 func trayText(s engine.Snapshot) string {
-	letter := s.DriveLetter + ":"
+	uploads := ""
+	if n := s.PendingUploads(); n > 0 {
+		uploads = fmt.Sprintf(", writing %d file(s)", n)
+	}
 	switch s.Phase {
-	case engine.PhaseConnected:
-		if n := s.Drive.PendingUploads(); n > 0 {
-			return fmt.Sprintf("Connected (%s), uploading %d file(s)", letter, n)
-		}
-		return "Connected (" + letter + ")"
-	case engine.PhaseConnecting:
-		return "Connecting…"
-	case engine.PhaseReconnecting:
-		return "Reconnecting…"
+	case engine.PhaseStarting:
+		return "Starting…"
 	case engine.PhaseSetup:
 		return "Setup needed"
 	case engine.PhaseError:
 		return "Problem – open CryptBridge for details"
-	case engine.PhaseStarting:
-		return "Starting…"
 	case engine.PhaseLocked:
-		if n := s.Drive.PendingUploads(); n > 0 {
-			return fmt.Sprintf("Locked, finishing %d upload(s)", n)
+		if uploads != "" {
+			return "Locked" + uploads
 		}
 		return "Locked"
 	}
-	return "Disconnected"
+	for _, v := range s.Vaults {
+		if v.State == engine.StateError {
+			return fmt.Sprintf("Problem with %s (%s:) – open CryptBridge", v.Name, v.Letter)
+		}
+	}
+	connected := 0
+	for _, v := range s.Vaults {
+		if v.State == engine.StateConnected {
+			connected++
+		}
+	}
+	if len(s.Vaults) == 1 && connected == 1 {
+		return "Connected (" + s.Vaults[0].Letter + ":)" + uploads
+	}
+	if connected == 0 {
+		return "Disconnected"
+	}
+	return fmt.Sprintf("%d of %d drives connected%s", connected, len(s.Vaults), uploads)
 }

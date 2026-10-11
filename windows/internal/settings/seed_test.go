@@ -27,10 +27,11 @@ func TestSeedDevProfile(t *testing.T) {
 	_, account, vaultCfg := testenv.Live(t)
 	s := Defaults(filepath.Join(profile, "CryptBridge", "cache"))
 	s.PCloud = account
-	s.Vault = vaultCfg
+	test := Vault{ID: MigratedVaultID, Name: "Test vault", Kind: KindPCloud, Letter: DefaultDriveLetter, AutoConnect: true, Config: vaultCfg}
 	if letter := os.Getenv("CRYPTBRIDGE_SEED_LETTER"); letter != "" {
-		s.Drive.Letter = letter
+		test.Letter = letter
 	}
+	s.Vaults = []Vault{test}
 	// CRYPTBRIDGE_SEED_APP_PASSWORD turns the app lock on with that password.
 	var key *passlock.Key
 	if password := os.Getenv("CRYPTBRIDGE_SEED_APP_PASSWORD"); password != "" {

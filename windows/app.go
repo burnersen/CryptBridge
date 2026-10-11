@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/engine"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
+	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -48,6 +50,8 @@ type App struct {
 	signInMu   sync.Mutex
 	stopSignIn context.CancelFunc
 	quitOnce   sync.Once
+	themeMu    sync.Mutex
+	theme      string // the theme the window shows now
 }
 
 // NewApp wires the parts together; nothing runs before startup.
@@ -64,6 +68,7 @@ func (a *App) startup(ctx context.Context) {
 	a.core.Subscribe(func(s engine.Snapshot) {
 		runtime.EventsEmit(ctx, "snapshot", s)
 		a.tray.update(s)
+		a.applyTheme(s.Theme)
 	})
 	a.tray.start()
 	go func() {
@@ -108,9 +113,34 @@ func (a *App) GetSnapshot() engine.Snapshot {
 	return a.core.Snapshot()
 }
 
+// applyTheme gives the window frame and background the chosen theme; the
+// page follows the same choice by itself.
+func (a *App) applyTheme(theme string) {
+	a.themeMu.Lock()
+	defer a.themeMu.Unlock()
+	if theme == "" || theme == a.theme {
+		return
+	}
+	a.theme = theme
+	dark := theme == settings.ThemeDark || (theme == settings.ThemeAuto && windowsUsesDarkTheme())
+	switch theme {
+	case settings.ThemeLight:
+		runtime.WindowSetLightTheme(a.ctx)
+	case settings.ThemeDark:
+		runtime.WindowSetDarkTheme(a.ctx)
+	default:
+		runtime.WindowSetSystemDefaultTheme(a.ctx)
+	}
+	if dark {
+		runtime.WindowSetBackgroundColour(a.ctx, darkBackground.R, darkBackground.G, darkBackground.B, 255)
+	} else {
+		runtime.WindowSetBackgroundColour(a.ctx, lightBackground.R, lightBackground.G, lightBackground.B, 255)
+	}
+}
+
 // onSessionEvent locks CryptBridge together with Windows (Win+L, screen
 // lock, signing out) and asks for the app password when the user is back
-// and the drive was connected before.
+// and drives were connected before.
 func (a *App) onSessionEvent(event sessionEvent) {
 	snap := a.core.Snapshot()
 	if !snap.AppLock {
@@ -130,10 +160,10 @@ func (a *App) onSessionEvent(event sessionEvent) {
 	}
 }
 
-// askForPasswordIfWanted shows the window with the password field when the
-// drive is to be connected after unlocking.
+// askForPasswordIfWanted shows the window with the password field when
+// drives are to be connected after unlocking.
 func (a *App) askForPasswordIfWanted() {
-	if snap := a.core.Snapshot(); snap.Locked && snap.UnlockConnects {
+	if snap := a.core.Snapshot(); snap.Locked && len(snap.UnlockConnects) > 0 {
 		a.ShowWindow()
 	}
 }
@@ -168,7 +198,7 @@ func (a *App) DeclineLock() error {
 	return a.core.DeclineLock()
 }
 
-// ResetApp forgets sign-in, keys and app password (forgotten app password).
+// ResetApp forgets sign-in, vaults and app password (forgotten app password).
 func (a *App) ResetApp() error {
 	return a.core.Reset(a.coreCtx)
 }
@@ -225,26 +255,71 @@ func (a *App) FindVaults() ([]vault.Candidate, error) {
 	return a.core.FindVaults(a.coreCtx)
 }
 
+// InspectFolder looks into a folder while the user chooses where a vault
+// is (kind "pcloud" or "local").
+func (a *App) InspectFolder(kind, path string) (vault.Folder, error) {
+	return a.core.InspectFolder(a.coreCtx, kind, path)
+}
+
+// ChooseVaultFolder lets the user pick a folder of this PC for a vault.
+func (a *App) ChooseVaultFolder(current string) (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:                "Folder for the vault",
+		DefaultDirectory:     current,
+		CanCreateDirectories: true,
+	})
+}
+
 // CheckVault tests keys against a folder without saving anything.
-func (a *App) CheckVault(cfg vault.Config) (engine.VaultCheck, error) {
-	return a.core.CheckVault(a.coreCtx, cfg)
+func (a *App) CheckVault(req engine.NewVault) (engine.VaultCheck, error) {
+	return a.core.CheckVault(a.coreCtx, req)
 }
 
-// UseVault stores a vault (create = new vault in an empty folder).
-func (a *App) UseVault(cfg vault.Config, create, acceptUnverifiable bool) (engine.VaultCheck, error) {
-	return a.core.UseVault(a.coreCtx, cfg, create, acceptUnverifiable)
+// AddVault adds a vault (Create = new vault in an empty folder).
+func (a *App) AddVault(req engine.NewVault) (engine.VaultCheck, error) {
+	return a.core.AddVault(a.coreCtx, req)
 }
 
-// Connect mounts the drive.
-func (a *App) Connect() error {
-	return a.core.Connect(a.coreCtx)
+// UpdateVault changes name, drive letter and "connect on start" of a vault.
+func (a *App) UpdateVault(id string, change engine.VaultChange) error {
+	return a.core.UpdateVault(id, change)
 }
 
-// Disconnect removes the drive. If uploads are still running and force is
-// false, nothing happens and the number of pending uploads is returned, so
-// that the window can ask the user.
-func (a *App) Disconnect(force bool) (int, error) {
-	err := a.core.Disconnect(a.coreCtx, force)
+// RemoveVault makes CryptBridge forget a vault; its files stay untouched.
+func (a *App) RemoveVault(id, confirmName string) error {
+	return a.core.RemoveVault(a.coreCtx, id, confirmName)
+}
+
+// Connect connects the drive of a vault.
+func (a *App) Connect(id string) error {
+	return a.core.Connect(a.coreCtx, id)
+}
+
+// UseFolder connects a local vault to the folder now at its place, although
+// it is not the folder it was last connected to.
+func (a *App) UseFolder(id string) error {
+	return a.core.UseFolder(a.coreCtx, id)
+}
+
+// ConnectAll connects every drive.
+func (a *App) ConnectAll() error {
+	return a.core.ConnectAll(a.coreCtx)
+}
+
+// Disconnect removes the drive of a vault. If uploads are still running and
+// force is false, nothing happens and the number of pending uploads is
+// returned, so that the window can ask the user.
+func (a *App) Disconnect(id string, force bool) (int, error) {
+	return pendingOf(a.core.Disconnect(a.coreCtx, id, force))
+}
+
+// DisconnectAll removes every drive, asking like Disconnect.
+func (a *App) DisconnectAll(force bool) (int, error) {
+	return pendingOf(a.core.DisconnectAll(a.coreCtx, force))
+}
+
+// pendingOf turns an *engine.UploadsPendingError into its count.
+func pendingOf(err error) (int, error) {
 	var pending *engine.UploadsPendingError
 	if errors.As(err, &pending) {
 		return pending.Count, nil
@@ -252,30 +327,66 @@ func (a *App) Disconnect(force bool) (int, error) {
 	return 0, err
 }
 
-// OpenDrive opens the drive in Explorer.
-func (a *App) OpenDrive() error {
-	letter := a.core.Snapshot().DriveLetter
+// OpenDrive opens the drive of a vault in Explorer.
+func (a *App) OpenDrive(id string) error {
+	letter, err := a.core.OpenDriveLetter(id)
+	if err != nil {
+		return err
+	}
 	return exec.Command("explorer.exe", letter+`:\`).Start()
 }
 
-// FreeLetters lists drive letters that can be used, plus the current one.
-func (a *App) FreeLetters() ([]string, error) {
+// FreeLetters lists the drive letters a vault can use: free in Windows and
+// not given to another vault, plus its own. Use "" for a new vault.
+func (a *App) FreeLetters(id string) ([]string, error) {
 	free, err := drive.FreeLetters()
 	if err != nil {
 		return nil, err
 	}
-	current := a.core.Snapshot().DriveLetter
-	for _, l := range free {
-		if l == current {
-			return free, nil
+	letters := []string{}
+	own := ""
+	taken := map[string]bool{}
+	for _, v := range a.core.Snapshot().Vaults {
+		if v.ID == id {
+			own = v.Letter
+		} else {
+			taken[v.Letter] = true
 		}
 	}
-	return append(free, current), nil
+	for _, l := range free {
+		if !taken[l] {
+			letters = append(letters, l)
+		}
+	}
+	if own != "" && !slices.Contains(letters, own) {
+		letters = append(letters, own)
+	}
+	slices.Sort(letters)
+	return letters, nil
+}
+
+// CountSize starts counting the size of a vault.
+func (a *App) CountSize(id string) error {
+	return a.core.CountSize(a.coreCtx, id)
+}
+
+// CancelCount stops counting the size of a vault.
+func (a *App) CancelCount(id string) error {
+	return a.core.CancelCount(a.coreCtx, id)
 }
 
 // UpdateOptions stores the settings from the window.
 func (a *App) UpdateOptions(o engine.Options) error {
 	return a.core.UpdateOptions(a.coreCtx, o)
+}
+
+// SystemTheme tells the window whether Windows uses its dark or its light
+// theme for apps.
+func (a *App) SystemTheme() string {
+	if windowsUsesDarkTheme() {
+		return settings.ThemeDark
+	}
+	return settings.ThemeLight
 }
 
 // ChooseFolder lets the user pick a folder (for the cache).
@@ -326,10 +437,9 @@ func (a *App) OpenURL(url string) error {
 func (a *App) Quit(force bool) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	err := a.core.Shutdown(ctx, force)
-	var pending *engine.UploadsPendingError
-	if errors.As(err, &pending) {
-		return pending.Count, nil
+	pending, err := pendingOf(a.core.Shutdown(ctx, force))
+	if pending > 0 {
+		return pending, nil
 	}
 	if err != nil {
 		a.showError("rclone did not stop cleanly", err)
@@ -338,58 +448,82 @@ func (a *App) Quit(force bool) (int, error) {
 	return 0, nil
 }
 
+// askAboutUploads asks whether to interrupt running uploads; the files stay
+// on this PC and are written into the vault with the next connect.
+func (a *App) askAboutUploads(pending int, action string) bool {
+	a.ShowWindow()
+	answer, _ := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
+		Type:  runtime.QuestionDialog,
+		Title: "Uploads still running",
+		Message: fmt.Sprintf("%d file(s) are still being written into the vault.\n\n"+
+			"If you %s now, they stay on this PC and are written into the vault the next time you connect. "+
+			"Do not delete the cache folder in the meantime.\n\n%s anyway?", pending, strings.ToLower(action), action),
+	})
+	return answer == "Yes"
+}
+
 // quitFromTray asks before interrupting uploads, then quits.
 func (a *App) quitFromTray() {
 	pending, err := a.Quit(false)
 	if err != nil || pending == 0 {
 		return
 	}
-	a.ShowWindow()
-	answer, _ := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
-		Type:  runtime.QuestionDialog,
-		Title: "Uploads still running",
-		Message: fmt.Sprintf("%d file(s) are still being uploaded to pCloud.\n\n"+
-			"If you quit now, they stay on this PC and are uploaded the next time you connect. "+
-			"Do not delete the cache folder in the meantime.\n\nQuit anyway?", pending),
-	})
-	if answer == "Yes" {
+	if a.askAboutUploads(pending, "Quit") {
 		_, _ = a.Quit(true)
 	}
 }
 
-// toggleFromTray connects or disconnects, asking before interrupting uploads.
-func (a *App) toggleFromTray() {
+// toggleFromTray connects or disconnects one drive, asking before
+// interrupting uploads.
+func (a *App) toggleFromTray(id string) {
 	snap := a.core.Snapshot()
 	if snap.Locked {
 		a.ShowWindow() // the window asks for the app password
 		return
 	}
-	if snap.Phase != engine.PhaseConnected && snap.Phase != engine.PhaseReconnecting {
-		if err := a.Connect(); err != nil {
+	connected := false
+	for _, v := range snap.Vaults {
+		if v.ID == id {
+			connected = v.State == engine.StateConnected || v.State == engine.StateReconnecting || v.State == engine.StateWaiting
+		}
+	}
+	if !connected {
+		if err := a.Connect(id); err != nil {
 			a.showError("Could not connect the drive", err)
 		}
 		return
 	}
-	pending, err := a.Disconnect(false)
+	a.disconnectFromTray(func(force bool) (int, error) { return a.Disconnect(id, force) })
+}
+
+// connectAllFromTray connects every drive.
+func (a *App) connectAllFromTray() {
+	if a.core.Snapshot().Locked {
+		a.ShowWindow()
+		return
+	}
+	if err := a.ConnectAll(); err != nil {
+		a.showError("Not every drive could be connected", err)
+	}
+}
+
+// disconnectAllFromTray disconnects every drive, asking before interrupting
+// uploads.
+func (a *App) disconnectAllFromTray() {
+	a.disconnectFromTray(a.DisconnectAll)
+}
+
+func (a *App) disconnectFromTray(disconnect func(force bool) (int, error)) {
+	pending, err := disconnect(false)
 	if err != nil {
-		a.showError("Could not disconnect the drive", err)
+		a.showError("Could not disconnect", err)
 		return
 	}
-	if pending == 0 {
+	if pending == 0 || !a.askAboutUploads(pending, "Disconnect") {
 		return
 	}
-	a.ShowWindow()
-	answer, _ := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
-		Type:  runtime.QuestionDialog,
-		Title: "Uploads still running",
-		Message: fmt.Sprintf("%d file(s) are still being uploaded to pCloud.\n\n"+
-			"If you disconnect now, they stay on this PC and are uploaded the next time you connect.\n\n"+
-			"Disconnect anyway?", pending),
-	})
-	if answer == "Yes" {
-		if _, err := a.Disconnect(true); err != nil {
-			a.showError("Could not disconnect the drive", err)
-		}
+	if _, err := disconnect(true); err != nil {
+		a.showError("Could not disconnect", err)
 	}
 }
 

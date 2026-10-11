@@ -12,9 +12,19 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Icons, used with <svg><use href="#i-…"/></svg>. -->
+  <svg class="hidden" aria-hidden="true">
+    <symbol id="i-lock" viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3z"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6.5 19a4.5 4.5 0 0 1-.5-8.97A6 6 0 0 1 17.65 8.5 5.25 5.25 0 0 1 17.25 19H6.5z"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5zm2 9v5h12v-5H6zm9 1.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4.6l2 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z"/></symbol>
+  </svg>
+
   <header>
     <div class="brand">
-      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3z"/></svg>
+      <svg class="logo"><use href="#i-lock"/></svg>
       <span class="name">CryptBridge</span>
       <span class="version" id="version"></span>
     </div>
@@ -23,7 +33,7 @@
 
   <nav>
     <button class="tab active" data-tab="status">Status</button>
-    <button class="tab" data-tab="vault">Vault</button>
+    <button class="tab" data-tab="vaults">Vaults</button>
     <button class="tab" data-tab="settings">Settings</button>
     <button class="tab" data-tab="about">About</button>
   </nav>
@@ -37,12 +47,12 @@
         <div class="row">
           <button class="primary" id="btn-resignin">Sign in again</button>
           <span class="muted hidden" id="signin-problem-tip">Tip: your own pCloud app makes CryptBridge independent
-            of rclone's shared access — <button class="link" data-goto="settings">set it up in Settings</button>.</span>
+            of rclone's shared access — <button class="link" data-goto="vaults" data-page="account">set it up at the pCloud account</button>.</span>
         </div>
       </div>
       <div class="notice info hidden" id="lock-offer">
         <strong>Protect CryptBridge with an app password?</strong> Anyone who uses your Windows account could
-        otherwise open the drive and the emergency sheet. With an app password, CryptBridge starts locked, locks
+        otherwise open the drives and the emergency sheets. With an app password, CryptBridge starts locked, locks
         itself again with Windows (Win+L, signing out) and leaves nothing readable behind while locked.
         <div class="row">
           <button class="primary" id="btn-offer-lock">Set an app password</button>
@@ -50,7 +60,7 @@
         </div>
       </div>
       <div class="notice warn hidden" id="winfsp-missing">
-        WinFsp is not installed. It lets Windows show the vault as a drive letter.
+        WinFsp is not installed. It lets Windows show a vault as a drive letter.
         <button class="link" id="winfsp-download">Download WinFsp</button>
         — install it, then click Connect.
       </div>
@@ -60,186 +70,386 @@
         <span class="muted">from rclone.org, checked against rclone's published checksum.</span>
         <div class="bar hidden" id="download-bar"><div class="bar-fill" id="download-fill"></div></div>
       </div>
-      <div class="notice info hidden" id="setup-needed">
-        CryptBridge is not set up yet. Open the <button class="link" data-goto="vault">Vault</button> tab to sign in to pCloud and choose a vault.
+
+      <div class="empty-state hidden" id="setup-needed">
+        <svg class="big-icon"><use href="#i-lock"/></svg>
+        <h2>No vault yet</h2>
+        <p class="muted">A vault is a folder whose files are encrypted. CryptBridge shows it as a drive letter —
+          from your pCloud or from a folder on this PC or a USB drive.</p>
+        <button class="primary" data-goto="vaults" data-page="add">Add a vault</button>
       </div>
 
-      <div class="card drive-card">
-        <div class="drive-letter" id="drive-letter">Z:</div>
-        <div class="drive-info">
-          <div class="drive-state" id="drive-state">Disconnected</div>
-          <div class="muted" id="drive-detail"></div>
-        </div>
-        <div class="drive-actions">
-          <button class="primary" id="btn-connect">Connect</button>
-          <button id="btn-open-drive">Open drive</button>
+      <div class="summary hidden" id="summary">
+        <span id="summary-text"></span>
+        <div class="row tight">
+          <button id="btn-connect-all">Connect all</button>
+          <button id="btn-disconnect-all">Disconnect all</button>
         </div>
       </div>
-
-      <div class="card">
-        <h2>Uploads</h2>
-        <div class="muted" id="uploads-summary">Nothing to upload.</div>
-        <ul class="transfers" id="transfers"></ul>
-        <p class="hint">Files copied to the drive are first stored on this PC and then uploaded to pCloud.
-          Keep CryptBridge connected until the uploads are finished.</p>
-      </div>
-
-      <div class="card">
-        <h2>Vault</h2>
-        <div class="grid2">
-          <div>
-            <div class="label">Folder in pCloud</div>
-            <div class="value" id="vault-path">–</div>
-          </div>
-          <div>
-            <div class="label">Check code</div>
-            <div class="value code" id="vault-fingerprint">–</div>
-          </div>
-        </div>
-        <p class="hint">The check code must be the same on your Linux server. If it differs, the keys differ.</p>
-        <div class="label">pCloud storage</div>
-        <div class="bar"><div class="bar-fill" id="usage-bar"></div></div>
-        <div class="muted" id="usage-text">–</div>
-      </div>
+      <div id="drive-cards"></div>
     </section>
 
-    <!-- ===== Vault (setup) ===== -->
-    <section id="tab-vault" class="tab-page">
-      <div class="card">
-        <h2><span class="step">1</span> pCloud account</h2>
-        <div id="account-state" class="muted">Not signed in.</div>
-        <div class="row">
-          <button class="primary" id="btn-signin">Sign in to pCloud</button>
-          <button id="btn-signout" class="hidden">Sign out</button>
-        </div>
-        <div id="signin-waiting" class="notice info hidden">
-          Please sign in to pCloud in the browser window that has just opened.
-          <span id="signin-link-row" class="hidden">If no browser opened, <button class="link" id="signin-link">open the sign-in page</button>.</span>
-          <button id="btn-signin-cancel">Cancel</button>
-          <p class="hint" id="signin-hint-shared">If the pCloud page shows “Invalid 'client_id'”, pCloud is blocking
-            rclone's shared access at the moment: click Cancel and try again later — or set up your own pCloud app in Settings.</p>
-          <p class="hint hidden" id="signin-hint-own">If the pCloud page shows “redirect_uri is not authorized”, add
-            <code class="redirect-url"></code> to the Redirect URIs of your app on pCloud. If it shows
-            “Invalid 'client_id'”, check the client ID in Settings.</p>
-        </div>
-      </div>
+    <!-- ===== Vaults ===== -->
+    <section id="tab-vaults" class="tab-page">
+      <div class="split">
+        <aside class="sidebar">
+          <button class="side-item" data-page="account" id="side-account">
+            <svg class="side-icon"><use href="#i-cloud"/></svg>
+            <span class="side-name">pCloud account</span>
+            <span class="dot" id="side-account-dot"></span>
+          </button>
+          <div class="side-label">Vaults</div>
+          <div id="side-vaults"></div>
+          <button class="side-item add" data-page="add" id="side-add">
+            <svg class="side-icon"><use href="#i-plus"/></svg>
+            <span class="side-name">Add vault</span>
+          </button>
+        </aside>
 
-      <div class="card">
-        <h2><span class="step">2</span> Vault</h2>
-        <div class="segmented">
-          <label><input type="radio" name="vault-mode" value="new" checked> Create a new vault</label>
-          <label><input type="radio" name="vault-mode" value="existing"> Open an existing vault</label>
-        </div>
+        <div class="pages">
+          <div class="crumbs" id="crumbs"></div>
+          <div class="notice hidden" id="vaults-notice"></div>
 
-        <div class="field">
-          <label for="vault-folder">Folder in pCloud</label>
-          <div class="row">
-            <input id="vault-folder" type="text" placeholder="CryptBridge" spellcheck="false">
-            <button id="btn-find" class="only-existing">Search pCloud</button>
-          </div>
-          <ul class="candidates hidden" id="candidates"></ul>
-        </div>
-
-        <div class="field">
-          <label for="vault-password">Password</label>
-          <div class="row">
-            <input id="vault-password" type="password" autocomplete="off" spellcheck="false">
-            <button class="icon-btn" data-reveal="vault-password" title="Show or hide">👁</button>
-            <button class="only-new" data-generate="vault-password">Generate</button>
-          </div>
-        </div>
-        <div class="field">
-          <label for="vault-salt">Salt (second password, optional for existing vaults)</label>
-          <div class="row">
-            <input id="vault-salt" type="password" autocomplete="off" spellcheck="false">
-            <button class="icon-btn" data-reveal="vault-salt" title="Show or hide">👁</button>
-            <button class="only-new" data-generate="vault-salt">Generate</button>
-          </div>
-        </div>
-
-        <details class="only-existing">
-          <summary>Advanced settings (only if your vault was made with other rclone settings)</summary>
-          <div class="grid2">
-            <div class="field">
-              <label for="adv-encryption">File name encryption</label>
-              <select id="adv-encryption">
-                <option value="standard">standard</option>
-                <option value="obfuscate">obfuscate</option>
-                <option value="off">off</option>
-              </select>
+          <!-- pCloud account -->
+          <div class="page" id="page-account">
+            <div class="card">
+              <h2>pCloud account</h2>
+              <div id="account-state" class="muted">Not signed in.</div>
+              <div class="meter-block hidden" id="account-usage">
+                <div class="bar"><div class="bar-fill" id="account-usage-fill"></div></div>
+                <div class="muted small" id="account-usage-text"></div>
+              </div>
+              <div class="row">
+                <button class="primary" id="btn-signin">Sign in to pCloud</button>
+                <button id="btn-signout" class="hidden">Sign out</button>
+              </div>
+              <div id="signin-waiting" class="notice info hidden">
+                Please sign in to pCloud in the browser window that has just opened.
+                <span id="signin-link-row" class="hidden">If no browser opened, <button class="link" id="signin-link">open the sign-in page</button>.</span>
+                <button id="btn-signin-cancel">Cancel</button>
+                <p class="hint" id="signin-hint-shared">If the pCloud page shows “Invalid 'client_id'”, pCloud is blocking
+                  rclone's shared access at the moment: click Cancel and try again later — or set up your own pCloud app below.</p>
+                <p class="hint hidden" id="signin-hint-own">If the pCloud page shows “redirect_uri is not authorized”, add
+                  <code class="redirect-url"></code> to the Redirect URIs of your app on pCloud. If it shows
+                  “Invalid 'client_id'”, check the client ID below.</p>
+              </div>
+              <div id="account-result" class="notice hidden"></div>
+              <p class="hint">One pCloud account serves all your pCloud vaults. Vaults on this PC do not need it.</p>
             </div>
-            <div class="field">
-              <label for="adv-encoding">File name encoding</label>
-              <select id="adv-encoding">
-                <option value="base32">base32</option>
-                <option value="base64">base64</option>
-                <option value="base32768">base32768</option>
-              </select>
-            </div>
-            <div class="field">
-              <label><input id="adv-dirnames" type="checkbox" checked> Encrypt folder names</label>
-            </div>
-            <div class="field">
-              <label for="adv-suffix">File ending (only with "off")</label>
-              <input id="adv-suffix" type="text" value=".bin" spellcheck="false">
+
+            <div class="card">
+              <h2>Own pCloud app <span class="muted">— recommended</span></h2>
+              <p class="muted">CryptBridge signs in to pCloud through rclone. Without an own app it uses rclone's shared
+                access, which pCloud has blocked for hours at a time before (most recently on 5 October 2026). With your own
+                app, CryptBridge no longer depends on it. Your vaults stay exactly as they are — same keys, same files;
+                you only sign in once more.</p>
+              <div class="label">In use now</div>
+              <div class="value" id="app-state">rclone's shared access</div>
+
+              <details>
+                <summary>How to get your own pCloud app (once; pCloud has to approve it)</summary>
+                <ol class="steps">
+                  <li>Open <button class="link" data-url="https://docs.pcloud.com/my_apps/">My Apps on pCloud</button>,
+                    log in with your pCloud account and request a new application.</li>
+                  <li>Fill in the request exactly like this, then click <strong>Create request</strong>:
+                    <table class="form-guide">
+                      <tr><th>App name</th><td><span class="copy-text" id="guide-name">CryptBridge (personal)</span>
+                        <button class="link" data-copy="guide-name">Copy</button></td></tr>
+                      <tr><th>Application Type</th><td><strong>Personal use</strong></td></tr>
+                      <tr><th>Folder access</th><td><strong>All folders</strong> — your vaults are normal folders in your pCloud</td></tr>
+                      <tr><th>Write access</th><td><strong>Yes</strong> — needed to upload files</td></tr>
+                      <tr><th>Website</th><td><span class="copy-text" id="guide-website">https://github.com/burnersen/CryptBridge</span>
+                        <button class="link" data-copy="guide-website">Copy</button></td></tr>
+                      <tr><th>Expected number of users</th><td><strong>1</strong></td></tr>
+                      <tr><th>Reason</th><td><span class="copy-text" id="guide-reason">Personal use only. I use the open-source tool
+                        CryptBridge (https://github.com/burnersen/CryptBridge), which is based on rclone, to access my own pCloud
+                        account: it shows an encrypted folder of my pCloud as a drive on my own computers. Only my own pCloud
+                        account will use this app. It needs access to all folders because my existing encrypted folders are not
+                        inside an app folder, and write access to upload my files.</span>
+                        <button class="link" data-copy="guide-reason">Copy</button></td></tr>
+                    </table></li>
+                  <li>Wait until pCloud approves the app. This can take a while — so request it now, before you need it.</li>
+                  <li>Open the approved app on My Apps and add this address under <strong>Redirect URIs</strong>:
+                    <code class="copy-text redirect-url" id="guide-redirect"></code>
+                    <button class="link" data-copy="guide-redirect">Copy</button><br>
+                    <span class="muted">Without it, pCloud answers the sign-in with “redirect_uri is not authorized”.</span></li>
+                  <li>Copy the app's <strong>Client ID</strong> and <strong>Client secret</strong> into the fields below and click
+                    <strong>Save app</strong>, then sign in again when CryptBridge asks.</li>
+                  <li><span class="muted">Linux server (not urgent — its sign-in keeps working until pCloud blocks rclone's shared
+                    access again): create a new transfer block on the page of the vault, run <code>sudo cryptbridge setup</code> on the
+                    server, answer <strong>n</strong> to “Keep the pCloud sign-in and vault keys from the last setup?” and paste
+                    the block.</span></li>
+                </ol>
+              </details>
+
+              <div class="grid2">
+                <div class="field">
+                  <label for="app-client-id">Client ID</label>
+                  <div class="row">
+                    <input id="app-client-id" type="text" spellcheck="false" autocomplete="off">
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="app-client-secret">Client secret</label>
+                  <div class="row">
+                    <input id="app-client-secret" type="password" spellcheck="false" autocomplete="off">
+                    <button class="icon-btn" data-reveal="app-client-secret" title="Show or hide">👁</button>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <button class="primary" id="btn-save-app">Save app</button>
+                <button id="btn-remove-app" class="hidden">Use rclone's shared access again</button>
+              </div>
+              <div id="app-result" class="notice hidden"></div>
+              <p class="hint">The codes are stored encrypted with your Windows account, like your pCloud sign-in. They are not
+                part of the transfer block: the server needs only the sign-in itself.</p>
             </div>
           </div>
-        </details>
 
-        <div class="notice warn only-new">
-          Write down the password and the salt, or print the emergency sheet afterwards.
-          <strong>Without them, the files in the vault can never be opened again — not even by pCloud.</strong>
-        </div>
+          <!-- One vault (filled for the vault chosen in the sidebar) -->
+          <div class="page" id="page-vault">
+            <div class="vault-head">
+              <div class="drive-letter" id="v-letter">Z:</div>
+              <div class="vault-title">
+                <h1 id="v-name"></h1>
+                <div class="muted" id="v-where"></div>
+              </div>
+              <span class="badge" id="v-state"></span>
+            </div>
+            <div class="row">
+              <button class="primary" id="btn-v-connect">Connect</button>
+              <button id="btn-v-open">Open drive</button>
+            </div>
+            <div class="notice hidden" id="v-message"></div>
+            <div class="notice warn hidden" id="v-other-folder">
+              <div id="v-other-text"></div>
+              <div class="row">
+                <button class="primary" id="btn-v-use-folder">This is my vault — use this folder</button>
+              </div>
+            </div>
+            <div id="v-result" class="notice hidden"></div>
 
-        <div class="row">
-          <button id="btn-check">Check keys</button>
-          <button class="primary" id="btn-save-vault">Use this vault</button>
-        </div>
-        <div id="vault-result" class="notice hidden"></div>
-      </div>
+            <div class="card">
+              <h2>Details</h2>
+              <div class="grid2">
+                <div>
+                  <div class="label" id="v-location-label">Location</div>
+                  <div class="value" id="v-location"></div>
+                </div>
+                <div>
+                  <div class="label">Check code</div>
+                  <div class="value code" id="v-fingerprint">–</div>
+                </div>
+              </div>
+              <div class="label">Size of the vault</div>
+              <div class="row tight">
+                <span class="value" id="v-size">–</span>
+                <button id="btn-v-count" class="small-btn">Count now</button>
+                <button id="btn-v-count-cancel" class="small-btn hidden">Cancel</button>
+              </div>
+              <p class="hint" id="v-size-hint"></p>
+              <p class="hint" id="v-fingerprint-hint"></p>
+            </div>
 
-      <div class="card">
-        <h2><span class="step">3</span> Linux server</h2>
-        <p class="muted">Bring the pCloud sign-in and the vault keys to your server without typing them:
-          create a transfer block, then run <code>sudo bash setup.sh</code> on the server and choose
-          "Paste the transfer block".</p>
-        <div class="row">
-          <button class="primary" id="btn-transfer">Create transfer block</button>
-        </div>
-        <div id="transfer-area" class="hidden">
-          <div class="label">Transfer code (type it on the server when asked)</div>
-          <div class="code big" id="transfer-code"></div>
-          <div class="label">Transfer block</div>
-          <textarea id="transfer-block" readonly spellcheck="false"></textarea>
-          <div class="row">
-            <button id="btn-copy-block">Copy block</button>
-            <button id="btn-save-block">Save as file…</button>
-            <span class="muted" id="transfer-result"></span>
+            <div class="card">
+              <h2>Drive</h2>
+              <div class="grid2">
+                <div class="field">
+                  <label for="v-edit-name">Name (shown in Explorer)</label>
+                  <input id="v-edit-name" type="text" maxlength="32" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label for="v-edit-letter">Drive letter</label>
+                  <select id="v-edit-letter"></select>
+                </div>
+              </div>
+              <label class="check"><input id="v-edit-auto" type="checkbox"> <span id="v-edit-auto-label">Connect when CryptBridge starts</span></label>
+              <div class="row">
+                <button class="primary" id="btn-v-save">Save</button>
+                <span class="muted" id="v-save-result"></span>
+              </div>
+              <p class="hint">The drive letter can only change while the drive is disconnected. A new name shows in
+                Explorer from the next connect.</p>
+            </div>
+
+            <div class="card" id="v-linux">
+              <h2>Linux server</h2>
+              <p class="muted">Bring the pCloud sign-in and the keys of this vault to your server without typing them:
+                create a transfer block, then run <code>sudo bash setup.sh</code> on the server and choose
+                "Paste the transfer block".</p>
+              <div class="row">
+                <button class="primary" id="btn-transfer">Create transfer block</button>
+              </div>
+              <div id="transfer-area" class="hidden">
+                <div class="label">Transfer code (type it on the server when asked)</div>
+                <div class="code big" id="transfer-code"></div>
+                <div class="label">Transfer block</div>
+                <textarea id="transfer-block" readonly spellcheck="false"></textarea>
+                <div class="row">
+                  <button id="btn-copy-block">Copy block</button>
+                  <button id="btn-save-block">Save as file…</button>
+                  <span class="muted" id="transfer-result"></span>
+                </div>
+                <p class="hint">The block contains your keys, protected by the code. Never send block and code
+                  the same way (for example, not both in one e-mail). Each click makes a new code.</p>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>Emergency sheet</h2>
+              <p class="muted">A page with everything needed to open this vault — even without CryptBridge.
+                Print it and keep it like a house key. It is not saved anywhere by CryptBridge.</p>
+              <button id="btn-sheet">Show emergency sheet</button>
+            </div>
+
+            <div class="card danger">
+              <h2>Remove from CryptBridge</h2>
+              <p class="muted">CryptBridge forgets this vault and its keys. <strong>The files of the vault are not
+                touched</strong> — with the emergency sheet you can add it again at any time.</p>
+              <button class="danger-btn" id="btn-v-remove">Remove vault…</button>
+            </div>
           </div>
-          <p class="hint">The block contains your keys, protected by the code. Never send block and code
-            the same way (for example, not both in one e-mail). Each click makes a new code.</p>
-        </div>
-      </div>
 
-      <div class="card">
-        <h2>Emergency sheet</h2>
-        <p class="muted">A page with everything needed to open the vault — even without CryptBridge.
-          Print it and keep it like a house key. It is not saved anywhere by CryptBridge.</p>
-        <button id="btn-sheet">Show emergency sheet</button>
+          <!-- Add a vault -->
+          <div class="page" id="page-add">
+            <div class="card">
+              <h2><span class="step">1</span> Where is the vault?</h2>
+              <div class="choices">
+                <button class="choice" data-kind="pcloud" id="choice-pcloud">
+                  <svg class="choice-icon"><use href="#i-cloud"/></svg>
+                  <strong>In pCloud</strong>
+                  <span class="muted">Your files are encrypted on this PC and stored in your pCloud.</span>
+                </button>
+                <button class="choice" data-kind="local" id="choice-local">
+                  <svg class="choice-icon"><use href="#i-disk"/></svg>
+                  <strong>On this PC or a USB drive</strong>
+                  <span class="muted">A folder on a disk of this PC. Encrypted and decrypted only here — no pCloud needed.</span>
+                </button>
+              </div>
+              <div class="notice info hidden" id="add-signin-needed">
+                Vaults in pCloud need the pCloud sign-in first —
+                <button class="link" data-page="account">sign in at the pCloud account</button>.
+              </div>
+            </div>
+
+            <div id="add-form" class="hidden">
+              <div class="card">
+                <h2><span class="step">2</span> New or existing?</h2>
+                <div class="segmented">
+                  <label><input type="radio" name="add-mode" value="new" checked> Create a new vault</label>
+                  <label><input type="radio" name="add-mode" value="existing"> Open an existing vault</label>
+                </div>
+              </div>
+
+              <div class="card">
+                <h2><span class="step">3</span> Folder</h2>
+                <div class="field">
+                  <label for="add-folder" id="add-folder-label">Folder in pCloud</label>
+                  <div class="row">
+                    <input id="add-folder" type="text" spellcheck="false">
+                    <button id="btn-add-browse">Browse…</button>
+                    <button id="btn-find" class="only-existing only-pcloud">Search pCloud</button>
+                  </div>
+                  <ul class="candidates hidden" id="candidates"></ul>
+                  <div class="folder-info hidden" id="add-folder-info"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <h2><span class="step">4</span> Keys</h2>
+                <div class="field">
+                  <label for="add-password">Password</label>
+                  <div class="row">
+                    <input id="add-password" type="password" autocomplete="off" spellcheck="false">
+                    <button class="icon-btn" data-reveal="add-password" title="Show or hide">👁</button>
+                    <button class="only-new" data-generate="add-password">Generate</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="add-salt">Salt (second password, optional for existing vaults)</label>
+                  <div class="row">
+                    <input id="add-salt" type="password" autocomplete="off" spellcheck="false">
+                    <button class="icon-btn" data-reveal="add-salt" title="Show or hide">👁</button>
+                    <button class="only-new" data-generate="add-salt">Generate</button>
+                  </div>
+                </div>
+                <details class="only-existing">
+                  <summary>Advanced settings (only if your vault was made with other rclone settings)</summary>
+                  <div class="grid2">
+                    <div class="field">
+                      <label for="adv-encryption">File name encryption</label>
+                      <select id="adv-encryption">
+                        <option value="standard">standard</option>
+                        <option value="obfuscate">obfuscate</option>
+                        <option value="off">off</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="adv-encoding">File name encoding</label>
+                      <select id="adv-encoding">
+                        <option value="base32">base32</option>
+                        <option value="base64">base64</option>
+                        <option value="base32768">base32768</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label><input id="adv-dirnames" type="checkbox" checked> Encrypt folder names</label>
+                    </div>
+                    <div class="field">
+                      <label for="adv-suffix">File ending (only with "off")</label>
+                      <input id="adv-suffix" type="text" value=".bin" spellcheck="false">
+                    </div>
+                  </div>
+                </details>
+                <div class="notice warn only-new">
+                  Write down the password and the salt, or print the emergency sheet afterwards.
+                  <strong>Without them, the files in the vault can never be opened again — not by anyone.</strong>
+                </div>
+              </div>
+
+              <div class="card">
+                <h2><span class="step">5</span> Drive</h2>
+                <div class="grid2">
+                  <div class="field">
+                    <label for="add-name">Name (shown in Explorer)</label>
+                    <input id="add-name" type="text" maxlength="32" spellcheck="false">
+                  </div>
+                  <div class="field">
+                    <label for="add-letter">Drive letter</label>
+                    <select id="add-letter"></select>
+                  </div>
+                </div>
+                <label class="check"><input id="add-auto" type="checkbox" checked> <span id="add-auto-label">Connect when CryptBridge starts</span></label>
+                <div class="row">
+                  <button id="btn-check">Check keys</button>
+                  <button class="primary" id="btn-add">Add vault</button>
+                </div>
+                <div id="add-result" class="notice hidden"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
     <!-- ===== Settings ===== -->
     <section id="tab-settings" class="tab-page">
       <div class="card">
-        <h2>Drive</h2>
+        <h2>Appearance</h2>
+        <div class="segmented" id="theme-choice">
+          <label><input type="radio" name="theme" value="auto"> Automatic (like Windows)</label>
+          <label><input type="radio" name="theme" value="light"> Light</label>
+          <label><input type="radio" name="theme" value="dark"> Dark</label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Cache</h2>
+        <p class="muted">Files copied to a drive are first stored here. For pCloud vaults, recently used files stay
+          here too, so that films start fast. Shared by all drives.</p>
         <div class="grid2">
           <div class="field">
-            <label for="opt-letter">Drive letter</label>
-            <select id="opt-letter"></select>
-          </div>
-          <div class="field">
-            <label for="opt-cache-max">Cache size (soft limit)</label>
+            <label for="opt-cache-max">Cache size per drive (soft limit)</label>
             <input id="opt-cache-max" type="text" spellcheck="false">
           </div>
           <div class="field">
@@ -248,20 +458,21 @@
           </div>
         </div>
         <div class="field">
-          <label for="opt-cache-dir">Cache folder (needs room for the largest file you copy to the drive)</label>
+          <label for="opt-cache-dir">Cache folder (needs room for the largest file you copy to a drive)</label>
           <div class="row">
             <input id="opt-cache-dir" type="text" spellcheck="false">
             <button id="btn-browse-cache">Browse…</button>
           </div>
         </div>
-        <p class="hint">Drive letter and cache can only be changed while the drive is disconnected.
-          Files that are still waiting for upload stay in the old cache folder — finish uploads before you move it.</p>
+        <p class="hint">The cache can only be changed while all drives are disconnected. Files that are still waiting
+          for upload stay in the old cache folder — finish uploads before you move it. The cache holds files
+          decrypted; with the app lock on, it is deleted whenever CryptBridge locks.</p>
       </div>
       <div class="card">
         <h2>Behaviour</h2>
         <label class="check"><input id="opt-autostart" type="checkbox"> Start CryptBridge with Windows</label>
-        <label class="check"><input id="opt-autoconnect" type="checkbox"> Connect the drive when CryptBridge starts</label>
         <label class="check"><input id="opt-autoreconnect" type="checkbox"> Reconnect automatically after a problem</label>
+        <p class="hint">Whether a drive connects when CryptBridge starts is set for each vault on its page.</p>
       </div>
       <div class="row">
         <button class="primary" id="btn-save-settings">Save settings</button>
@@ -271,11 +482,11 @@
       <div class="card">
         <h2>App lock <span class="muted">— recommended</span></h2>
         <p class="muted">With an app password, CryptBridge starts locked and locks itself again when you lock
-          Windows (Win+L) or sign out. Locked, the drive is closed (after running uploads are done), rclone is
+          Windows (Win+L) or sign out. Locked, the drives are closed (after running uploads are done), rclone is
           stopped, and the cache with readable copies of your files is deleted. The pCloud sign-in and the vault
-          keys are stored sealed with the app password. The emergency sheet and the transfer block ask for it, too.</p>
-        <p class="hint">The app password is not the vault password: if you forget it, your files are not lost —
-          you set CryptBridge up again with the emergency sheet.</p>
+          keys are stored sealed with the app password. The emergency sheets and the transfer block ask for it, too.</p>
+        <p class="hint">The app password is not a vault password: if you forget it, your files are not lost —
+          you set CryptBridge up again with the emergency sheets.</p>
         <div class="label">State</div>
         <div class="value" id="lock-state">Off</div>
 
@@ -327,75 +538,6 @@
         </div>
         <div id="lock-result" class="notice hidden"></div>
       </div>
-
-      <div class="card">
-        <h2>Own pCloud app <span class="muted">— recommended</span></h2>
-        <p class="muted">CryptBridge signs in to pCloud through rclone. Without an own app it uses rclone's shared
-          access, which pCloud has blocked for hours at a time before (most recently on 5 October 2026). With your own
-          app, CryptBridge no longer depends on it. Your vault stays exactly as it is — same keys, same files;
-          you only sign in once more.</p>
-        <div class="label">In use now</div>
-        <div class="value" id="app-state">rclone's shared access</div>
-
-        <details>
-          <summary>How to get your own pCloud app (once; pCloud has to approve it)</summary>
-          <ol class="steps">
-            <li>Open <button class="link" data-url="https://docs.pcloud.com/my_apps/">My Apps on pCloud</button>,
-              log in with your pCloud account and request a new application.</li>
-            <li>Fill in the request exactly like this, then click <strong>Create request</strong>:
-              <table class="form-guide">
-                <tr><th>App name</th><td><span class="copy-text" id="guide-name">CryptBridge (personal)</span>
-                  <button class="link" data-copy="guide-name">Copy</button></td></tr>
-                <tr><th>Application Type</th><td><strong>Personal use</strong></td></tr>
-                <tr><th>Folder access</th><td><strong>All folders</strong> — your vault is a normal folder in your pCloud</td></tr>
-                <tr><th>Write access</th><td><strong>Yes</strong> — needed to upload files</td></tr>
-                <tr><th>Website</th><td><span class="copy-text" id="guide-website">https://github.com/burnersen/CryptBridge</span>
-                  <button class="link" data-copy="guide-website">Copy</button></td></tr>
-                <tr><th>Expected number of users</th><td><strong>1</strong></td></tr>
-                <tr><th>Reason</th><td><span class="copy-text" id="guide-reason">Personal use only. I use the open-source tool
-                  CryptBridge (https://github.com/burnersen/CryptBridge), which is based on rclone, to access my own pCloud
-                  account: it shows an encrypted folder of my pCloud as a drive on my own computers. Only my own pCloud
-                  account will use this app. It needs access to all folders because my existing encrypted folders are not
-                  inside an app folder, and write access to upload my files.</span>
-                  <button class="link" data-copy="guide-reason">Copy</button></td></tr>
-              </table></li>
-            <li>Wait until pCloud approves the app. This can take a while — so request it now, before you need it.</li>
-            <li>Open the approved app on My Apps and add this address under <strong>Redirect URIs</strong>:
-              <code class="copy-text redirect-url" id="guide-redirect"></code>
-              <button class="link" data-copy="guide-redirect">Copy</button><br>
-              <span class="muted">Without it, pCloud answers the sign-in with “redirect_uri is not authorized”.</span></li>
-            <li>Copy the app's <strong>Client ID</strong> and <strong>Client secret</strong> into the fields below and click
-              <strong>Save app</strong>, then sign in again when CryptBridge asks.</li>
-            <li><span class="muted">Linux server (not urgent — its sign-in keeps working until pCloud blocks rclone's shared
-              access again): create a new transfer block on the Vault tab, run <code>sudo cryptbridge setup</code> on the
-              server, answer <strong>n</strong> to “Keep the pCloud sign-in and vault keys from the last setup?” and paste
-              the block.</span></li>
-          </ol>
-        </details>
-
-        <div class="grid2">
-          <div class="field">
-            <label for="app-client-id">Client ID</label>
-            <div class="row">
-              <input id="app-client-id" type="text" spellcheck="false" autocomplete="off">
-            </div>
-          </div>
-          <div class="field">
-            <label for="app-client-secret">Client secret</label>
-            <div class="row">
-              <input id="app-client-secret" type="password" spellcheck="false" autocomplete="off">
-              <button class="icon-btn" data-reveal="app-client-secret" title="Show or hide">👁</button>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <button class="primary" id="btn-save-app">Save app</button>
-          <button id="btn-remove-app" class="hidden">Use rclone's shared access again</button>
-        </div>
-        <div id="app-result" class="notice hidden"></div>
-        <p class="hint">The codes are stored encrypted with your Windows account, like your pCloud sign-in. They are not
-          part of the transfer block: the server needs only the sign-in itself.</p>
-      </div>
     </section>
 
     <!-- ===== About ===== -->
@@ -423,7 +565,7 @@
         <h2>Third-party software</h2>
         <ul class="plain">
           <li><button class="link" data-url="https://rclone.org/">rclone</button> (MIT licence) does the encryption and transfers. It runs as its own program.</li>
-          <li><button class="link" data-url="https://winfsp.dev/">WinFsp</button> (GPLv3 with FLOSS exception) lets Windows show the drive. Installed separately.</li>
+          <li><button class="link" data-url="https://winfsp.dev/">WinFsp</button> (GPLv3 with FLOSS exception) lets Windows show the drives. Installed separately.</li>
           <li>Built into this program: Wails and further libraries under the MIT licence, fyne systray (Apache 2.0),
             Go and golang.org/x (BSD-3-Clause). The full list with links is in the
             <button class="link" data-url="https://github.com/burnersen/CryptBridge#third-party-components">README</button>.</li>
@@ -432,6 +574,44 @@
     </section>
   </main>
 
+  <!-- Folder browser for pCloud. -->
+  <div id="browser" class="overlay hidden">
+    <div class="dialog wide">
+      <h1>Choose a folder in pCloud</h1>
+      <div class="crumbs browser-crumbs" id="browser-crumbs"></div>
+      <div class="notice hidden" id="browser-note"></div>
+      <ul class="folder-list" id="browser-list"></ul>
+      <div class="row only-new" id="browser-new">
+        <input id="browser-new-name" type="text" placeholder="Name of a new folder here" spellcheck="false">
+        <button id="btn-browser-new">Use a new folder</button>
+      </div>
+      <div class="row">
+        <button class="primary" id="btn-browser-choose">Choose this folder</button>
+        <button id="btn-browser-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirms removing a vault. -->
+  <div id="remove-dialog" class="overlay hidden">
+    <div class="dialog">
+      <h1>Remove <span id="remove-name"></span>?</h1>
+      <p>CryptBridge forgets this vault and its keys. The files of the vault stay where they are.</p>
+      <p class="notice warn">Without its keys, nobody can ever open the vault again. Before you remove it, make sure
+        you have its emergency sheet — printed, or the password and salt written down.
+        <button class="link" id="btn-remove-sheet">Show the emergency sheet now</button></p>
+      <div class="field">
+        <label for="remove-confirm">Type the name of the vault to confirm: <strong id="remove-name-2"></strong></label>
+        <input id="remove-confirm" type="text" spellcheck="false" autocomplete="off">
+      </div>
+      <div id="remove-result" class="notice hidden"></div>
+      <div class="row">
+        <button class="danger-btn" id="btn-remove-ok" disabled>Remove from CryptBridge</button>
+        <button id="btn-remove-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Emergency sheet: filled by app.js only when shown, removed when closed. -->
   <div id="sheet" class="hidden">
     <div class="sheet-actions no-print">
@@ -439,13 +619,12 @@
       <button id="btn-sheet-close">Close</button>
     </div>
     <div class="sheet-page">
-      <h1>CryptBridge emergency sheet</h1>
-      <p class="sheet-warning">Keep this sheet like a house key. Anyone who has it — and access to your pCloud — can read your vault.
-        Without the password and the salt, nobody can open the vault, not even pCloud.</p>
+      <h1>CryptBridge emergency sheet: <span id="s-name"></span></h1>
+      <p class="sheet-warning" id="s-warning"></p>
       <table>
         <tr><th>Created</th><td id="s-created"></td></tr>
-        <tr><th>pCloud region</th><td id="s-region"></td></tr>
-        <tr><th>Vault folder in pCloud</th><td id="s-path" class="mono"></td></tr>
+        <tr class="s-pcloud"><th>pCloud region</th><td id="s-region"></td></tr>
+        <tr><th id="s-path-label">Vault folder</th><td id="s-path" class="mono"></td></tr>
         <tr><th>Password</th><td id="s-password" class="mono secret"></td></tr>
         <tr><th>Salt (password 2)</th><td id="s-salt" class="mono secret"></td></tr>
         <tr><th>File name encryption</th><td id="s-encryption" class="mono"></td></tr>
@@ -456,11 +635,11 @@
       </table>
       <h2>Opening the vault again</h2>
       <ol>
-        <li><strong>With CryptBridge</strong> (Windows or the Linux setup): sign in to pCloud, choose
-          "Open an existing vault", enter folder, password and salt. The check code must match the one above.</li>
+        <li id="s-with-cryptbridge"></li>
         <li><strong>With rclone alone</strong> (any computer, <span class="mono">rclone.org</span>):
           <pre id="s-rclone"></pre></li>
       </ol>
+      <p class="sheet-local" id="s-backup"></p>
       <p class="sheet-foot">CryptBridge — https://github.com/burnersen/CryptBridge</p>
     </div>
   </div>
@@ -468,9 +647,9 @@
   <!-- Lock screen: covers everything while CryptBridge is locked. -->
   <div id="lock-screen" class="hidden">
     <div class="lock-box">
-      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3z"/></svg>
+      <svg class="logo"><use href="#i-lock"/></svg>
       <h1>CryptBridge is locked</h1>
-      <p class="muted" id="lock-hint">Enter your app password to open the vault.</p>
+      <p class="muted" id="lock-hint">Enter your app password to open your vaults.</p>
       <div class="field">
         <label for="unlock-password">App password</label>
         <input id="unlock-password" type="password" autocomplete="current-password" spellcheck="false">
@@ -483,9 +662,9 @@
       <details>
         <summary>Forgot the app password?</summary>
         <p class="hint">The app password cannot be recovered — CryptBridge stores the keys only sealed with it.
-          Your files in pCloud are not affected: reset CryptBridge, then sign in to pCloud again and open your
-          vault with <strong>password and salt from your emergency sheet</strong>. Without the emergency sheet
-          (or the keys written down elsewhere), the vault cannot be opened again.</p>
+          Your vaults are not affected: reset CryptBridge, then add your vaults again with
+          <strong>password and salt from their emergency sheets</strong>. Without the emergency sheets
+          (or the keys written down elsewhere), the vaults cannot be opened again.</p>
         <button id="btn-reset-app">Reset CryptBridge</button>
       </details>
     </div>

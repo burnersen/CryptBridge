@@ -85,3 +85,28 @@ func TestClearCacheEdgeCases(t *testing.T) {
 		t.Error("an empty remote name must be refused")
 	}
 }
+
+func TestCacheRemotesAndWaitingUploads(t *testing.T) {
+	cacheDir := t.TempDir()
+	if got, err := CacheRemotes(cacheDir); err != nil || len(got) != 0 {
+		t.Fatalf("empty cache: %v %v", got, err)
+	}
+	cacheFile(t, cacheDir, "waiting.bin", `{"Dirty":true}`)
+	cacheFile(t, cacheDir, "done.bin", `{"Dirty":false}`)
+	if err := os.MkdirAll(filepath.Join(cacheDir, "vfsMeta", "cbv1a2b3c4d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CacheRemotes(cacheDir)
+	if err != nil || len(got) != 2 || got[0] != "cbv1a2b3c4d" || got[1] != "cbvault" {
+		t.Fatalf("CacheRemotes = %v, %v; want [cbv1a2b3c4d cbvault]", got, err)
+	}
+	if n, err := WaitingUploads(cacheDir, "cbvault"); err != nil || n != 1 {
+		t.Fatalf("WaitingUploads(cbvault) = %d, %v; want 1", n, err)
+	}
+	if n, err := WaitingUploads(cacheDir, "cbunknown"); err != nil || n != 0 {
+		t.Fatalf("WaitingUploads of a remote without cache = %d, %v; want 0", n, err)
+	}
+	if _, err := WaitingUploads("relative", "cbvault"); err == nil {
+		t.Fatal("WaitingUploads accepted a relative cache folder")
+	}
+}

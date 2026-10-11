@@ -27,6 +27,15 @@ const (
 	PollInterval   = "1m"   // ask pCloud for changes every minute
 )
 
+// Values for a vault in a folder of this PC. Reading from a local disk is
+// fast, so only files being written pass through the cache, and they leave
+// it soon after: the cache holds them decrypted.
+const (
+	LocalCacheMode    = "writes"
+	LocalCacheMaxAge  = "1m"  // a written file leaves the cache a minute after its last use
+	LocalDirCacheTime = "10s" // local disks report no changes: look again soon
+)
+
 // Settings describe one drive.
 type Settings struct {
 	Remote            string // rclone remote of the vault, e.g. "cbvault:"
@@ -34,6 +43,30 @@ type Settings struct {
 	VolumeName        string // name shown in Explorer
 	CacheMaxSize      string // e.g. "20G"; a soft limit, files in use stay
 	CacheMinFreeSpace string // emergency brake: keep this much disk space free
+	Local             bool   // the vault is a folder of this PC, not in pCloud
+}
+
+// vfsOptions returns rclone's file system options for the drive.
+func (s Settings) vfsOptions() map[string]any {
+	if s.Local {
+		return map[string]any{
+			"CacheMode":         LocalCacheMode,
+			"CacheMaxAge":       LocalCacheMaxAge,
+			"CacheMaxSize":      s.CacheMaxSize,
+			"CacheMinFreeSpace": s.CacheMinFreeSpace,
+			"DirCacheTime":      LocalDirCacheTime,
+		}
+	}
+	return map[string]any{
+		"CacheMode":         CacheMode,
+		"CacheMaxSize":      s.CacheMaxSize,
+		"CacheMinFreeSpace": s.CacheMinFreeSpace,
+		"ChunkSize":         ChunkSize,
+		"ChunkSizeLimit":    ChunkSizeLimit,
+		"ReadAhead":         ReadAhead,
+		"DirCacheTime":      DirCacheTime,
+		"PollInterval":      PollInterval,
+	}
 }
 
 // Mount mounts the vault. The drive letter must be free.
@@ -52,16 +85,7 @@ func Mount(ctx context.Context, client *rcd.Client, s Settings) error {
 		"fs":         s.Remote,
 		"mountPoint": letter + ":",
 		"mountType":  "cmount",
-		"vfsOpt": map[string]any{
-			"CacheMode":         CacheMode,
-			"CacheMaxSize":      s.CacheMaxSize,
-			"CacheMinFreeSpace": s.CacheMinFreeSpace,
-			"ChunkSize":         ChunkSize,
-			"ChunkSizeLimit":    ChunkSizeLimit,
-			"ReadAhead":         ReadAhead,
-			"DirCacheTime":      DirCacheTime,
-			"PollInterval":      PollInterval,
-		},
+		"vfsOpt":     s.vfsOptions(),
 		"mountOpt": map[string]any{
 			"VolumeName":  s.VolumeName,
 			"NetworkMode": true,
@@ -147,14 +171,43 @@ func ReadStatus(ctx context.Context, client *rcd.Client, remote, letter string) 
 	status.CacheOutOfSpace = vfsStats.DiskCache.OutOfSpace
 	status.CacheErroredFiles = vfsStats.DiskCache.ErroredFiles
 
-	var coreStats struct {
-		Transferring []Transfer `json:"transferring"`
-	}
-	if err := client.Call(ctx, "core/stats", nil, &coreStats); err != nil {
+	transfers, err := readTransfers(ctx, client)
+	if err != nil {
 		return status, err
 	}
-	status.Transfers = coreStats.Transferring
+	status.Transfers = transfersOf(transfers, remote)
 	return status, nil
+}
+
+// remoteTransfer is a transfer as rclone reports it, with the remotes it
+// goes between (measured with rclone 1.75: an upload from the cache has
+// dstFs "cbvault:").
+type remoteTransfer struct {
+	Transfer
+	SrcFs string `json:"srcFs"`
+	DstFs string `json:"dstFs"`
+}
+
+// readTransfers lists every running transfer of all drives.
+func readTransfers(ctx context.Context, client *rcd.Client) ([]remoteTransfer, error) {
+	var coreStats struct {
+		Transferring []remoteTransfer `json:"transferring"`
+	}
+	if err := client.Call(ctx, "core/stats", nil, &coreStats); err != nil {
+		return nil, err
+	}
+	return coreStats.Transferring, nil
+}
+
+// transfersOf picks the transfers to or from one drive's remote.
+func transfersOf(all []remoteTransfer, remote string) []Transfer {
+	mine := []Transfer{}
+	for _, t := range all {
+		if t.DstFs == remote || t.SrcFs == remote {
+			mine = append(mine, t.Transfer)
+		}
+	}
+	return mine
 }
 
 // isMounted asks rclone whether it has a drive on this letter.

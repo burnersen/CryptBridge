@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
@@ -22,8 +23,9 @@ import (
 // locks again when Windows is locked or the user signs out. Locked means
 // that nothing readable is left behind:
 //
-//   - sign-in and vault keys exist only sealed with the app password,
-//   - the drive is closed (after its uploads are done),
+//   - sign-in, vault locations and vault keys exist only sealed with the
+//     app password,
+//   - the drives are closed (after their uploads are done),
 //   - rclone is stopped: it held the keys, and its control API can be
 //     reached by anyone in the Windows session,
 //   - the cache, which rclone keeps decrypted, and rclone's log are deleted.
@@ -54,30 +56,36 @@ func (e *Engine) saveSettings(s settings.Settings) error {
 }
 
 // startLockedLocked is the start with the app lock on. An rclone that
-// outlived a crashed window still holds the keys and maybe the drive: it is
-// closed as if the app had just been locked.
+// outlived a crashed window still holds the keys and maybe drives: they are
+// closed as if the app had just been locked, and connect again after
+// unlocking.
 func (e *Engine) startLockedLocked(ctx context.Context) {
 	client, err := rcd.Attach(ctx, e.paths.StateFile)
 	if err != nil {
 		e.setPhase(PhaseLocked, "")
 		return
 	}
+	s := e.currentSettings()
 	e.mu.Lock()
-	letter := e.settings.Drive.Letter
 	e.client = client
 	e.closing = true
 	e.mu.Unlock()
-	if status, err := drive.ReadStatus(ctx, client, vaultRemote+":", letter); err == nil && status.Mounted {
-		e.mu.Lock()
-		e.unlockConnects = true
-		e.mu.Unlock()
+	for _, v := range s.Vaults {
+		if status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter); err == nil && status.Mounted {
+			e.mu.Lock()
+			if !slices.Contains(e.unlockConnects, v.ID) {
+				e.unlockConnects = append(e.unlockConnects, v.ID)
+			}
+			e.runtimeLocked(v.ID).status = status
+			e.mu.Unlock()
+		}
 	}
 	e.setPhase(PhaseLocked, "")
 	e.finishLockLocked(ctx, false)
 }
 
 // Lock locks the app. Sign-in and keys leave CryptBridge's memory at once;
-// the drive closes right away if nothing is uploading, otherwise as soon as
+// the drives close right away if nothing is uploading, otherwise as soon as
 // the uploads are done (Windows is locked in the meantime anyway).
 func (e *Engine) Lock(ctx context.Context) error {
 	e.actionMu.Lock()
@@ -101,16 +109,24 @@ func (e *Engine) lockLocked(ctx context.Context, now bool) error {
 		return errors.New("set an app password first (Settings → App lock)")
 	}
 	if !e.locked {
-		e.unlockConnects = e.wantConnected
+		e.unlockConnects = nil
+		for _, v := range e.settings.Vaults {
+			if e.runtimeLocked(v.ID).want {
+				e.unlockConnects = append(e.unlockConnects, v.ID)
+			}
+		}
 	}
 	e.locked = true
 	e.closing = true
-	e.wantConnected = false // no reconnects while locked
+	for _, rt := range e.vaults {
+		rt.want = false // no reconnects while locked
+		rt.fingerprint = ""
+	}
+	e.stopCountsLocked()
 	e.key.Wipe()
 	e.key = nil
 	e.settings = e.settings.WithoutSecrets()
 	e.usage = nil
-	e.fingerprint = ""
 	e.signInProblem = ""
 	e.mu.Unlock()
 
@@ -119,34 +135,37 @@ func (e *Engine) lockLocked(ctx context.Context, now bool) error {
 	return nil
 }
 
-// finishLockLocked closes the drive, stops rclone and deletes the cache once
-// no upload is running; until then everything keeps running, and the
+// finishLockLocked closes the drives, stops rclone and deletes the cache
+// once no upload is running; until then everything keeps running, and the
 // monitor calls it again. With now, it does not wait for uploads.
 func (e *Engine) finishLockLocked(ctx context.Context, now bool) {
 	e.mu.Lock()
 	client := e.client
-	letter := e.settings.Drive.Letter
 	e.mu.Unlock()
+	s := e.currentSettings()
 
 	if client != nil {
-		status, err := drive.ReadStatus(ctx, client, vaultRemote+":", letter)
-		if err == nil && status.Mounted {
-			if !now {
-				if err := e.ensureNoUploads(ctx, client, letter, status); err != nil {
-					e.mu.Lock()
-					e.driveStatus = status
-					e.mu.Unlock()
-					e.setPhase(PhaseLocked, "The drive closes as soon as the uploads are done ("+err.Error()+").")
-					return
-				}
+		if !now {
+			if err := e.ensureNoUploadsAnywhere(ctx, s.Vaults); err != nil {
+				e.refreshStatusLocked(ctx, client, s)
+				e.setPhase(PhaseLocked, "The drives close as soon as the uploads are done ("+err.Error()+").")
+				return
 			}
-			if err := drive.Unmount(ctx, client, letter); err != nil {
-				e.setPhase(PhaseLocked, "The drive could not be closed yet ("+err.Error()+"); CryptBridge tries again.")
+		}
+		for _, v := range s.Vaults {
+			status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter)
+			if err != nil || !status.Mounted {
+				continue
+			}
+			if err := drive.Unmount(ctx, client, v.Letter); err != nil {
+				e.setPhase(PhaseLocked, fmt.Sprintf("The drive %s could not be closed yet (%v); CryptBridge tries again.", describe(v), err))
 				return
 			}
 		}
 		// Forget the keys even if stopping rclone should fail.
-		_ = vault.Remove(ctx, client, vaultRemote)
+		for _, v := range s.Vaults {
+			_ = vault.Remove(ctx, client, remoteName(v.ID))
+		}
 		_ = vault.Remove(ctx, client, pcloudRemote)
 		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
 			e.setPhase(PhaseLocked, "rclone could not be stopped yet ("+err.Error()+"); CryptBridge tries again.")
@@ -160,35 +179,62 @@ func (e *Engine) finishLockLocked(ctx context.Context, now bool) {
 	message := e.wipeTraces()
 	e.mu.Lock()
 	e.closing = false
-	e.driveStatus = drive.Status{}
+	for _, rt := range e.vaults {
+		rt.state = StateDisconnected
+		rt.message = ""
+		rt.status = drive.Status{}
+		rt.folder = drive.FolderID{}
+		rt.space = nil
+	}
 	e.mu.Unlock()
 	e.setPhase(PhaseLocked, message)
 }
 
+// refreshStatusLocked reads the status of every drive, so that a locked
+// window can show the uploads it waits for.
+func (e *Engine) refreshStatusLocked(ctx context.Context, client *rcd.Client, s settings.Settings) {
+	for _, v := range s.Vaults {
+		if status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter); err == nil {
+			e.update(v.ID, func(rt *vaultRuntime) { rt.status = status })
+		}
+	}
+}
+
 // wipeTraces deletes what rclone left readable on this PC: the decrypted
-// cache and the log. rclone must not be running. It returns a note for the
-// user when files had to stay, "" otherwise.
+// cache of every vault — also of vaults CryptBridge no longer knows — and
+// the log. rclone must not be running. It returns a note for the user when
+// files had to stay, "" otherwise.
 func (e *Engine) wipeTraces() string {
 	e.mu.Lock()
-	cacheDir := e.settings.Drive.CacheDir
+	cacheDir := e.settings.Cache.Dir
 	e.mu.Unlock()
 
 	_ = os.Remove(e.paths.RcloneLog)
 	_ = os.Remove(e.paths.RcloneLog + ".old")
 
-	var waiting *drive.UploadsWaitingError
-	switch err := drive.ClearCache(cacheDir, vaultRemote); {
-	case errors.As(err, &waiting):
-		return fmt.Sprintf("%d file(s) wait in the cache and are uploaded after unlocking.", waiting.Count)
-	case err != nil:
+	remotes, err := drive.CacheRemotes(cacheDir)
+	if err != nil {
 		return "The cache could not be cleared: " + err.Error()
+	}
+	waiting := 0
+	for _, remote := range remotes {
+		var stillWaiting *drive.UploadsWaitingError
+		switch err := drive.ClearCache(cacheDir, remote); {
+		case errors.As(err, &stillWaiting):
+			waiting += stillWaiting.Count
+		case err != nil:
+			return "The cache could not be cleared: " + err.Error()
+		}
+	}
+	if waiting > 0 {
+		return fmt.Sprintf("%d file(s) wait in the cache and are written into their vaults after unlocking.", waiting)
 	}
 	return ""
 }
 
 // Unlock opens the secrets with the app password and continues where the
-// lock stopped: rclone starts again, and the drive connects if it was
-// connected before locking (after the start: if "connect on start" is on).
+// lock stopped: rclone starts again, and the drives connect that were
+// connected before locking (after the start: those that connect on start).
 func (e *Engine) Unlock(ctx context.Context, password string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
@@ -204,23 +250,30 @@ func (e *Engine) Unlock(ctx context.Context, password string) error {
 	e.settings = unlocked
 	e.key = key
 	e.locked = false
-	e.closing = false // a drive that was still uploading simply stays
+	e.closing = false // drives that were still uploading simply stay
 	connect := e.unlockConnects
-	e.unlockConnects = false
+	e.unlockConnects = nil
 	e.mu.Unlock()
 	e.lastUsage = time.Time{}
 
+	if settings.IsLegacy(e.paths.SettingsFile) {
+		// The first unlock after the update writes the new format.
+		if err := e.saveSettings(unlocked); err != nil {
+			e.setPhase(PhaseError, "Your settings could not be converted for this version: "+err.Error())
+			return nil
+		}
+	}
 	if err := e.prepareLocked(ctx); err != nil {
 		e.setPhase(PhaseError, err.Error())
 		return nil
 	}
-	e.settlePhaseLocked(ctx, false)
-	e.mu.Lock()
-	disconnected := e.phase == PhaseDisconnected
-	e.mu.Unlock()
-	if connect && disconnected {
-		if err := e.connectLocked(ctx); err != nil {
-			e.setPhase(PhaseError, err.Error())
+	e.settleLocked(ctx, false)
+	for _, id := range connect {
+		e.mu.Lock()
+		connected := e.runtimeLocked(id).state == StateConnected
+		e.mu.Unlock()
+		if !connected {
+			_ = e.connectVaultLocked(ctx, id) // problems show up at the drive
 		}
 	}
 	return nil
@@ -282,8 +335,8 @@ func (e *Engine) EnableLock(password string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 
+	updated := e.currentSettings()
 	e.mu.Lock()
-	updated := e.settings
 	locked := e.locked
 	e.mu.Unlock()
 	switch {
@@ -305,6 +358,17 @@ func (e *Engine) EnableLock(password string) error {
 	e.key = key
 	e.mu.Unlock()
 	e.publish()
+	return removeOldBackup(e.paths.SettingsFile)
+}
+
+// removeOldBackup deletes the backup of the settings of CryptBridge 0.3
+// when the protection of the secrets changes: it holds them protected the
+// old way.
+func removeOldBackup(path string) error {
+	if err := settings.RemoveLegacyBackup(path); err != nil {
+		return fmt.Errorf("the backup of your old settings (%s%s) could not be deleted; please delete it yourself: %w",
+			path, settings.LegacyBackupSuffix, err)
+	}
 	return nil
 }
 
@@ -317,8 +381,8 @@ func (e *Engine) ChangePassword(oldPassword, newPassword string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 
+	current := e.currentSettings()
 	e.mu.Lock()
-	current := e.settings
 	locked := e.locked
 	e.mu.Unlock()
 	switch {
@@ -343,7 +407,7 @@ func (e *Engine) ChangePassword(oldPassword, newPassword string) error {
 	e.key.Wipe()
 	e.key = newKey
 	e.mu.Unlock()
-	return nil
+	return removeOldBackup(e.paths.SettingsFile)
 }
 
 // DisableLock turns the app lock off after checking the password; the
@@ -352,8 +416,8 @@ func (e *Engine) DisableLock(password string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 
+	updated := e.currentSettings()
 	e.mu.Lock()
-	updated := e.settings
 	locked := e.locked
 	e.mu.Unlock()
 	switch {
@@ -388,9 +452,7 @@ func (e *Engine) DeclineLock() error {
 	if e.isLocked() {
 		return errLocked
 	}
-	e.mu.Lock()
-	updated := e.settings
-	e.mu.Unlock()
+	updated := e.currentSettings()
 	updated.LockOffered = true
 	if err := e.saveSettings(updated); err != nil {
 		return err
@@ -403,24 +465,28 @@ func (e *Engine) DeclineLock() error {
 }
 
 // Reset is the way out of a forgotten app password: CryptBridge forgets the
-// pCloud sign-in, the vault keys and the app password; drive settings stay.
-// The files in pCloud are not touched — with password and salt from the
-// emergency sheet the vault opens again.
+// pCloud sign-in, all vaults and the app password; cache and behaviour
+// settings stay. The files of the vaults are not touched — with the
+// emergency sheets every vault can be added again.
 func (e *Engine) Reset(ctx context.Context) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 
 	e.mu.Lock()
 	client := e.client
-	fresh := e.settings.WithoutSecrets()
+	old := e.settings.Clone()
 	e.mu.Unlock()
+	fresh := old.WithoutSecrets()
+	fresh.Vaults = nil
 	fresh.AppLock = false
 	fresh.LockOffered = false
 
 	// Nothing may keep running with the old keys.
 	if client != nil {
-		if status, err := drive.ReadStatus(ctx, client, vaultRemote+":", fresh.Drive.Letter); err == nil && status.Mounted {
-			_ = drive.Unmount(ctx, client, fresh.Drive.Letter)
+		for _, v := range old.Vaults {
+			if status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter); err == nil && status.Mounted {
+				_ = drive.Unmount(ctx, client, v.Letter)
+			}
 		}
 		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
 			return fmt.Errorf("stop rclone: %w", err)
@@ -435,16 +501,18 @@ func (e *Engine) Reset(ctx context.Context) error {
 	e.key.Wipe()
 	e.key = nil
 	e.settings = fresh
-	e.locked, e.closing, e.unlockConnects, e.wantConnected = false, false, false, false
-	e.usage, e.fingerprint, e.signInProblem = nil, "", ""
-	e.driveStatus = drive.Status{}
+	e.locked, e.closing = false, false
+	e.unlockConnects = nil
+	e.vaults = map[string]*vaultRuntime{}
+	e.usage, e.signInProblem = nil, ""
 	e.mu.Unlock()
 	e.wipeTraces()
+	backupErr := removeOldBackup(e.paths.SettingsFile)
 
 	if err := e.prepareLocked(ctx); err != nil {
 		e.setPhase(PhaseError, err.Error())
-		return nil
+		return backupErr
 	}
-	e.settlePhaseLocked(ctx, false)
-	return nil
+	e.settleLocked(ctx, false)
+	return backupErr
 }

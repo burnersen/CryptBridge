@@ -12,8 +12,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// letterInUse reports whether Windows already uses the drive letter (a disk,
+// LetterInUse reports whether Windows already uses the drive letter (a disk,
 // a USB stick, a mapped network drive or another mount).
+func LetterInUse(letter string) (bool, error) {
+	letter, err := normaliseLetter(letter)
+	if err != nil {
+		return false, err
+	}
+	return letterInUse(letter)
+}
+
+// letterInUse is LetterInUse for a letter that is already normalised.
 func letterInUse(letter string) (bool, error) {
 	mask, err := windows.GetLogicalDrives()
 	if err != nil {

@@ -2,8 +2,9 @@
 // Copyright (C) 2026 burnersen
 // SPDX-License-Identifier: GPL-3.0-only
 
-// CryptBridge shows an rclone-crypt encrypted pCloud vault as a Windows drive
-// letter. It lives in the system tray; the window is only for setup and status.
+// CryptBridge shows rclone-crypt encrypted vaults — in pCloud or in folders
+// of this PC — as Windows drive letters. It lives in the system tray; the
+// window is only for setup and status.
 package main
 
 import (
@@ -55,6 +56,10 @@ func main() {
 	}
 	core := engine.New(paths, version)
 	app := NewApp(core, paths, slices.Contains(os.Args, argBackground))
+	background := lightBackground
+	if windowsUsesDarkTheme() {
+		background = darkBackground
+	}
 
 	err = wails.Run(&options.App{
 		Title:             "CryptBridge",
@@ -64,7 +69,7 @@ func main() {
 		MinHeight:         560,
 		StartHidden:       app.startHidden,
 		HideWindowOnClose: true, // the tray keeps running; Quit is in its menu
-		BackgroundColour:  &options.RGBA{R: 17, G: 19, B: 23, A: 1},
+		BackgroundColour:  &background,
 		AssetServer:       &assetserver.Options{Assets: assets},
 		OnStartup:         app.startup,
 		OnShutdown:        app.shutdown,
@@ -72,7 +77,7 @@ func main() {
 			UniqueId:               singleInstanceID,
 			OnSecondInstanceLaunch: app.onSecondInstance,
 		},
-		Windows: &windows.Options{Theme: windows.Dark},
+		Windows: &windows.Options{Theme: windows.SystemDefault}, // the saved choice follows at start
 		Bind:    []any{app},
 	})
 	if err != nil {

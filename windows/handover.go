@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/transfer"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -25,16 +27,23 @@ type TransferResult struct {
 	Block string `json:"block"`
 }
 
-// CreateTransfer packs sign-in and vault keys into an encrypted block for
-// the Linux setup. Each call makes a new code. With the app lock on, the
-// app password is asked for again, as the block hands the keys on.
-func (a *App) CreateTransfer(appPassword string) (TransferResult, error) {
+// CreateTransfer packs the pCloud sign-in and the keys of a pCloud vault into
+// an encrypted block for the Linux setup. Each call makes a new code. With
+// the app lock on, the app password is asked for again, as the block hands
+// the keys on.
+func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	if err := a.core.VerifyPassword(appPassword); err != nil {
 		return TransferResult{}, err
 	}
-	snap := a.core.Snapshot()
-	if !snap.SignedIn || !snap.HasVault {
-		return TransferResult{}, errors.New("sign in to pCloud and choose a vault first")
+	v, err := a.core.VaultSecrets(id)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	if v.Kind != settings.KindPCloud {
+		return TransferResult{}, errors.New("only a vault in pCloud can be opened on the Linux server")
+	}
+	if !a.core.Snapshot().SignedIn {
+		return TransferResult{}, errors.New("sign in to pCloud first")
 	}
 	code, err := transfer.NewCode()
 	if err != nil {
@@ -43,8 +52,8 @@ func (a *App) CreateTransfer(appPassword string) (TransferResult, error) {
 	block, err := transfer.Seal(transfer.Bundle{
 		CreatedAt:   time.Now().UTC(),
 		PCloud:      a.core.PCloudAccount(),
-		Vault:       a.core.VaultConfig(),
-		Fingerprint: a.core.Fingerprint(),
+		Vault:       v.Config,
+		Fingerprint: a.core.Fingerprint(id),
 	}, code)
 	if err != nil {
 		return TransferResult{}, err
@@ -75,9 +84,11 @@ func (a *App) CopyText(text string) error {
 // SheetData is everything printed on the emergency sheet.
 type SheetData struct {
 	CreatedAt               string `json:"createdAt"`
-	Region                  string `json:"region"`
+	Name                    string `json:"name"`
+	Kind                    string `json:"kind"`   // settings.KindPCloud or settings.KindLocal
+	Region                  string `json:"region"` // pCloud only
 	PCloudHost              string `json:"pcloudHost"`
-	VaultPath               string `json:"vaultPath"`
+	VaultPath               string `json:"vaultPath"` // folder in pCloud or on this PC
 	Password                string `json:"password"`
 	Salt                    string `json:"salt"`
 	FilenameEncryption      string `json:"filenameEncryption"`
@@ -90,33 +101,38 @@ type SheetData struct {
 // EmergencySheet returns the data for the printable emergency sheet. It is
 // only rendered in the window for printing and never written to disk. With
 // the app lock on, the app password is asked for again.
-func (a *App) EmergencySheet(appPassword string) (SheetData, error) {
+func (a *App) EmergencySheet(id, appPassword string) (SheetData, error) {
 	if err := a.core.VerifyPassword(appPassword); err != nil {
 		return SheetData{}, err
 	}
-	snap := a.core.Snapshot()
-	if !snap.HasVault {
-		return SheetData{}, errors.New("choose a vault first")
+	v, err := a.core.VaultSecrets(id)
+	if err != nil {
+		return SheetData{}, err
 	}
-	v := a.core.VaultConfig()
-	account := a.core.PCloudAccount()
-	region := "US"
-	if account.Hostname == pcloud.HostEU {
-		region = "EU (Europe)"
-	}
-	return SheetData{
+	sheet := SheetData{
 		CreatedAt:               time.Now().Format("2006-01-02 15:04"),
-		Region:                  region,
-		PCloudHost:              account.Hostname,
-		VaultPath:               v.NormalisedPath(),
-		Password:                v.Password,
-		Salt:                    v.Password2,
-		FilenameEncryption:      v.FilenameEncryption,
-		DirectoryNameEncryption: v.DirectoryNameEncryption,
-		FilenameEncoding:        v.FilenameEncoding,
-		Suffix:                  v.Suffix,
-		Fingerprint:             a.core.Fingerprint(),
-	}, nil
+		Name:                    v.Name,
+		Kind:                    v.Kind,
+		VaultPath:               v.Config.NormalisedPath(),
+		Password:                v.Config.Password,
+		Salt:                    v.Config.Password2,
+		FilenameEncryption:      v.Config.FilenameEncryption,
+		DirectoryNameEncryption: v.Config.DirectoryNameEncryption,
+		FilenameEncoding:        v.Config.FilenameEncoding,
+		Suffix:                  v.Config.Suffix,
+		Fingerprint:             a.core.Fingerprint(id),
+	}
+	if v.Kind == settings.KindLocal {
+		sheet.VaultPath = filepath.Clean(v.Config.Path)
+		return sheet, nil
+	}
+	account := a.core.PCloudAccount()
+	sheet.PCloudHost = account.Hostname
+	sheet.Region = "US"
+	if account.Hostname == pcloud.HostEU {
+		sheet.Region = "EU (Europe)"
+	}
+	return sheet, nil
 }
 
 // DownloadRclone fetches rclone from rclone.org (checksum verified) and

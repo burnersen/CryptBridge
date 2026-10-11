@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // UploadsWaitingError is returned by ClearCache when files in the cache are
@@ -53,6 +55,36 @@ func ClearCache(cacheDir, remoteName string) error {
 		return fmt.Errorf("clear the cache: %w", err)
 	}
 	return nil
+}
+
+// CacheRemotes lists the remotes that have a cache below cacheDir, also
+// those of vaults CryptBridge no longer knows.
+func CacheRemotes(cacheDir string) ([]string, error) {
+	found := map[string]bool{}
+	for _, sub := range []string{"vfs", "vfsMeta"} {
+		entries, err := os.ReadDir(filepath.Join(cacheDir, sub))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("look into the cache: %w", err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				found[entry.Name()] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(found)), nil
+}
+
+// WaitingUploads counts the files in the cache of remoteName that are not
+// written into the vault yet. It only reads.
+func WaitingUploads(cacheDir, remoteName string) (int, error) {
+	if !filepath.IsAbs(cacheDir) || remoteName == "" {
+		return 0, fmt.Errorf("refusing to look into the cache in %q", cacheDir)
+	}
+	return countWaitingUploads(filepath.Join(cacheDir, "vfsMeta", remoteName))
 }
 
 // countWaitingUploads counts metadata files that mark a file as not yet

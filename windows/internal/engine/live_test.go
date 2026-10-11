@@ -26,25 +26,39 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
 )
 
-// TestLiveLifecycle plays a day in the life of CryptBridge against the real
-// test vault: start with auto-connect, refuse to disconnect during an
-// upload, survive a crash of the window, recover from a killed rclone, quit.
-func TestLiveLifecycle(t *testing.T) {
+// These tests run against the developer's pCloud test vault; they need
+// CRYPTBRIDGE_DEV_RCLONE_CONF (see testenv).
+
+// testVaultID is the ID of the test vault: the one taken over from 0.3, so
+// that its remote is "cbvault" as in the developer's rclone.conf.
+const testVaultID = settings.MigratedVaultID
+
+// liveSettings writes settings with the pCloud test vault on a free drive
+// letter and returns the test profile and the letter.
+func liveSettings(t *testing.T, appLock *passlock.Key) (appdir.Paths, string) {
+	t.Helper()
 	_, account, vaultCfg := testenv.Live(t)
 	free, err := drive.FreeLetters()
-	if err != nil || len(free) == 0 {
+	if err != nil || len(free) < 2 {
 		t.Skip("no free drive letter")
 	}
 	letter := free[len(free)-2] // leave Z: alone if it is free
 	paths := testPaths(t.TempDir())
 	s := settings.Defaults(paths.CacheDir)
 	s.PCloud = account
-	s.Vault = vaultCfg
-	s.Drive.Letter = letter
-	if err := settings.Save(paths.SettingsFile, s, nil); err != nil {
+	s.Vaults = []settings.Vault{{ID: testVaultID, Name: "Test vault", Kind: settings.KindPCloud, Letter: letter, AutoConnect: true, Config: vaultCfg}}
+	s.AppLock = appLock != nil
+	if err := settings.Save(paths.SettingsFile, s, appLock); err != nil {
 		t.Fatal(err)
 	}
+	return paths, letter
+}
 
+// TestLiveLifecycle plays a day in the life of CryptBridge against the real
+// test vault: start with auto-connect, refuse to disconnect during an
+// upload, survive a crash of the window, recover from a killed rclone, quit.
+func TestLiveLifecycle(t *testing.T) {
+	paths, letter := liveSettings(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { removeTestFiles(t) })
@@ -57,8 +71,8 @@ func TestLiveLifecycle(t *testing.T) {
 	if err := first.Start(firstCtx); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, first, PhaseConnected, 60*time.Second)
-	snap := first.Snapshot()
+	waitState(t, first, testVaultID, StateConnected, 60*time.Second)
+	snap := vaultOf(first, testVaultID)
 	t.Logf("connected %s: fingerprint %s", letter, snap.Fingerprint)
 	if snap.Fingerprint == "" {
 		t.Error("no fingerprint after start")
@@ -72,50 +86,49 @@ func TestLiveLifecycle(t *testing.T) {
 		t.Fatalf("write to drive: %v", err)
 	}
 	var pending *UploadsPendingError
-	if err := first.Disconnect(ctx, false); !errors.As(err, &pending) {
+	if err := first.Disconnect(ctx, testVaultID, false); !errors.As(err, &pending) {
 		t.Fatalf("disconnect right after writing: got %v, want UploadsPendingError", err)
 	}
 	t.Logf("disconnect refused as expected: %v", pending)
-	waitUploadsDone(t, first, 2*time.Minute)
+	waitUploadsDone(t, first, testVaultID, 2*time.Minute)
 
 	// 3. "Crash" of the window: the first engine stops watching, a second
 	// one starts and must attach to the rclone that is still running.
-	pidBefore := first.client.PID()
+	pidBefore := clientOf(first).PID()
 	crashFirst()
 	second := New(paths, "test")
-	var phasesMu sync.Mutex
-	var phases []Phase
+	var statesMu sync.Mutex
+	var states []VaultState
 	second.Subscribe(func(s Snapshot) {
-		phasesMu.Lock()
-		phases = append(phases, s.Phase)
-		phasesMu.Unlock()
+		statesMu.Lock()
+		for _, v := range s.Vaults {
+			states = append(states, v.State)
+		}
+		statesMu.Unlock()
 	})
 	if err := second.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, second, PhaseConnected, 30*time.Second)
-	if second.client.PID() != pidBefore {
-		t.Fatalf("second start used rclone %d, want the running %d", second.client.PID(), pidBefore)
+	waitState(t, second, testVaultID, StateConnected, 30*time.Second)
+	if clientOf(second).PID() != pidBefore {
+		t.Fatalf("second start used rclone %d, want the running %d", clientOf(second).PID(), pidBefore)
 	}
 
 	// 4. rclone gets killed: the engine must bring the drive back by itself.
 	if out, err := exec.Command("taskkill", "/F", "/PID", fmt.Sprint(pidBefore)).CombinedOutput(); err != nil {
 		t.Fatalf("taskkill: %v %s", err, out)
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	for second.Snapshot().Phase != PhaseConnected || second.client == nil || second.client.PID() == pidBefore {
-		if time.Now().After(deadline) {
-			t.Fatalf("drive not back within 90 s; phase %q: %s", second.Snapshot().Phase, second.Snapshot().Message)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	phasesMu.Lock()
-	sawReconnect := slices.Contains(phases, PhaseReconnecting)
-	phasesMu.Unlock()
+	waitFor(t, "drive back with a new rclone", 90*time.Second, func() bool {
+		client := clientOf(second)
+		return vaultOf(second, testVaultID).State == StateConnected && client != nil && client.PID() != pidBefore
+	})
+	statesMu.Lock()
+	sawReconnect := slices.Contains(states, StateReconnecting)
+	statesMu.Unlock()
 	if !sawReconnect {
-		t.Error("the reconnect was never shown as phase \"reconnecting\"")
+		t.Error("the reconnect was never shown as state \"reconnecting\"")
 	}
-	t.Logf("recovered: rclone %d replaced the killed %d", second.client.PID(), pidBefore)
+	t.Logf("recovered: rclone %d replaced the killed %d", clientOf(second).PID(), pidBefore)
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("uploaded file not visible after reconnect: %v", err)
 	}
@@ -124,7 +137,7 @@ func TestLiveLifecycle(t *testing.T) {
 	if err := os.Remove(target); err != nil {
 		t.Fatalf("delete test file: %v", err)
 	}
-	waitUploadsDone(t, second, time.Minute)
+	waitUploadsDone(t, second, testVaultID, time.Minute)
 	if err := second.Shutdown(ctx, false); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
@@ -138,20 +151,8 @@ func TestLiveLifecycle(t *testing.T) {
 // accepts it again. The refusal is simulated by giving the running rclone a
 // sign-in that pCloud rejects; the stored sign-in is not touched.
 func TestLiveSignInProblem(t *testing.T) {
-	_, account, vaultCfg := testenv.Live(t)
-	free, err := drive.FreeLetters()
-	if err != nil || len(free) == 0 {
-		t.Skip("no free drive letter")
-	}
-	letter := free[len(free)-2]
-	paths := testPaths(t.TempDir())
-	s := settings.Defaults(paths.CacheDir)
-	s.PCloud = account
-	s.Vault = vaultCfg
-	s.Drive.Letter = letter
-	if err := settings.Save(paths.SettingsFile, s, nil); err != nil {
-		t.Fatal(err)
-	}
+	_, account, _ := testenv.Live(t)
+	paths, letter := liveSettings(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -160,7 +161,7 @@ func TestLiveSignInProblem(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
-	waitPhase(t, e, PhaseConnected, 60*time.Second)
+	waitState(t, e, testVaultID, StateConnected, 60*time.Second)
 
 	// 1. pCloud starts refusing the sign-in while the drive is connected.
 	refused := pcloud.Account{Hostname: account.Hostname, Token: `{"access_token":"refused","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}`}
@@ -174,30 +175,30 @@ func TestLiveSignInProblem(t *testing.T) {
 	// 2. The warning must stay, and the drive must stay connected (until
 	// version 0.1.1 the next status round hid the warning after 2 s).
 	for end := time.Now().Add(3 * pollEvery); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
-		if snap := e.Snapshot(); snap.SignInProblem == "" || snap.Phase != PhaseConnected {
-			t.Fatalf("warning %q, phase %q; want the warning to stay while connected", snap.SignInProblem, snap.Phase)
+		if snap := e.Snapshot(); snap.SignInProblem == "" || vaultOf(e, testVaultID).State != StateConnected {
+			t.Fatalf("warning %q, state %q; want the warning to stay while connected", snap.SignInProblem, vaultOf(e, testVaultID).State)
 		}
 	}
 
 	// 3. A connect while pCloud refuses must not mount an empty drive, and
 	// with automatic reconnects on it keeps trying in the background.
-	if err := e.Disconnect(ctx, true); err != nil {
+	if err := e.Disconnect(ctx, testVaultID, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Connect(ctx); !pcloud.IsSignInProblem(err) {
+	if err := e.Connect(ctx, testVaultID); !pcloud.IsSignInProblem(err) {
 		t.Fatalf("connect while refused: got %v, want a sign-in problem", err)
 	}
 	if _, err := os.Stat(letter + `:\`); err == nil {
 		t.Fatalf("drive %s: was mounted although pCloud refuses the sign-in", letter)
 	}
-	waitPhase(t, e, PhaseReconnecting, 15*time.Second)
+	waitState(t, e, testVaultID, StateReconnecting, 15*time.Second)
 
 	// 4. pCloud accepts the sign-in again: the drive comes back by itself
 	// and the warning goes away.
 	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, account); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, e, PhaseConnected, 90*time.Second)
+	waitState(t, e, testVaultID, StateConnected, 90*time.Second)
 	if problem := e.Snapshot().SignInProblem; problem != "" {
 		t.Fatalf("warning still shown after pCloud accepted the sign-in: %s", problem)
 	}
@@ -208,29 +209,16 @@ func TestLiveSignInProblem(t *testing.T) {
 // waits for it), and locking without waiting, as when signing out of
 // Windows (the file stays in the cache and is uploaded after unlocking).
 func TestLiveAppLock(t *testing.T) {
-	_, account, vaultCfg := testenv.Live(t)
-	free, err := drive.FreeLetters()
-	if err != nil || len(free) == 0 {
-		t.Skip("no free drive letter")
-	}
-	letter := free[len(free)-2]
-	paths := testPaths(t.TempDir())
 	const appPassword = "test app password"
-	s := settings.Defaults(paths.CacheDir)
-	s.PCloud = account
-	s.Vault = vaultCfg
-	s.Drive.Letter = letter
-	s.AppLock = true
 	key, err := passlock.NewKey(appPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := settings.Save(paths.SettingsFile, s, key); err != nil {
-		t.Fatal(err)
-	}
+	paths, letter := liveSettings(t, key)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	t.Cleanup(func() { removeTestFiles(t) })
+	cacheOfVault := filepath.Join(paths.CacheDir, "vfs", remoteName(testVaultID))
 
 	// 1. Locked start: nothing known, nothing running.
 	e := New(paths, "test")
@@ -238,10 +226,13 @@ func TestLiveAppLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
-	if snap := e.Snapshot(); !snap.Locked || snap.Phase != PhaseLocked || snap.SignedIn || snap.HasVault || clientOf(e) != nil {
+	if snap := e.Snapshot(); !snap.Locked || snap.Phase != PhaseLocked || snap.SignedIn || vaultOf(e, testVaultID).HasKeys || clientOf(e) != nil {
 		t.Fatalf("start: %+v; want locked without secrets and without rclone", snap)
 	}
-	if err := e.Connect(ctx); !errors.Is(err, errLocked) {
+	if got := e.Snapshot().UnlockConnects; len(got) != 1 || got[0] != letter {
+		t.Fatalf("drives to connect after unlocking: %v, want [%s]", got, letter)
+	}
+	if err := e.Connect(ctx, testVaultID); !errors.Is(err, errLocked) {
 		t.Fatalf("connect while locked: got %v", err)
 	}
 
@@ -256,19 +247,17 @@ func TestLiveAppLock(t *testing.T) {
 	if err := e.Unlock(ctx, appPassword); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, e, PhaseConnected, 60*time.Second) // "connect on start" is on
+	waitState(t, e, testVaultID, StateConnected, 60*time.Second) // "connect on start" is on
 
 	// 3. Lock while an upload runs: the drive stays until it is done.
 	name := fmt.Sprintf("engine-test-%d.bin", time.Now().UnixNano())
 	if err := os.WriteFile(letter+`:\`+name, make([]byte, 8<<20), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	meta, err := os.ReadFile(filepath.Join(paths.CacheDir, "vfsMeta", vaultRemote, name))
-	t.Logf("cache marker right after writing: %s (err %v)", strings.Join(strings.Fields(string(meta)), " "), err)
 	if err := e.Lock(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if snap := e.Snapshot(); !snap.Locked || snap.SignedIn || snap.HasVault {
+	if snap := e.Snapshot(); !snap.Locked || snap.SignedIn || vaultOf(e, testVaultID).HasKeys {
 		t.Fatalf("right after Lock: %+v; want the secrets gone at once", snap)
 	}
 	t.Logf("right after Lock: %q", e.Snapshot().Message)
@@ -283,7 +272,7 @@ func TestLiveAppLock(t *testing.T) {
 	if _, err := rcd.Attach(ctx, paths.StateFile); err == nil {
 		t.Fatal("rclone still running after locking")
 	}
-	for _, path := range []string{filepath.Join(paths.CacheDir, "vfs", vaultRemote), paths.RcloneLog} {
+	for _, path := range []string{cacheOfVault, paths.RcloneLog} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s still there after locking", path)
 		}
@@ -293,7 +282,7 @@ func TestLiveAppLock(t *testing.T) {
 	if err := e.Unlock(ctx, appPassword); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, e, PhaseConnected, 60*time.Second)
+	waitState(t, e, testVaultID, StateConnected, 60*time.Second)
 	if _, err := os.Stat(letter + `:\` + name); err != nil {
 		t.Fatalf("file uploaded before locking is missing: %v", err)
 	}
@@ -308,14 +297,14 @@ func TestLiveAppLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("after LockNow: %q", e.Snapshot().Message)
-	if _, err := os.Stat(filepath.Join(paths.CacheDir, "vfs", vaultRemote, late)); err != nil {
+	if _, err := os.Stat(filepath.Join(cacheOfVault, late)); err != nil {
 		t.Fatalf("waiting file was not kept in the cache: %v", err)
 	}
 	if err := e.Unlock(ctx, appPassword); err != nil {
 		t.Fatal(err)
 	}
-	waitPhase(t, e, PhaseConnected, 60*time.Second)
-	waitUploadsDone(t, e, 2*time.Minute)
+	waitState(t, e, testVaultID, StateConnected, 60*time.Second)
+	waitUploadsDone(t, e, testVaultID, 2*time.Minute)
 	out, err := exec.Command("rclone", "--config", os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF"), "lsf", "cbvault:", "--include", late).CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != late {
 		t.Fatalf("file held back by LockNow is not in pCloud after unlocking: %q %v", out, err)
@@ -325,44 +314,7 @@ func TestLiveAppLock(t *testing.T) {
 			t.Errorf("remove %s: %v", n, err)
 		}
 	}
-	waitUploadsDone(t, e, time.Minute)
-}
-
-// clientOf returns the engine's current rclone client.
-func clientOf(e *Engine) *rcd.Client {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.client
-}
-
-// askPCloudNow makes the next status round ask pCloud right away instead of
-// waiting for the usual interval.
-func askPCloudNow(e *Engine) {
-	e.actionMu.Lock()
-	e.lastUsage = time.Time{}
-	e.actionMu.Unlock()
-}
-
-func waitFor(t *testing.T, what string, timeout time.Duration, done func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
-		if done() {
-			return
-		}
-	}
-	t.Fatalf("%s not seen within %s", what, timeout)
-}
-
-// testPaths puts every file of a test engine below root.
-func testPaths(root string) appdir.Paths {
-	return appdir.Paths{
-		SettingsFile: filepath.Join(root, "roaming", "settings.dat"),
-		StateFile:    filepath.Join(root, "local", "run", "rcd.json"),
-		LogDir:       filepath.Join(root, "local", "logs"),
-		RcloneLog:    filepath.Join(root, "local", "logs", "rclone.log"),
-		CacheDir:     filepath.Join(root, "local", "cache"),
-		BinDir:       filepath.Join(root, "local", "bin"),
-	}
+	waitUploadsDone(t, e, testVaultID, time.Minute)
 }
 
 // removeTestFiles deletes what this test may have left in the test vault
@@ -373,31 +325,4 @@ func removeTestFiles(t *testing.T) {
 	if err != nil {
 		t.Logf("cleaning the test vault failed: %v %s", err, out)
 	}
-}
-
-func waitPhase(t *testing.T, e *Engine, want Phase, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if snap := e.Snapshot(); snap.Phase == want {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	snap := e.Snapshot()
-	t.Fatalf("phase %q not reached within %s; now %q: %s", want, timeout, snap.Phase, snap.Message)
-}
-
-func waitUploadsDone(t *testing.T, e *Engine, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	// The status refreshes every few seconds; give it a moment first.
-	time.Sleep(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if e.Snapshot().Drive.PendingUploads() == 0 {
-			return
-		}
-		time.Sleep(time.Second)
-	}
-	t.Fatalf("uploads not finished within %s", timeout)
 }
