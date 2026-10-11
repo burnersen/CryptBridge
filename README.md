@@ -93,6 +93,11 @@ the browser showed *Invalid 'client_id'* and existing sign-ins failed with *erro
 your own, CryptBridge no longer depends on it. **Your vault does not change** — same keys, same files,
 same check code; you only sign in once more.
 
+> **Status (October 2026):** CryptBridge is fully usable right away with rclone's shared access — the own
+> app is optional. The own-app sign-in is built in and tested up to pCloud's sign-in page, but a complete
+> sign-in with an approved app has not been tested yet: the approval of our own test app is still pending
+> at pCloud. If you try it first, feedback in the issues is welcome.
+
 Request the app **now, while everything works**: pCloud has to approve it, and that can take a while.
 
 1. Open **[My Apps on pCloud](https://docs.pcloud.com/my_apps/)**, log in with your pCloud account and
