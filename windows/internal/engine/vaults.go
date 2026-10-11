@@ -180,7 +180,9 @@ func (e *errOtherFolder) Error() string {
 func (e *Engine) Connect(ctx context.Context, id string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
-	return e.connectVaultLocked(ctx, id)
+	err := e.connectVaultLocked(ctx, id)
+	e.syncLANLocked(ctx, "")
+	return err
 }
 
 // UseFolder connects a local vault to the folder now at its place although
@@ -189,7 +191,9 @@ func (e *Engine) Connect(ctx context.Context, id string) error {
 func (e *Engine) UseFolder(ctx context.Context, id string) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
-	return e.connectWithLocked(ctx, id, true)
+	err := e.connectWithLocked(ctx, id, true)
+	e.syncLANLocked(ctx, "")
+	return err
 }
 
 // ConnectAll connects every drive. It returns the first problem; every
@@ -203,6 +207,7 @@ func (e *Engine) ConnectAll(ctx context.Context) error {
 			first = fmt.Errorf("%s (%s:): %w", v.Name, v.Letter, err)
 		}
 	}
+	e.syncLANLocked(ctx, "")
 	return first
 }
 
@@ -483,6 +488,7 @@ func (e *Engine) disconnectAllLocked(ctx context.Context, force bool) error {
 			return err
 		}
 	}
+	e.stopLANLocked(ctx) // once, instead of changing it for every drive
 	var first error
 	for _, v := range s.Vaults {
 		if err := e.disconnectVaultLocked(ctx, v, true); err != nil && first == nil {
@@ -513,7 +519,9 @@ func (e *Engine) disconnectVaultLocked(ctx context.Context, v settings.Vault, fo
 			return err
 		}
 	}
+	e.withdrawFromLANLocked(ctx, v)
 	if err := drive.Unmount(ctx, client, v.Letter); err != nil {
+		e.syncLANLocked(ctx, "") // the drive stays: share it again
 		return err
 	}
 	e.setDisconnected(v.ID)
@@ -664,6 +672,7 @@ func folderGone(v settings.Vault, connected drive.FolderID) (why string, replace
 // is waited for; a replaced folder is not connected again by itself — the
 // user has to look at what happened first.
 func (e *Engine) closeLostFolderLocked(ctx context.Context, client *rcd.Client, v settings.Vault, status drive.Status, why string, replaced bool) {
+	e.withdrawFromLANLocked(ctx, v)
 	_ = drive.Unmount(ctx, client, v.Letter)
 	message := why + " The drive was closed to protect the vault."
 	if pending := status.PendingUploads(); pending > 0 {

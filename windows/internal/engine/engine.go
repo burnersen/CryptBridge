@@ -89,6 +89,7 @@ type Snapshot struct {
 	LockOffered       bool            `json:"lockOffered"`    // the app password was offered once
 	Locked            bool            `json:"locked"`         // the app password is needed first
 	UnlockConnects    []string        `json:"unlockConnects"` // letters of the drives that connect after unlocking
+	LAN               LANStatus       `json:"lan"`
 }
 
 // PendingUploads counts the files of all drives that are not safely in
@@ -141,6 +142,7 @@ type Engine struct {
 	phase         Phase
 	message       string
 	vaults        map[string]*vaultRuntime // by vault ID
+	lan           lanRuntime               // the LAN server (see lan.go)
 	listeners     []func(Snapshot)
 
 	// App lock (see lock.go), guarded by mu.
@@ -201,6 +203,7 @@ func (e *Engine) snapshotLocked() Snapshot {
 		LockOffered:       s.LockOffered,
 		Locked:            e.locked,
 		UnlockConnects:    []string{},
+		LAN:               e.lanStatusLocked(),
 	}
 	for _, v := range s.Vaults {
 		snap.Vaults = append(snap.Vaults, e.vaultSnapshotLocked(v))
@@ -423,6 +426,7 @@ func (e *Engine) settleLocked(ctx context.Context, startup bool) {
 	s := e.currentSettings()
 	if len(s.Vaults) == 0 {
 		e.setPhase(PhaseSetup, "Add a vault to get started.")
+		e.syncLANLocked(ctx, "")
 		return
 	}
 	e.setPhase(PhaseReady, "")
@@ -444,6 +448,7 @@ func (e *Engine) settleLocked(ctx context.Context, startup bool) {
 			_ = e.connectVaultLocked(ctx, v.ID) // problems show up at the drive
 		}
 	}
+	e.syncLANLocked(ctx, "")
 	e.publish()
 }
 
@@ -517,6 +522,7 @@ func (e *Engine) checkOnce(ctx context.Context) {
 					e.reconnectLocked(ctx, v, "rclone stopped unexpectedly", false)
 				}
 			}
+			e.syncLANLocked(ctx, "") // the server ended with rclone; a new rclone gets a new one
 		}
 		return
 	}
@@ -528,6 +534,7 @@ func (e *Engine) checkOnce(ctx context.Context) {
 		}
 	}
 	e.refreshUsage(ctx, client, s)
+	e.syncLANLocked(ctx, "")
 	e.publish()
 }
 

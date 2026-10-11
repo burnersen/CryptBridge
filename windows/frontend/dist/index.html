@@ -59,6 +59,7 @@
           <button id="btn-decline-lock">Not now</button>
         </div>
       </div>
+      <div class="notice info hidden" id="lan-notice"></div>
       <div class="notice warn hidden" id="winfsp-missing">
         WinFsp is not installed. It lets Windows show a vault as a drive letter.
         <button class="link" id="winfsp-download">Download WinFsp</button>
@@ -537,6 +538,72 @@
           </details>
         </div>
         <div id="lock-result" class="notice hidden"></div>
+      </div>
+
+      <div class="card">
+        <h2>LAN access <span class="muted">— optional</span></h2>
+        <p class="muted">Lets the other devices of your home network open the connected drives — a TV or Apple TV with
+          Infuse, VLC or Kodi, a phone, a tablet, a Mac. Every connected drive appears there as a folder. The files travel
+          through your home network decrypted, protected by user name and password; devices outside your home network
+          cannot reach them. Locking CryptBridge ends the LAN access at once.</p>
+        <label class="check"><input id="lan-enabled" type="checkbox"> Share the connected drives in my home network (WebDAV)</label>
+        <div class="grid2">
+          <div class="field">
+            <label for="lan-user">User name</label>
+            <input id="lan-user" type="text" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="lan-port">Port</label>
+            <input id="lan-port" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="lan-password">Password (at least 12 characters)</label>
+            <div class="row">
+              <input id="lan-password" type="password" spellcheck="false" autocomplete="new-password">
+              <button class="icon-btn" data-reveal="lan-password" title="Show or hide">👁</button>
+              <button id="btn-lan-copy-password">Copy</button>
+              <button id="btn-lan-new-password">New</button>
+            </div>
+          </div>
+        </div>
+        <label class="check"><input id="lan-allow-changes" type="checkbox"> Allow changes from the network (upload, rename, delete)</label>
+        <p class="hint">Off, the devices can open, play and copy files, but no device in your network can change or delete
+          anything by mistake.</p>
+        <div class="row">
+          <button class="primary" id="btn-save-lan">Save LAN access</button>
+        </div>
+        <div id="lan-result" class="notice hidden"></div>
+
+        <div class="label">State</div>
+        <div class="value" id="lan-state">Off</div>
+        <div id="lan-address-block" class="hidden">
+          <div class="label">Address for your devices</div>
+          <div id="lan-addresses"></div>
+        </div>
+        <div class="label">Windows firewall</div>
+        <div class="value" id="lan-firewall">—</div>
+        <div id="lan-firewall-notes"></div>
+        <div class="row">
+          <button id="btn-lan-allow" class="hidden">Allow in the firewall</button>
+          <button id="btn-lan-remove-rule" class="hidden">Remove the firewall rule</button>
+          <button id="btn-lan-remove-others" class="hidden">Remove the other rclone rules</button>
+          <button id="btn-lan-network" class="hidden">Open network settings</button>
+          <button class="link" id="btn-lan-recheck">Check again</button>
+        </div>
+
+        <details>
+          <summary>Tips for your devices</summary>
+          <ul class="steps">
+            <li><strong>Infuse, VLC, Kodi, file apps:</strong> add a WebDAV share with the address above (protocol
+              <code>http</code>, the port above, path <code>/</code>), the user name and the password.</li>
+            <li><strong>Mac:</strong> Finder → Go → Connect to Server, enter the address.</li>
+            <li><strong>Other Windows PCs</strong> refuse a password-protected <code>http://</code> WebDAV address
+              unless their registry is changed — install CryptBridge there instead.</li>
+            <li>While this PC sleeps or is switched off, the drives cannot be reached from the network.</li>
+            <li>Windows lets devices in only on networks it counts as <strong>private</strong> (home networks), never on
+              public ones such as a hotel or café network.</li>
+          </ul>
+        </details>
       </div>
     </section>
 

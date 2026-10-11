@@ -18,6 +18,11 @@ makes them easy to use everywhere:
   play them, delete them — like any other drive. Several vaults can be open at once, each with its own
   letter: vaults in pCloud, and [vaults in a folder of your PC or on a USB drive](#-vaults-on-this-pc-or-a-usb-drive)
   that are encrypted and decrypted only on your PC — no cloud and no sign-in needed.
+- **Home network (optional):** the Windows program can also share the connected drives with the other
+  devices of your home network over WebDAV — Infuse, VLC or Kodi on a TV, phones, tablets, a Mac. With a
+  VPN into your home network (for example the WireGuard VPN of your router) your PC at home serves them
+  [away from home, too](#away-from-home-vpn-into-your-home-network) — without renting a server. See
+  [LAN access](#-lan-access-optional).
 - **Linux server:** one setup script mounts the same vault on the server and offers it over HTTPS
   (WebDAV) to **Infuse** on Apple TV, iPhone and iPad.
 
@@ -102,7 +107,7 @@ running; **Quit** is in the tray menu.
 ### Settings
 
 On the **Settings** tab: light or dark look (or *automatic*, like Windows), the cache folder and size
-(shared by all drives), *start with Windows*, *reconnect automatically* and the app lock. The cache
+(shared by all drives), *start with Windows*, *reconnect automatically*, the app lock and the LAN access. The cache
 folder needs room for the largest file you copy to a drive at once. Name, drive letter and *connect on
 start* are set for each vault on its page.
 
@@ -210,6 +215,53 @@ Request the app **now, while everything works**: pCloud has to approve it, and t
 The codes are stored encrypted with your Windows account like the rest of the settings. rclone gets them
 only for the sign-in itself, and they are not part of the transfer block: the server needs only the
 sign-in.
+
+### 🏠 LAN access (optional)
+
+CryptBridge can share the connected drives with the other devices of your home network — a TV or Apple TV
+with Infuse, VLC or Kodi, a phone, a tablet, a Mac. Turn it on at **Settings → LAN access**: every
+connected drive then appears there as a folder, under an address such as `http://192.168.1.20:8080/`
+(WebDAV, with user name and password; CryptBridge suggests a password that is easy to type with a TV
+remote).
+
+- **It follows the drives.** A drive that connects appears in the network; a drive leaves the network
+  *before* it disconnects. **Locking CryptBridge ends the LAN access at once**, even while drives still
+  finish their uploads. The PC has to be on and awake.
+- **Read only by default.** The devices can open, play and copy files, but cannot change or delete
+  anything. *Allow changes from the network* lets them upload, rename and delete; such files go into the
+  drive's upload queue like files copied in Explorer.
+- **Only your home network.** When you turn it on, CryptBridge asks Windows (with the usual
+  administrator prompt) for one firewall rule: inbound connections to the chosen port, for rclone only,
+  from devices of the same network, and only on networks Windows counts as **private**. Turning the LAN
+  access off removes the rule again (Windows asks once more). If Windows counts your home network as
+  *public*, CryptBridge says so — set it to private in Windows Settings → Network & internet → your
+  connection → *Network profile type*.
+- **Mind what it means:** in your home network the files travel **decrypted** and unencrypted (plain
+  HTTP), protected by the password only. Do not turn it on in networks you do not trust.
+- **In Infuse** (or VLC, Kodi, a file app): add a WebDAV share with the address, port, user name and
+  password from the Settings page (protocol `http`, path `/`). On a Mac: Finder → Go → Connect to Server.
+- **Other Windows PCs** refuse password-protected `http://` WebDAV addresses unless their registry is
+  changed — install CryptBridge there instead.
+
+#### Away from home: VPN into your home network
+
+The LAN access is meant for your home network only — never open its port to the internet on your
+router. To use it on the road, connect your phone, tablet or laptop to your home network through a
+**VPN**: the device then reaches the LAN access as if it were at home, the VPN encrypts the whole way, and
+your own PC at home does the job of a rented server. How smoothly films play then depends on the upload
+speed of your internet connection at home.
+
+CryptBridge's firewall rule lets in devices that have an address of your home network. So pick a VPN
+that gives them one:
+
+- **The WireGuard VPN of your router** — for example a FRITZ!Box: devices connected through it get an
+  address of your home network and are let in like at home. Nothing to change in CryptBridge.
+- **Tailscale with a subnet router** in your home network (a router, NAS or Raspberry Pi that advertises
+  your home network): it passes the connections on with its own home network address, which Tailscale
+  does by default, so they are let in, too. Tailscale running only on this PC is *not* supported yet: its
+  devices have addresses of their own (100.x.x.x), which the rule does not let in.
+
+*Not tested yet* — reports are welcome.
 
 ---
 
@@ -326,6 +378,8 @@ Vaults on the PC do not need any of the streaming values: they use `--vfs-cache-
 | "The keys … do not open the folder" (local vault) | Another drive got the vault's drive letter. Nothing was connected or written. |
 | Remove refuses: files still wait | Connect the vault and let the uploads finish; removing it now would lose those files. |
 | Infuse cannot connect | `cryptbridge` on the server shows which service is not running; check ports 80/443 at your provider. |
+| A device in the home network cannot reach the LAN access | *Settings → LAN access* shows the firewall state: allow it there if needed, and set your network to *private* in Windows if CryptBridge says it is public. Use the address shown there; the PC must be awake. |
+| LAN access: "port … is used by another program" | Choose another port (1024–65535) and save; the firewall rule is updated with it. |
 | No HTTPS certificate, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep keys and Infuse account). |
 
 Logs: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server `journalctl -u rclone-mount -u rclone-webdav -u caddy`

@@ -70,6 +70,7 @@ func (e *Engine) startLockedLocked(ctx context.Context) {
 	e.client = client
 	e.closing = true
 	e.mu.Unlock()
+	e.stopLANLocked(ctx) // the network sees nothing while CryptBridge is locked
 	for _, v := range s.Vaults {
 		if status, err := drive.ReadStatus(ctx, client, remoteOf(v), v.Letter); err == nil && status.Mounted {
 			e.mu.Lock()
@@ -130,6 +131,9 @@ func (e *Engine) lockLocked(ctx context.Context, now bool) error {
 	e.signInProblem = ""
 	e.mu.Unlock()
 
+	// The drives may stay a while to finish their uploads; the network loses
+	// them at once.
+	e.stopLANLocked(ctx)
 	e.setPhase(PhaseLocked, "")
 	e.finishLockLocked(ctx, now)
 	return nil
@@ -276,6 +280,7 @@ func (e *Engine) Unlock(ctx context.Context, password string) error {
 			_ = e.connectVaultLocked(ctx, id) // problems show up at the drive
 		}
 	}
+	e.syncLANLocked(ctx, "")
 	return nil
 }
 
@@ -504,6 +509,7 @@ func (e *Engine) Reset(ctx context.Context) error {
 	e.locked, e.closing = false, false
 	e.unlockConnects = nil
 	e.vaults = map[string]*vaultRuntime{}
+	e.lan = lanRuntime{} // the server ended with rclone
 	e.usage, e.signInProblem = nil, ""
 	e.mu.Unlock()
 	e.wipeTraces()

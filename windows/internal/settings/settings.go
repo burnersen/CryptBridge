@@ -46,6 +46,12 @@ const (
 	DefaultDriveLetter       = "Z"
 )
 
+// Defaults of the LAN access.
+const (
+	DefaultLANPort = 8080
+	DefaultLANUser = "cryptbridge"
+)
+
 // Where a vault lives.
 const (
 	KindPCloud = "pcloud" // a folder in the pCloud account
@@ -109,6 +115,16 @@ func (v Vault) HasKeys() bool {
 	return v.Config.Password != "" && v.Config.NormalisedPath() != ""
 }
 
+// LAN holds the settings of the LAN access: a WebDAV server through which
+// the other devices of the home network open the connected drives.
+type LAN struct {
+	Enabled      bool   `json:"enabled"`
+	Port         int    `json:"port"`
+	User         string `json:"user"`
+	Password     string `json:"password"`     // protected by the app lock
+	AllowChanges bool   `json:"allowChanges"` // false: the devices can only read
+}
+
 // Settings is everything CryptBridge remembers.
 type Settings struct {
 	PCloud        pcloud.Account `json:"pcloud"`
@@ -120,6 +136,7 @@ type Settings struct {
 	Theme         string         `json:"theme"`         // ThemeAuto, ThemeLight or ThemeDark
 	AppLock       bool           `json:"appLock"`       // the secrets are sealed with the app password
 	LockOffered   bool           `json:"lockOffered"`   // the app password was offered once (set up or declined)
+	LAN           LAN            `json:"lan"`
 }
 
 // Clone returns a copy that can be changed without changing s: the vault
@@ -158,6 +175,7 @@ type secrets struct {
 	SignInAppID string                  `json:"signInAppId"`
 	VaultKeys   map[string]vault.Config `json:"vaultKeys"`       // by vault ID
 	Vault       *vault.Config           `json:"vault,omitempty"` // only in version 1 files
+	LANPassword string                  `json:"lanPassword"`     // it opens the drives from the network
 }
 
 // fileFormat is what is stored inside the DPAPI layer: the settings, and
@@ -171,8 +189,8 @@ type fileFormat struct {
 // derived from the app password.
 var ErrNeedsKey = errors.New("the settings are locked with the app password")
 
-// WithoutSecrets returns the settings with sign-in, vault locations and
-// vault keys removed: what a locked CryptBridge knows.
+// WithoutSecrets returns the settings with sign-in, vault locations, vault
+// keys and the LAN password removed: what a locked CryptBridge knows.
 func (s Settings) WithoutSecrets() Settings {
 	s = s.Clone()
 	s.PCloud = pcloud.Account{}
@@ -181,6 +199,7 @@ func (s Settings) WithoutSecrets() Settings {
 	for i := range s.Vaults {
 		s.Vaults[i].Config = vault.Config{}
 	}
+	s.LAN.Password = ""
 	return s
 }
 
@@ -189,7 +208,7 @@ func (s Settings) secrets() secrets {
 	for _, v := range s.Vaults {
 		keys[v.ID] = v.Config
 	}
-	return secrets{PCloud: s.PCloud, PCloudApp: s.PCloudApp, SignInAppID: s.SignInAppID, VaultKeys: keys}
+	return secrets{PCloud: s.PCloud, PCloudApp: s.PCloudApp, SignInAppID: s.SignInAppID, VaultKeys: keys, LANPassword: s.LAN.Password}
 }
 
 // withSecrets puts the secrets back. A vault whose keys are not among them
@@ -201,6 +220,7 @@ func (s Settings) withSecrets(sec secrets) Settings {
 	s.PCloud = sec.PCloud
 	s.PCloudApp = sec.PCloudApp
 	s.SignInAppID = sec.SignInAppID
+	s.LAN.Password = sec.LANPassword
 	kept := s.Vaults[:0]
 	for _, v := range s.Vaults {
 		keys, found := sec.VaultKeys[v.ID]
@@ -229,6 +249,7 @@ func Defaults(cacheDir string) Settings {
 		},
 		AutoReconnect: true,
 		Theme:         ThemeAuto,
+		LAN:           LAN{Port: DefaultLANPort, User: DefaultLANUser},
 	}
 }
 
@@ -404,6 +425,7 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 		Theme:         ThemeAuto,
 		AppLock:       old.AppLock,
 		LockOffered:   old.LockOffered,
+		LAN:           defaults.LAN,
 	}
 	migrated := Vault{
 		ID:          MigratedVaultID,

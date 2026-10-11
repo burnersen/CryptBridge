@@ -27,6 +27,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 		s.SignedIn() || len(s.Vaults) != 0 {
 		t.Fatalf("unexpected defaults: %+v", s)
 	}
+	if s.LAN != (LAN{Port: DefaultLANPort, User: DefaultLANUser}) {
+		t.Fatalf("LAN defaults: %+v; want off, port %d, user %q", s.LAN, DefaultLANPort, DefaultLANUser)
+	}
 }
 
 // twoVaults returns settings with a pCloud and a local vault whose secrets
@@ -46,11 +49,12 @@ func twoVaults() Settings {
 		{ID: "v1a2b3c4d", Name: "Private", Kind: KindLocal, Letter: "Y",
 			LastSize: &SizeRecord{Bytes: 42, Files: 1, At: "2026-10-11T12:00:00Z"}, Config: local},
 	}
+	s.LAN = LAN{Enabled: true, Port: 8090, User: "tv", Password: "VERY-SECRET-LAN-PASSWORD", AllowChanges: true}
 	return s
 }
 
 var secretsInTwoVaults = []string{"VERY-SECRET-TOKEN", "VERY-SECRET-CLIENT-SECRET", "VERY-SECRET-PASSWORD",
-	"VERY-SECRET-SALT", "VERY-SECRET-LOCAL-PASSWORD", "SecretCloudFolder", "SecretLocalFolder"}
+	"VERY-SECRET-SALT", "VERY-SECRET-LOCAL-PASSWORD", "SecretCloudFolder", "SecretLocalFolder", "VERY-SECRET-LAN-PASSWORD"}
 
 func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.dat")
@@ -130,6 +134,9 @@ func TestAppLockSealsSecrets(t *testing.T) {
 	if locked.Vaults[1].Name != "Private" || locked.Vaults[1].Letter != "Y" {
 		t.Fatalf("locked load lost name or letter: %+v", locked.Vaults[1])
 	}
+	if wantLAN := (LAN{Enabled: true, Port: 8090, User: "tv", AllowChanges: true}); locked.LAN != wantLAN {
+		t.Fatalf("locked load: LAN %+v; want %+v (everything but the password)", locked.LAN, wantLAN)
+	}
 
 	if _, _, err := Unlock(path, `C:\other`, "wrong password!"); !errors.Is(err, passlock.ErrWrongPassword) {
 		t.Fatalf("wrong password: got %v", err)
@@ -198,7 +205,7 @@ func TestConvertVersion1File(t *testing.T) {
 		t.Fatalf("converted vaults %+v; want [%+v]", got.Vaults, want)
 	}
 	if got.PCloud.Token != "OLD-TOKEN" || got.PCloudApp.IsSet() || got.Cache != (Cache{Dir: `D:\Cache`, MaxSize: "30G", MinFreeSpace: "5G"}) ||
-		!got.AutoReconnect || got.Theme != ThemeAuto {
+		!got.AutoReconnect || got.Theme != ThemeAuto || got.LAN != Defaults(`C:\cache`).LAN {
 		t.Fatalf("converted settings: %+v", got)
 	}
 
@@ -322,5 +329,38 @@ func TestLoadRejectsForeignFile(t *testing.T) {
 	}
 	if _, err := Load(path, ""); err == nil {
 		t.Fatal("a damaged encrypted part must be rejected")
+	}
+}
+
+// A file of CryptBridge 0.4 has no LAN settings yet: LAN access is off, with
+// the default port and user, and everything else is read as before.
+func TestLoadFileWithoutLANSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.dat")
+	plain, err := json.Marshal(map[string]any{
+		"vaults":        []Vault{{ID: "vault", Name: "Films", Kind: KindPCloud, Letter: "Z"}},
+		"cache":         Cache{Dir: `D:\Cache`, MaxSize: "30G", MinFreeSpace: "5G"},
+		"autoReconnect": false,
+		"theme":         ThemeDark,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected, err := protect(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte{}, fileHeader...), protected...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path, `C:\cache`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LAN != (LAN{Port: DefaultLANPort, User: DefaultLANUser}) {
+		t.Fatalf("LAN %+v; want the defaults", got.LAN)
+	}
+	if len(got.Vaults) != 1 || got.Cache.MaxSize != "30G" || got.AutoReconnect || got.Theme != ThemeDark {
+		t.Fatalf("the other settings changed: %+v", got)
 	}
 }

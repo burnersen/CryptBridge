@@ -216,6 +216,7 @@ function render(s) {
   renderApp(s);
   renderAddAvailability(s);
   renderLock(s);
+  renderLAN(s);
 }
 
 function renderPill(s) {
@@ -250,6 +251,24 @@ function renderNotices(s) {
   show($("winfsp-missing"), !s.winFsp);
   show($("rclone-missing"), !s.rclone && s.phase === "error");
   show($("setup-needed"), s.phase === "setup");
+  renderLANNotice(s);
+}
+
+// renderLANNotice tells on the Status page that the drives are open to the
+// home network, or why they are not although they should be.
+function renderLANNotice(s) {
+  const lan = s.lan;
+  const notice = $("lan-notice");
+  if (s.locked || !lan.enabled) {
+    show(notice, false);
+  } else if (lan.running) {
+    const where = lan.addresses.length > 0 ? " — " + lan.addresses[0] : "";
+    setNotice(notice, "info", `Shared in your home network: ${lan.folders.join(", ")}${where}`);
+  } else if (lan.problem) {
+    setNotice(notice, "warn", "LAN access: " + lan.problem);
+  } else {
+    show(notice, false);
+  }
 }
 
 // ---------- status: one card per drive ----------
@@ -724,14 +743,18 @@ $("btn-remove-app").addEventListener("click", () => run($("app-result"), async (
   setNotice($("app-result"), "info", "Removed. The next sign-in uses rclone's shared access.");
 }));
 
+// copyWithFeedback copies a text and lets the button say so for a moment.
+async function copyWithFeedback(button, text) {
+  await api.CopyText(text);
+  const label = button.dataset.label || (button.dataset.label = button.textContent);
+  button.textContent = "Copied";
+  setTimeout(() => { button.textContent = label; }, 1500);
+}
+
 // The page is not selectable, so texts to paste into pCloud's form have a
 // Copy button. Line breaks of the HTML source are not part of the text.
-document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
-  await api.CopyText($(b.dataset.copy).textContent.replace(/\s+/g, " ").trim());
-  const label = b.dataset.label || (b.dataset.label = b.textContent);
-  b.textContent = "Copied";
-  setTimeout(() => { b.textContent = label; }, 1500);
-}));
+document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () =>
+  copyWithFeedback(b, $(b.dataset.copy).textContent.replace(/\s+/g, " ").trim())));
 
 document.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", () => {
   const input = $(b.dataset.reveal);
@@ -1162,6 +1185,8 @@ async function loadSettings() {
   $("settings-result").textContent = "";
   loadAppFields();
   show($("lock-result"), false);
+  loadLANFields();
+  checkFirewall(); // takes a few seconds; the page shows "Checking…" meanwhile
 }
 
 $("btn-browse-cache").addEventListener("click", async () => {
@@ -1235,7 +1260,7 @@ function renderLock(s) {
 let cancelPasswordDialog = null;
 function wipePage() {
   for (const id of ["add-password", "add-salt", "transfer-block", "app-client-secret", "lock-new", "lock-repeat",
-    "lock-change-old", "lock-change-new", "lock-change-repeat", "lock-off-password", "remove-confirm"]) {
+    "lock-change-old", "lock-change-new", "lock-change-repeat", "lock-off-password", "remove-confirm", "lan-password"]) {
     $(id).value = "";
   }
   $("transfer-code").textContent = "";
@@ -1334,6 +1359,203 @@ $("btn-offer-lock").addEventListener("click", () => {
   $("lock-new").focus();
 });
 $("btn-decline-lock").addEventListener("click", () => run($("status-message"), () => api.DeclineLock()));
+
+// ---------- LAN access ----------
+
+// renderLAN shows what the server does. The form fields are filled only by
+// loadLANFields, so that typing is never overwritten.
+function renderLAN(s) {
+  const lan = s.lan;
+  let state = "Off";
+  if (lan.enabled && lan.running) {
+    const drives = lan.folders.length === 1 ? "1 drive" : `${lan.folders.length} drives`;
+    state = `On — ${drives} shared: ${lan.folders.join(", ")} (${lan.allowChanges ? "changes allowed" : "read only"}).`;
+  } else if (lan.enabled && lan.problem) {
+    state = "On, but not working: " + lan.problem;
+  } else if (lan.enabled) {
+    state = "On — waiting for a connected drive.";
+  }
+  $("lan-state").textContent = state;
+  show($("lan-address-block"), lan.enabled);
+  renderLANAddresses(lan.addresses);
+}
+
+// renderLANAddresses lists the addresses with a Copy button each; the list
+// is rebuilt only when it changes, so that a button keeps its "Copied".
+function renderLANAddresses(addresses) {
+  const list = $("lan-addresses");
+  const shown = addresses.join(" ");
+  if (list.dataset.shown === shown && list.childElementCount > 0) return;
+  list.dataset.shown = shown;
+  list.replaceChildren();
+  if (addresses.length === 0) {
+    list.append(el("div", "value", "No home network address found — is this PC connected to your router?"));
+    return;
+  }
+  for (const address of addresses) {
+    const copy = el("button", "link", "Copy");
+    copy.addEventListener("click", () => copyWithFeedback(copy, address));
+    const row = el("div", "row tight");
+    row.append(el("code", "copy-text", address), copy);
+    list.append(row);
+  }
+}
+
+async function loadLANFields() {
+  show($("lan-result"), false);
+  try {
+    const cfg = await api.LANSettings();
+    $("lan-enabled").checked = cfg.enabled;
+    $("lan-user").value = cfg.user;
+    $("lan-port").value = cfg.port;
+    $("lan-password").type = "password";
+    $("lan-password").value = cfg.password || await api.NewLANPassword(); // ready for turning it on
+    $("lan-allow-changes").checked = cfg.allowChanges;
+  } catch (err) {
+    setNotice($("lan-result"), "error", errorText(err));
+  }
+}
+
+// The last look at the Windows firewall; looking takes a few seconds, so an
+// older look that ends late must not overwrite a newer one.
+let firewall = null;
+let firewallLook = 0;
+
+async function checkFirewall() {
+  const look = ++firewallLook;
+  $("lan-firewall").textContent = "Checking…";
+  let result = null;
+  let failure = "";
+  try {
+    result = await api.LANFirewall();
+  } catch (err) {
+    failure = errorText(err);
+  }
+  if (look !== firewallLook) return firewall;
+  firewall = result;
+  renderFirewall(failure);
+  return firewall;
+}
+
+function renderFirewall(failure) {
+  const lan = snapshot.lan;
+  const fw = firewall;
+  const notes = $("lan-firewall-notes");
+  notes.replaceChildren();
+  let allow = false;
+  let remove = false;
+  let network = false;
+  let text;
+  if (!fw) {
+    text = "Could not be checked: " + failure;
+  } else if (!lan.enabled) {
+    text = fw.ruleFound ? "CryptBridge's rule is still there although the LAN access is off." :
+      "Nothing is allowed — the LAN access is off.";
+    remove = fw.ruleFound;
+  } else if (fw.privateOff) {
+    text = "The firewall is off for home networks, so nothing needs to be allowed.";
+  } else if (fw.ruleFits) {
+    text = `Allowed: devices of your home network may connect on port ${lan.port}.`;
+  } else {
+    text = fw.ruleFound ? `CryptBridge's rule does not fit the current settings (it is for port ${fw.rulePort || "?"}).` :
+      "CryptBridge's rule is not there yet — without it, the devices of your home network cannot connect.";
+    allow = true;
+  }
+  if (fw && lan.enabled && fw.blocking.length > 0) {
+    notes.append(el("div", "notice warn", `Windows also has rules that block rclone.exe: ${fw.blocking.join(", ")}. ` +
+      "They win over any rule that allows. Delete them in Windows Security → Firewall & network protection → " +
+      "Advanced settings → Inbound Rules."));
+  }
+  const others = fw && lan.enabled ? uniqueRules(fw.others) : [];
+  if (others.length > 0) {
+    notes.append(el("div", "notice warn", `Windows has other rules that let rclone.exe in: ${others.map(ruleText).join(", ")}. ` +
+      "Windows creates such rules when rclone is allowed once. With them, devices may reach the LAN access beyond " +
+      "your home network, too. Unless you need them for something else, remove them (Windows asks for permission; " +
+      "should rclone need such a rule again some day, Windows asks again)."));
+  }
+  const publicNetworks = fw && lan.enabled ? fw.networks.filter((n) => n.category === "Public") : [];
+  if (publicNetworks.length > 0) {
+    network = true;
+    const names = publicNetworks.map((n) => `"${n.name}" (${n.adapter})`).join(", ");
+    notes.append(el("div", "notice warn", `Windows counts your network ${names} as public. CryptBridge's rule ` +
+      "applies only to private (home) networks, so it does not let devices in there. If it is your home network, " +
+      "set it to private: Windows Settings → Network & internet → your connection (Ethernet or Wi-Fi) → " +
+      "Network profile type → Private."));
+  }
+  $("lan-firewall").textContent = text;
+  show($("btn-lan-allow"), allow);
+  show($("btn-lan-remove-rule"), remove);
+  show($("btn-lan-remove-others"), others.length > 0);
+  show($("btn-lan-network"), network);
+}
+
+// uniqueRules drops repeats: Windows often keeps the same rule twice, once
+// for TCP and once for UDP.
+function uniqueRules(rules) {
+  const seen = new Set();
+  return rules.filter((r) => {
+    const key = `${r.name}|${r.profile}|${r.port}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const PROFILE_NAMES = { Private: "home networks", Public: "public networks", Domain: "company networks", Any: "all networks" };
+
+// ruleText describes a firewall rule, e.g. "rclone.exe" (public networks, any port).
+function ruleText(rule) {
+  const networks = rule.profile.split(",").map((p) => PROFILE_NAMES[p.trim()] || p.trim()).join(" and ");
+  const port = rule.port === "Any" || rule.port === "" ? "any port" : "port " + rule.port;
+  return `"${rule.name}" (${networks}, ${port})`;
+}
+
+// Saving also takes care of the firewall: turning the LAN access on lets
+// the home network in, turning it off removes the rule again. Windows asks
+// for permission each time.
+$("btn-save-lan").addEventListener("click", () => run($("lan-result"), async () => {
+  const wasEnabled = snapshot.lan.enabled;
+  const enabled = $("lan-enabled").checked;
+  await api.UpdateLAN({
+    enabled,
+    port: Number($("lan-port").value),
+    user: $("lan-user").value.trim(),
+    password: $("lan-password").value,
+    allowChanges: $("lan-allow-changes").checked,
+  });
+  render(await api.GetSnapshot());
+  const fw = await checkFirewall();
+  if (enabled && fw && !fw.ruleFits && !fw.privateOff) {
+    setNotice($("lan-result"), "info", "Saved. Windows now asks for permission to let the devices of your home network in…");
+    await api.AllowLANFirewall();
+    await checkFirewall();
+  } else if (!enabled && wasEnabled && fw && fw.ruleFound) {
+    setNotice($("lan-result"), "info", "Saved. Windows now asks for permission to remove CryptBridge's firewall rule…");
+    await api.RemoveLANFirewall();
+    await checkFirewall();
+  }
+  setNotice($("lan-result"), "good", enabled ? "Saved. The LAN access is on." : "Saved. The LAN access is off.");
+}));
+
+$("btn-lan-allow").addEventListener("click", () => run($("lan-result"), async () => {
+  await api.AllowLANFirewall();
+  await checkFirewall();
+}));
+$("btn-lan-remove-rule").addEventListener("click", () => run($("lan-result"), async () => {
+  await api.RemoveLANFirewall();
+  await checkFirewall();
+}));
+$("btn-lan-remove-others").addEventListener("click", () => run($("lan-result"), async () => {
+  await api.RemoveOtherLANRules();
+  await checkFirewall();
+}));
+$("btn-lan-network").addEventListener("click", () => run($("lan-result"), () => api.OpenNetworkSettings()));
+$("btn-lan-recheck").addEventListener("click", () => checkFirewall());
+$("btn-lan-new-password").addEventListener("click", async () => {
+  $("lan-password").value = await api.NewLANPassword();
+  $("lan-password").type = "text"; // it has to be typed on the devices
+});
+$("btn-lan-copy-password").addEventListener("click", (event) => copyWithFeedback(event.currentTarget, $("lan-password").value));
 
 // ---------- start ----------
 
