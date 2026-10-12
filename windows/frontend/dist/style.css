@@ -391,7 +391,11 @@ textarea {
 }
 .dialog.wide { max-width: 560px; }
 .dialog h1 { margin-bottom: 10px; }
-.dialog .field input[type=text] { width: 100%; }
+.dialog .field input[type=text], .dialog .field input[type=password] { width: 100%; }
+
+/* A question of rclone keeps its own line breaks. */
+.pre-line { white-space: pre-line; }
+.question-choices { max-height: 240px; overflow-y: auto; margin-bottom: 8px; }
 
 /* Emergency sheet: on screen an overlay, on paper the only thing printed.
    It is always black on white, like the paper. */

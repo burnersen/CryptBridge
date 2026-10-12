@@ -109,6 +109,16 @@ func (e *Engine) lockLocked(ctx context.Context, now bool) error {
 		e.mu.Unlock()
 		return errors.New("set an app password first (Settings → App lock)")
 	}
+	client, unlocked := e.client, !e.locked
+	e.mu.Unlock()
+	if client != nil && unlocked {
+		// rclone forgets renewed sign-ins when it stops, and the key to
+		// store them goes now. A failure only means that the next unlock
+		// uses the sign-ins stored before.
+		_ = e.keepRenewedSignInsLocked(ctx, client)
+	}
+
+	e.mu.Lock()
 	if !e.locked {
 		e.unlockConnects = nil
 		for _, v := range e.settings.Vaults {
@@ -127,8 +137,7 @@ func (e *Engine) lockLocked(ctx context.Context, now bool) error {
 	e.key.Wipe()
 	e.key = nil
 	e.settings = e.settings.WithoutSecrets()
-	e.usage = nil
-	e.signInProblem = ""
+	e.accounts = map[string]*accountRuntime{}
 	e.mu.Unlock()
 
 	// The drives may stay a while to finish their uploads; the network loses
@@ -170,7 +179,9 @@ func (e *Engine) finishLockLocked(ctx context.Context, now bool) {
 		for _, v := range s.Vaults {
 			_ = vault.Remove(ctx, client, remoteName(v.ID))
 		}
-		_ = vault.Remove(ctx, client, pcloudRemote)
+		for _, a := range s.Accounts {
+			_ = vault.Remove(ctx, client, remoteName(a.ID))
+		}
 		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
 			e.setPhase(PhaseLocked, "rclone could not be stopped yet ("+err.Error()+"); CryptBridge tries again.")
 			return
@@ -257,8 +268,8 @@ func (e *Engine) Unlock(ctx context.Context, password string) error {
 	e.closing = false // drives that were still uploading simply stay
 	connect := e.unlockConnects
 	e.unlockConnects = nil
+	e.accounts = map[string]*accountRuntime{} // ask every service for the free space right away
 	e.mu.Unlock()
-	e.lastUsage = time.Time{}
 
 	if settings.IsLegacy(e.paths.SettingsFile) {
 		// The first unlock after the update writes the new format.
@@ -366,13 +377,12 @@ func (e *Engine) EnableLock(password string) error {
 	return removeOldBackup(e.paths.SettingsFile)
 }
 
-// removeOldBackup deletes the backup of the settings of CryptBridge 0.3
-// when the protection of the secrets changes: it holds them protected the
+// removeOldBackup deletes the backups of the settings of older versions
+// when the protection of the secrets changes: they hold them protected the
 // old way.
 func removeOldBackup(path string) error {
-	if err := settings.RemoveLegacyBackup(path); err != nil {
-		return fmt.Errorf("the backup of your old settings (%s%s) could not be deleted; please delete it yourself: %w",
-			path, settings.LegacyBackupSuffix, err)
+	if err := settings.RemoveLegacyBackups(path); err != nil {
+		return fmt.Errorf("a backup of your old settings could not be deleted; please delete it yourself: %w", err)
 	}
 	return nil
 }
@@ -470,7 +480,7 @@ func (e *Engine) DeclineLock() error {
 }
 
 // Reset is the way out of a forgotten app password: CryptBridge forgets the
-// pCloud sign-in, all vaults and the app password; cache and behaviour
+// cloud accounts, all vaults and the app password; cache and behaviour
 // settings stay. The files of the vaults are not touched — with the
 // emergency sheets every vault can be added again.
 func (e *Engine) Reset(ctx context.Context) error {
@@ -482,6 +492,7 @@ func (e *Engine) Reset(ctx context.Context) error {
 	old := e.settings.Clone()
 	e.mu.Unlock()
 	fresh := old.WithoutSecrets()
+	fresh.Accounts = nil
 	fresh.Vaults = nil
 	fresh.AppLock = false
 	fresh.LockOffered = false
@@ -510,7 +521,7 @@ func (e *Engine) Reset(ctx context.Context) error {
 	e.unlockConnects = nil
 	e.vaults = map[string]*vaultRuntime{}
 	e.lan = lanRuntime{} // the server ended with rclone
-	e.usage, e.signInProblem = nil, ""
+	e.accounts = map[string]*accountRuntime{}
 	e.mu.Unlock()
 	e.wipeTraces()
 	backupErr := removeOldBackup(e.paths.SettingsFile)

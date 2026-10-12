@@ -2,22 +2,18 @@
 // Copyright (C) 2026 burnersen
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Package pcloud signs in to pCloud through rclone and registers the account
-// with the running rclone process.
+// Package pcloud knows what is special about pCloud: its two regions, whose
+// servers accept only their own sign-ins, and its numbered errors. Signing
+// in works as for every service (see package cloud).
 package pcloud
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 )
@@ -73,55 +69,11 @@ func IsSignInProblem(err error) bool {
 	return errors.Is(err, ErrSignInRevoked) || errors.Is(err, ErrSignInRejected)
 }
 
-// App is the user's own pCloud app ("My Apps" on docs.pcloud.com). Without
-// one, rclone's built-in app is used, which pCloud has blocked for hours
-// before (2021-07-28, 2026-10-05).
-//
-// The app is only needed for signing in: pCloud's sign-ins never expire and
-// have nothing to refresh, so the remotes themselves need only the token.
-type App struct {
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"` // a secret
-}
-
-// appCodePattern: rclone's own codes are 11 and 28 letters and digits
-// (measured). "_" and "-" are accepted to be safe, but never a leading "-",
-// which rclone would read as an option.
-var appCodePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{3,127}$`)
-
-// NewApp checks the codes of an own pCloud app, ignoring spaces around
-// pasted text. Two empty codes are fine: they mean "use rclone's app".
-func NewApp(clientID, clientSecret string) (App, error) {
-	app := App{ClientID: strings.TrimSpace(clientID), ClientSecret: strings.TrimSpace(clientSecret)}
-	switch {
-	case app.ClientID == "" && app.ClientSecret == "":
-		return App{}, nil
-	case app.ClientID == "" || app.ClientSecret == "":
-		return App{}, errors.New("enter both the client ID and the client secret of your pCloud app")
-	case !appCodePattern.MatchString(app.ClientID):
-		return App{}, errors.New("the client ID does not look right; copy it again from your app on pCloud")
-	case !appCodePattern.MatchString(app.ClientSecret):
-		return App{}, errors.New("the client secret does not look right; copy it again from your app on pCloud")
-	}
-	return app, nil
-}
-
-// IsSet reports whether an own app is configured.
-func (a App) IsSet() bool {
-	return a.ClientID != ""
-}
-
-// Account is a signed-in pCloud account.
+// Account is a signed-in pCloud account, in the form CryptBridge 0.6 stored
+// it and the Linux setup takes it.
 type Account struct {
 	Hostname string `json:"hostname"`
 	Token    string `json:"token"` // rclone's token JSON; a secret
-}
-
-// Usage is the storage of the account in bytes.
-type Usage struct {
-	Total int64 `json:"total"`
-	Used  int64 `json:"used"`
-	Free  int64 `json:"free"`
 }
 
 // Configure registers the account in rclone's in-memory configuration.
@@ -142,15 +94,6 @@ func Configure(ctx context.Context, client *rcd.Client, name string, account Acc
 	return nil
 }
 
-// ReadUsage asks pCloud how much storage is used and free.
-func ReadUsage(ctx context.Context, client *rcd.Client, remote string) (Usage, error) {
-	var usage Usage
-	if err := client.Call(ctx, "operations/about", map[string]any{"fs": remote}, &usage); err != nil {
-		return usage, Classify(err)
-	}
-	return usage, nil
-}
-
 // FindRegion returns the API server that accepts the token. The answer of
 // the wrong server is "Invalid 'access_token' provided. (2094)" (measured).
 func FindRegion(ctx context.Context, client *rcd.Client, token string) (string, error) {
@@ -159,7 +102,7 @@ func FindRegion(ctx context.Context, client *rcd.Client, token string) (string, 
 		if err := Configure(ctx, client, regionProbeRemote, Account{Hostname: host, Token: token}); err != nil {
 			return "", err
 		}
-		_, err := ReadUsage(ctx, client, regionProbeRemote+":")
+		err := Classify(client.Call(ctx, "operations/about", map[string]any{"fs": regionProbeRemote + ":"}, nil))
 		switch {
 		case err == nil:
 			return host, nil
@@ -216,76 +159,4 @@ func kindOf(message string) error {
 		}
 	}
 	return nil
-}
-
-// tokenLine matches the token rclone prints after a successful sign-in.
-var tokenLine = regexp.MustCompile(`^\{"access_token":.*\}$`)
-
-// authURL matches the link rclone prints in case the browser does not open.
-var authURL = regexp.MustCompile(`http://127\.0\.0\.1:\d+/auth\?state=\S+`)
-
-// Authorize runs "rclone authorize pcloud": rclone opens the pCloud sign-in
-// page in the default browser and waits until the user has signed in.
-// With an own app, the sign-in goes through that app instead of rclone's.
-// onLink receives the sign-in link as soon as rclone prints it, so that it
-// can be shown in case the browser does not open by itself. Cancelling ctx
-// stops the sign-in.
-func Authorize(ctx context.Context, rcloneExe string, app App, onLink func(string)) (string, error) {
-	cmd := authorizeCommand(ctx, rcloneExe, app)
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	cmd.Stderr = cmd.Stdout // rclone prints the link on stderr, the token on stdout
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("start pCloud sign-in: %w", err)
-	}
-
-	token, scanErr := scanAuthorizeOutput(output, onLink)
-	waitErr := cmd.Wait()
-	switch {
-	case ctx.Err() != nil:
-		return "", errors.New("pCloud sign-in was cancelled")
-	case token != "":
-		return token, nil
-	case scanErr != nil:
-		return "", fmt.Errorf("read pCloud sign-in: %w", scanErr)
-	case waitErr != nil:
-		return "", fmt.Errorf("pCloud sign-in failed: %w", waitErr)
-	}
-	return "", errors.New("pCloud sign-in ended without a token")
-}
-
-// authorizeCommand builds "rclone authorize pcloud". The codes of an own app
-// go through the environment, not the command line, because security
-// software often records command lines (rclone 1.75.1 reads them from the
-// environment, measured). The last value wins if the user has set them too.
-func authorizeCommand(ctx context.Context, rcloneExe string, app App) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, rcloneExe, "authorize", "pcloud")
-	cmd.SysProcAttr = hiddenWindow()
-	if app.IsSet() {
-		cmd.Env = append(os.Environ(),
-			"RCLONE_PCLOUD_CLIENT_ID="+app.ClientID,
-			"RCLONE_PCLOUD_CLIENT_SECRET="+app.ClientSecret)
-	}
-	return cmd
-}
-
-// scanAuthorizeOutput reads rclone's output line by line, reports the link
-// once and returns the token line.
-func scanAuthorizeOutput(r io.Reader, onLink func(string)) (string, error) {
-	var once sync.Once
-	token := ""
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if link := authURL.FindString(line); link != "" && onLink != nil {
-			once.Do(func() { onLink(link) })
-		}
-		if tokenLine.MatchString(line) {
-			token = line
-		}
-	}
-	return token, scanner.Err()
 }

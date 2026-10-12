@@ -3,14 +3,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // Package engine is the heart of CryptBridge. It keeps the rclone process,
-// the pCloud sign-in, the vaults and their drives together and watches over
+// the cloud accounts, the vaults and their drives together and watches over
 // them. It knows nothing about windows or tray icons; those only call its
 // methods and listen to its snapshots.
 package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -18,9 +17,9 @@ import (
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
@@ -30,19 +29,20 @@ const (
 	// pollEvery is how often the drives are looked at.
 	pollEvery = 2 * time.Second
 
-	// usageEvery is how often pCloud is asked for the free space.
+	// usageEvery is how often a cloud service is asked for the free space.
 	usageEvery = 5 * time.Minute
 
-	// signInRecheckEvery is how often pCloud is asked again while it refuses
-	// the sign-in: the refusal can be a passing outage at pCloud.
+	// signInRecheckEvery is how often a service is asked again while it
+	// refuses the sign-in: the refusal can be a passing outage (pCloud did
+	// so for hours).
 	signInRecheckEvery = time.Minute
 
-	// signInCheckTimeout limits the sign-in check before connecting. If
-	// pCloud answers more slowly than this, the check of the vault folder
+	// signInCheckTimeout limits the sign-in check before connecting. If the
+	// service answers more slowly than this, the check of the vault folder
 	// that follows decides.
 	signInCheckTimeout = 10 * time.Second
 
-	// keyCheckTimeout limits the check of a pCloud vault's folder before its
+	// keyCheckTimeout limits the check of a cloud vault's folder before its
 	// drive is connected. Without an answer in time, nothing is connected
 	// and the drive tries again later.
 	keyCheckTimeout = 20 * time.Second
@@ -73,29 +73,23 @@ const (
 
 // Snapshot is everything a window or tray icon needs to show.
 type Snapshot struct {
-	Phase             Phase           `json:"phase"`
-	Message           string          `json:"message"`
-	Version           string          `json:"version"`
-	SignedIn          bool            `json:"signedIn"`
-	SignInProblem     string          `json:"signInProblem"` // why pCloud refuses the sign-in; "" while it accepts it
-	PCloudHost        string          `json:"pcloudHost"`
-	OwnPCloudApp      bool            `json:"ownPCloudApp"`
-	PCloudClientID    string          `json:"pcloudClientId"` // not a secret; the client secret is never sent
-	SignInAppID       string          `json:"signInAppId"`    // client ID of the current sign-in; "" = rclone's app
-	Usage             *pcloud.Usage   `json:"usage"`          // the pCloud account
-	Vaults            []VaultSnapshot `json:"vaults"`
-	Rclone            *prereq.Rclone  `json:"rclone"`
-	WinFsp            bool            `json:"winFsp"`
-	AutoReconnect     bool            `json:"autoReconnect"`
-	CacheDir          string          `json:"cacheDir"`
-	CacheMaxSize      string          `json:"cacheMaxSize"`
-	CacheMinFreeSpace string          `json:"cacheMinFreeSpace"`
-	Theme             string          `json:"theme"`
-	AppLock           bool            `json:"appLock"`        // an app password is set
-	LockOffered       bool            `json:"lockOffered"`    // the app password was offered once
-	Locked            bool            `json:"locked"`         // the app password is needed first
-	UnlockConnects    []string        `json:"unlockConnects"` // letters of the drives that connect after unlocking
-	LAN               LANStatus       `json:"lan"`
+	Phase             Phase             `json:"phase"`
+	Message           string            `json:"message"`
+	Version           string            `json:"version"`
+	Accounts          []AccountSnapshot `json:"accounts"`
+	Vaults            []VaultSnapshot   `json:"vaults"`
+	Rclone            *prereq.Rclone    `json:"rclone"`
+	WinFsp            bool              `json:"winFsp"`
+	AutoReconnect     bool              `json:"autoReconnect"`
+	CacheDir          string            `json:"cacheDir"`
+	CacheMaxSize      string            `json:"cacheMaxSize"`
+	CacheMinFreeSpace string            `json:"cacheMinFreeSpace"`
+	Theme             string            `json:"theme"`
+	AppLock           bool              `json:"appLock"`        // an app password is set
+	LockOffered       bool              `json:"lockOffered"`    // the app password was offered once
+	Locked            bool              `json:"locked"`         // the app password is needed first
+	UnlockConnects    []string          `json:"unlockConnects"` // letters of the drives that connect after unlocking
+	LAN               LANStatus         `json:"lan"`
 }
 
 // PendingUploads counts the files of all drives that are not safely in
@@ -138,18 +132,17 @@ type Engine struct {
 	actionMu sync.Mutex
 
 	// mu guards the fields below. It is only ever held for a moment.
-	mu            sync.Mutex
-	settings      settings.Settings
-	rclone        *prereq.Rclone
-	winFsp        bool
-	client        *rcd.Client
-	usage         *pcloud.Usage
-	signInProblem string
-	phase         Phase
-	message       string
-	vaults        map[string]*vaultRuntime // by vault ID
-	lan           lanRuntime               // the LAN server (see lan.go)
-	listeners     []func(Snapshot)
+	mu        sync.Mutex
+	settings  settings.Settings
+	rclone    *prereq.Rclone
+	winFsp    bool
+	client    *rcd.Client
+	phase     Phase
+	message   string
+	accounts  map[string]*accountRuntime // by account ID (see accounts.go)
+	vaults    map[string]*vaultRuntime   // by vault ID
+	lan       lanRuntime                 // the LAN server (see lan.go)
+	listeners []func(Snapshot)
 
 	// App lock (see lock.go), guarded by mu.
 	locked         bool          // no secrets in memory; the app password is needed
@@ -159,14 +152,20 @@ type Engine struct {
 
 	// Guarded by actionMu (the monitor holds it while checking).
 	failures       int
-	lastUsage      time.Time
 	unlockFailures int
 	nextUnlock     time.Time
 }
 
 // New creates an engine; nothing happens until Start.
 func New(paths appdir.Paths, version string) *Engine {
-	return &Engine{paths: paths, version: version, phase: PhaseStarting, vaults: map[string]*vaultRuntime{}, ctx: context.Background()}
+	return &Engine{
+		paths:    paths,
+		version:  version,
+		phase:    PhaseStarting,
+		accounts: map[string]*accountRuntime{},
+		vaults:   map[string]*vaultRuntime{},
+		ctx:      context.Background(),
+	}
 }
 
 // Subscribe registers a function that receives every new snapshot. It is
@@ -190,13 +189,7 @@ func (e *Engine) snapshotLocked() Snapshot {
 		Phase:             e.phase,
 		Message:           e.message,
 		Version:           e.version,
-		SignedIn:          s.SignedIn(),
-		SignInProblem:     e.signInProblem,
-		PCloudHost:        s.PCloud.Hostname,
-		OwnPCloudApp:      s.PCloudApp.IsSet(),
-		PCloudClientID:    s.PCloudApp.ClientID,
-		SignInAppID:       s.SignInAppID,
-		Usage:             e.usage,
+		Accounts:          make([]AccountSnapshot, 0, len(s.Accounts)),
 		Vaults:            make([]VaultSnapshot, 0, len(s.Vaults)),
 		Rclone:            e.rclone,
 		WinFsp:            e.winFsp,
@@ -210,6 +203,9 @@ func (e *Engine) snapshotLocked() Snapshot {
 		Locked:            e.locked,
 		UnlockConnects:    []string{},
 		LAN:               e.lanStatusLocked(),
+	}
+	for _, a := range s.Accounts {
+		snap.Accounts = append(snap.Accounts, e.accountSnapshotLocked(a, s))
 	}
 	for _, v := range s.Vaults {
 		snap.Vaults = append(snap.Vaults, e.vaultSnapshotLocked(v))
@@ -396,7 +392,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	return client, nil
 }
 
-// ensureRemotesLocked registers account and vaults with rclone unless they
+// ensureRemotesLocked registers accounts and vaults with rclone unless they
 // are already there. An rclone that kept running after a crash of the
 // window still knows them, and re-registering a mounted vault could detach
 // the drive from its status.
@@ -409,9 +405,12 @@ func (e *Engine) ensureRemotesLocked(ctx context.Context, client *rcd.Client) er
 	}
 	s := e.currentSettings()
 
-	if s.SignedIn() && !slices.Contains(answer.Remotes, pcloudRemote) {
-		if err := pcloud.Configure(ctx, client, pcloudRemote, s.PCloud); err != nil {
-			return err
+	for _, a := range s.Accounts {
+		if !a.SignedIn() || slices.Contains(answer.Remotes, remoteName(a.ID)) {
+			continue
+		}
+		if err := cloud.Restore(ctx, client, remoteName(a.ID), a.Remote); err != nil {
+			return fmt.Errorf("account %q: %w", a.Name, err)
 		}
 	}
 	for _, v := range s.Vaults {
@@ -470,8 +469,14 @@ func (e *Engine) Shutdown(ctx context.Context, force bool) error {
 	client := e.client
 	e.client = nil
 	appLock := e.settings.AppLock
+	locked := e.locked
 	e.mu.Unlock()
 	if client != nil {
+		if !locked {
+			// rclone forgets renewed sign-ins when it stops. A failure only
+			// means that the next start uses the sign-ins stored before.
+			_ = e.keepRenewedSignInsLocked(ctx, client)
+		}
 		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
 			return err
 		}
@@ -542,68 +547,6 @@ func (e *Engine) checkOnce(ctx context.Context) {
 	e.refreshUsage(ctx, client, s)
 	e.syncLANLocked(ctx, "")
 	e.publish()
-}
-
-// refreshUsage asks pCloud for the free space now and then — every minute
-// while pCloud refuses the sign-in, so that the warning goes away soon after
-// pCloud accepts it again. The warning is kept apart from the drives: a
-// connected drive stays "connected" and the warning stays visible.
-func (e *Engine) refreshUsage(ctx context.Context, client *rcd.Client, s settings.Settings) {
-	e.mu.Lock()
-	every := usageEvery
-	if e.signInProblem != "" {
-		every = signInRecheckEvery
-	}
-	e.mu.Unlock()
-	if !s.SignedIn() || time.Since(e.lastUsage) < every {
-		return
-	}
-	_ = e.readUsageLocked(ctx, client) // a refused sign-in is shown by readUsageLocked
-}
-
-// readUsageLocked asks pCloud for the free space. The answer also tells
-// whether pCloud accepts the sign-in, and the warning is set or removed
-// accordingly. The caller holds actionMu.
-func (e *Engine) readUsageLocked(ctx context.Context, client *rcd.Client) error {
-	e.lastUsage = time.Now()
-	usage, err := pcloud.ReadUsage(ctx, client, pcloudRemote+":")
-	if err != nil {
-		return e.explain(err)
-	}
-	e.mu.Lock()
-	e.usage = &usage
-	e.signInProblem = ""
-	e.mu.Unlock()
-	e.publish()
-	return nil
-}
-
-// explain turns pCloud's numbered errors into plain words and remembers a
-// refused sign-in, so that the window keeps showing it.
-func (e *Engine) explain(err error) error {
-	err = pcloud.Classify(err)
-	if !pcloud.IsSignInProblem(err) {
-		return err
-	}
-	advice := signInAdvice(err)
-	e.mu.Lock()
-	changed := e.signInProblem != advice
-	e.signInProblem = advice
-	e.mu.Unlock()
-	if changed {
-		e.publish()
-	}
-	return err
-}
-
-// signInAdvice says what a refused sign-in means and what helps.
-func signInAdvice(err error) string {
-	if errors.Is(err, pcloud.ErrSignInRevoked) {
-		return err.Error() + `. This follows a password change or "log out of all devices" — but pCloud has also ` +
-			"caused it during outages that ended by themselves. CryptBridge asks pCloud again every minute and " +
-			"removes this message as soon as the sign-in works again. If it lasts, sign in again."
-	}
-	return err.Error() + ". Please sign in again."
 }
 
 // rotateLog moves an oversized log aside so that it cannot grow forever.

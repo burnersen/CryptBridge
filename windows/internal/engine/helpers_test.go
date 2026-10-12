@@ -11,6 +11,7 @@ import (
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/settings"
 )
 
 // testPaths puts every file of a test engine below root.
@@ -35,9 +36,24 @@ func clientOf(e *Engine) *rcd.Client {
 // askPCloudNow makes the next status round ask pCloud right away instead of
 // waiting for the usual interval.
 func askPCloudNow(e *Engine) {
-	e.actionMu.Lock()
-	e.lastUsage = time.Time{}
-	e.actionMu.Unlock()
+	e.mu.Lock()
+	e.accountRuntimeLocked(settings.MigratedAccountID).lastAsked = time.Time{}
+	e.mu.Unlock()
+}
+
+// accountOf returns the snapshot of one account.
+func accountOf(e *Engine, id string) AccountSnapshot {
+	for _, a := range e.Snapshot().Accounts {
+		if a.ID == id {
+			return a
+		}
+	}
+	return AccountSnapshot{}
+}
+
+// pcloudProblem is the sign-in warning of the test's pCloud account.
+func pcloudProblem(e *Engine) string {
+	return accountOf(e, settings.MigratedAccountID).SignInProblem
 }
 
 func waitFor(t *testing.T, what string, timeout time.Duration, done func() bool) {

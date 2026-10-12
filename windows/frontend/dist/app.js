@@ -5,19 +5,23 @@
 "use strict";
 
 // All dynamic text is set with textContent, never innerHTML: folder and file
-// names come from pCloud or the disk and must never be able to inject markup.
+// names come from the cloud or the disk and must never be able to inject markup.
 
 const $ = (id) => document.getElementById(id);
 let api = null;          // window.go.main.App, set once Wails is ready
 let snapshot = null;     // last state from the engine
+let services = [];       // the cloud services an account can be added for
 let busy = false;        // an action is running: ignore further clicks
 let systemTheme = "dark";
 
-// The page of the Vaults tab: "account", "add" or the ID of a vault.
-let currentPage = "account";
-// The vault whose form fields were filled last; they are filled again only
-// when another vault is shown, so that typing is never overwritten.
+// The page of the Vaults tab: "add", "add-account", "account:" plus the ID
+// of an account, or the ID of a vault.
+let currentPage = "add";
+// The vault and the account whose form fields were filled last; they are
+// filled again only when another one is shown, so that typing is never
+// overwritten.
 let filledVault = "";
+let filledAccount = "";
 
 // ---------- helpers ----------
 
@@ -93,6 +97,34 @@ function vaultByID(id) {
   return snapshot ? (snapshot.vaults || []).find((v) => v.id === id) : undefined;
 }
 
+function accountByID(id) {
+  return snapshot ? (snapshot.accounts || []).find((a) => a.id === id) : undefined;
+}
+
+function serviceByType(type) {
+  return services.find((s) => s.type === type);
+}
+
+// accountPage returns the ID of the account a page shows, or "".
+function accountPage(page) {
+  return page.startsWith("account:") ? page.slice("account:".length) : "";
+}
+
+function currentAccount() {
+  return accountByID(accountPage(currentPage));
+}
+
+// cloudSignedIn: the account of a cloud vault is signed in.
+function cloudSignedIn(v) {
+  const a = accountByID(v.account);
+  return !!a && a.signedIn;
+}
+
+// longName names an account with its service, unless the name says it.
+function longName(a) {
+  return a.name === a.serviceTitle ? a.name : `${a.name} (${a.serviceTitle})`;
+}
+
 // isActive: the drive is connected or CryptBridge is trying to connect it,
 // so the action offered is "disconnect".
 function isActive(v) {
@@ -150,16 +182,22 @@ function openPage(page) {
   if (page !== currentPage) {
     show($("vaults-notice"), false);
     leaveVaultPage();
+    filledAccount = "";
   }
   currentPage = page;
-  const isVault = page !== "account" && page !== "add";
-  $("page-account").classList.toggle("active", page === "account");
+  const account = accountPage(page);
+  const isVault = !account && page !== "add" && page !== "add-account";
+  $("page-account").classList.toggle("active", !!account);
+  $("page-add-account").classList.toggle("active", page === "add-account");
   $("page-add").classList.toggle("active", page === "add");
   $("page-vault").classList.toggle("active", isVault);
-  $("side-account").classList.toggle("active", page === "account");
+  $("side-add-account").classList.toggle("active", page === "add-account");
   $("side-add").classList.toggle("active", page === "add");
+  document.querySelectorAll("#side-accounts .side-item").forEach((b) => b.classList.toggle("active", b.dataset.account === account));
   document.querySelectorAll("#side-vaults .side-item").forEach((b) => b.classList.toggle("active", b.dataset.vault === page));
   if (page === "add") prepareAdd();
+  if (page === "add-account") prepareAddAccount();
+  if (account && snapshot) renderAccount(snapshot);
   if (isVault && snapshot) renderVaultPage(snapshot);
   renderCrumbs();
 }
@@ -168,8 +206,10 @@ function openPage(page) {
 function renderCrumbs() {
   const crumbs = $("crumbs");
   crumbs.replaceChildren();
-  let here = "pCloud account";
-  if (currentPage === "add") here = "Add a vault";
+  let here = "Add a vault";
+  if (currentPage === "add-account") here = "Add a cloud account";
+  const a = currentAccount();
+  if (a) here = longName(a);
   const v = vaultByID(currentPage);
   if (v) here = `${v.name} (${v.letter}:)`;
   crumbs.append(el("span", "", "Vaults › "), el("strong", "", here));
@@ -189,7 +229,7 @@ function leaveVaultPage() {
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => openTab(t.dataset.tab)));
 document.addEventListener("click", (e) => {
   const target = e.target.closest("[data-goto], [data-page]");
-  if (!target || target.closest("#side-vaults")) return;
+  if (!target || target.closest("#side-vaults, #side-accounts")) return;
   if (target.dataset.goto) openTab(target.dataset.goto, target.dataset.page);
   else openTab("vaults", target.dataset.page);
 });
@@ -200,6 +240,7 @@ document.querySelectorAll("[data-url]").forEach((b) => b.addEventListener("click
 function render(s) {
   snapshot = s;
   s.vaults = s.vaults || [];
+  s.accounts = s.accounts || [];
   applyTheme();
   $("version").textContent = "v" + s.version;
   $("about-version").textContent = s.version;
@@ -207,13 +248,16 @@ function render(s) {
   renderNotices(s);
   renderCards(s);
   renderSidebar(s);
-  if (currentPage !== "account" && currentPage !== "add" && !vaultByID(currentPage)) {
+  const account = accountPage(currentPage);
+  if (account && !accountByID(account)) {
+    openPage(s.accounts.length > 0 ? "account:" + s.accounts[0].id : "add-account");
+  } else if (!account && currentPage !== "add" && currentPage !== "add-account" && !vaultByID(currentPage)) {
     openPage(s.vaults.length > 0 ? s.vaults[0].id : "add");
   }
   renderVaultPage(s);
   renderCrumbs();
   renderAccount(s);
-  renderApp(s);
+  renderAddChoices(s);
   renderAddAvailability(s);
   renderLock(s);
   renderLAN(s);
@@ -245,13 +289,40 @@ function renderPill(s) {
 function renderNotices(s) {
   show($("status-message"), !!s.message && s.phase === "error");
   $("status-message").textContent = s.message || "";
-  show($("signin-problem"), !!s.signInProblem);
-  $("signin-problem-text").textContent = s.signInProblem || "";
-  show($("signin-problem-tip"), !s.ownPCloudApp);
+  renderSignInProblems(s);
   show($("winfsp-missing"), !s.winFsp);
   show($("rclone-missing"), !s.rclone && s.phase === "error");
   show($("setup-needed"), s.phase === "setup");
   renderLANNotice(s);
+}
+
+// renderSignInProblems shows one warning per account whose service refuses
+// the sign-in. The warnings are built again only when they change: a
+// button replaced under the mouse would swallow the click.
+let signInProblemsKey = "";
+function renderSignInProblems(s) {
+  const refused = s.accounts.filter((a) => a.signInProblem);
+  const key = refused.map((a) => [a.id, a.name, a.signInProblem, a.ownApp].join("\n")).join("\n\n");
+  if (key === signInProblemsKey) return;
+  signInProblemsKey = key;
+  const box = $("signin-problems");
+  box.replaceChildren();
+  for (const a of refused) {
+    const notice = el("div", "notice warn");
+    const row = el("div", "row");
+    const again = el("button", "primary", `Sign in to ${a.name} again`);
+    again.addEventListener("click", () => run($("account-result"), () => signIn(a.id)));
+    row.append(again);
+    if (a.service === "pcloud" && !a.ownApp) {
+      const tip = el("span", "muted", "Tip: your own pCloud app makes CryptBridge independent of rclone's shared access — ");
+      const link = el("button", "link", "set it up at the account");
+      link.addEventListener("click", () => openTab("vaults", "account:" + a.id));
+      tip.append(link, document.createTextNode("."));
+      row.append(tip);
+    }
+    notice.append(el("div", "", a.signInProblem), row);
+    box.append(notice);
+  }
 }
 
 // renderLANNotice tells on the Status page that the drives are open to the
@@ -346,9 +417,9 @@ function updateCard(c, v, s) {
   c.name.textContent = v.name;
   c.badge.textContent = label;
   c.badge.className = "badge " + kind;
-  c.where.textContent = v.kind === "local" ? v.location : "pCloud · " + (v.location || "");
+  c.where.textContent = v.kind === "local" ? v.location : `${v.accountName} · ${v.location || ""}`;
 
-  const space = spaceOf(v, s);
+  const space = spaceOf(v);
   show(c.space, !!space);
   if (space) {
     c.fill.style.width = space.percent.toFixed(1) + "%";
@@ -363,7 +434,7 @@ function updateCard(c, v, s) {
   const pending = (d.uploadsInProgress || 0) + (d.uploadsQueued || 0);
   show(c.uploads, pending > 0);
   c.uploads.textContent = `↑ ${d.uploadsInProgress || 0} being written, ${d.uploadsQueued || 0} waiting` +
-    (v.kind === "pcloud" ? " — keep the drive connected until they are in pCloud." : ".");
+    (v.kind === "cloud" ? ` — keep the drive connected until they are in ${v.accountName}.` : ".");
   renderTransfers(c.transfers, d.transfers || []);
 
   show(c.message, !!v.message);
@@ -372,17 +443,18 @@ function updateCard(c, v, s) {
 
   c.toggle.textContent = toggleLabel(v);
   c.toggle.className = active ? "" : "primary";
-  c.toggle.disabled = !v.hasKeys || v.state === "connecting" || (!active && v.kind === "pcloud" && !s.signedIn);
+  c.toggle.disabled = !v.hasKeys || v.state === "connecting" || (!active && v.kind === "cloud" && !cloudSignedIn(v));
   c.open.disabled = !d.mounted;
 }
 
-// spaceOf describes where the vault lives: the pCloud account, or the disk
-// of a local vault.
-function spaceOf(v, s) {
-  if (v.kind === "pcloud" && s.usage && s.usage.total > 0) {
+// spaceOf describes where the vault lives: its cloud account, or the disk of
+// a local vault.
+function spaceOf(v) {
+  const a = v.kind === "cloud" ? accountByID(v.account) : undefined;
+  if (a && a.usage && a.usage.total > 0) {
     return {
-      percent: s.usage.used / s.usage.total * 100,
-      text: `pCloud: ${formatBytes(s.usage.used)} used, ${formatBytes(s.usage.free)} free of ${formatBytes(s.usage.total)}`,
+      percent: a.usage.used / a.usage.total * 100,
+      text: `${a.name}: ${formatBytes(a.usage.used)} used, ${formatBytes(a.usage.free)} free of ${formatBytes(a.usage.total)}`,
     };
   }
   if (v.kind === "local" && v.space && v.space.total > 0) {
@@ -453,12 +525,11 @@ $("winfsp-download").addEventListener("click", () => api.OpenWinFspDownload());
 
 // ---------- sidebar ----------
 
-const sideItems = new Map(); // by vault ID
+const sideItems = new Map();    // by vault ID
+const sideAccounts = new Map(); // by account ID
 
 function renderSidebar(s) {
-  const dot = $("side-account-dot");
-  dot.className = "dot" + (s.signInProblem ? " bad" : s.signedIn ? " good" : "");
-
+  renderSideAccounts(s);
   const container = $("side-vaults");
   for (const [id, item] of sideItems) {
     if (!vaultByID(id)) {
@@ -487,6 +558,31 @@ function renderSidebar(s) {
   });
 }
 
+function renderSideAccounts(s) {
+  const container = $("side-accounts");
+  for (const [id, item] of sideAccounts) {
+    if (!accountByID(id)) {
+      item.root.remove();
+      sideAccounts.delete(id);
+    }
+  }
+  s.accounts.forEach((a, index) => {
+    let item = sideAccounts.get(a.id);
+    if (!item) {
+      item = { root: el("button", "side-item"), name: el("span", "side-name"), dot: el("span", "dot") };
+      item.root.dataset.account = a.id;
+      item.root.append(icon("cloud", "side-icon"), item.name, item.dot);
+      item.root.addEventListener("click", () => openPage("account:" + a.id));
+      sideAccounts.set(a.id, item);
+    }
+    if (container.children[index] !== item.root) container.insertBefore(item.root, container.children[index] || null);
+    item.name.textContent = a.name;
+    item.dot.className = "dot" + (a.signInProblem ? " bad" : a.signedIn ? " good" : "");
+    item.root.title = `${longName(a)} — ${a.signInProblem ? "refuses the sign-in" : a.signedIn ? "signed in" : "not signed in"}`;
+    item.root.classList.toggle("active", accountPage(currentPage) === a.id);
+  });
+}
+
 // ---------- the page of one vault ----------
 
 function renderVaultPage(s) {
@@ -498,14 +594,14 @@ function renderVaultPage(s) {
   letter.textContent = v.letter + ":";
   letter.className = "drive-letter" + (v.state === "connected" ? " on" : kind === "warn" ? " warn" : kind === "bad" ? " bad" : "");
   $("v-name").textContent = v.name;
-  $("v-where").textContent = v.kind === "local" ? "On this PC · " + v.location : "In pCloud · " + v.location;
+  $("v-where").textContent = v.kind === "local" ? "On this PC · " + v.location : `In ${v.accountName} · ${v.location}`;
   $("v-state").textContent = label;
   $("v-state").className = "badge " + kind;
 
   const connect = $("btn-v-connect");
   connect.textContent = toggleLabel(v);
   connect.className = active ? "" : "primary";
-  connect.disabled = !v.hasKeys || v.state === "connecting" || (!active && v.kind === "pcloud" && !s.signedIn);
+  connect.disabled = !v.hasKeys || v.state === "connecting" || (!active && v.kind === "cloud" && !cloudSignedIn(v));
   $("btn-v-open").disabled = !(v.drive && v.drive.mounted);
 
   show($("v-other-folder"), !!v.otherFolder);
@@ -516,7 +612,7 @@ function renderVaultPage(s) {
     show($("v-message"), false);
   }
 
-  $("v-location-label").textContent = v.kind === "local" ? "Folder on this PC" : "Folder in pCloud";
+  $("v-location-label").textContent = v.kind === "local" ? "Folder on this PC" : `Folder in ${v.accountName}`;
   $("v-location").textContent = v.location || "–";
   $("v-fingerprint").textContent = v.fingerprint || "–";
   $("v-size").textContent = v.counting ?
@@ -524,20 +620,32 @@ function renderVaultPage(s) {
     v.size ? `${formatBytes(v.size.bytes)} in ${formatCount(v.size.files)} files` : "not counted yet";
   $("v-size-hint").textContent = (v.size ? `Counted ${formatWhen(v.size.at)}. ` : "") + (v.kind === "local" ?
     "Counted by itself every few minutes while the drive is connected." :
-    "Counting lists every file in pCloud — for terabytes this takes a few minutes.");
+    `Counting lists every file in ${v.accountName} — for terabytes this takes a few minutes.`);
   if (v.sizeError) $("v-size-hint").textContent = v.sizeError;
   show($("btn-v-count"), !v.counting);
   show($("btn-v-count-cancel"), !!v.counting);
-  $("btn-v-count").disabled = v.kind === "pcloud" && !s.signedIn;
+  $("btn-v-count").disabled = v.kind === "cloud" && !cloudSignedIn(v);
   $("v-fingerprint-hint").textContent = v.kind === "local" ?
     "The check code stays the same whatever drive letter the disk gets. If it ever differs, the keys differ." :
-    "The check code must be the same on your Linux server. If it differs, the keys differ.";
+    "The check code must be the same wherever you open this vault, e.g. on your Linux server. If it differs, the keys differ.";
   $("v-edit-auto-label").textContent = v.kind === "local" ?
     "Connect when CryptBridge starts and whenever its folder appears (USB drive plugged in)" :
     "Connect when CryptBridge starts";
-  show($("v-linux"), v.kind === "pcloud");
+  renderLinuxCard(v);
 
   if (filledVault !== v.id) fillVaultForm(v);
+}
+
+// renderLinuxCard offers the transfer to the Linux server for cloud vaults.
+// Its setup knows pCloud only for now; other clouds follow later.
+function renderLinuxCard(v) {
+  const a = v.kind === "cloud" ? accountByID(v.account) : undefined;
+  show($("v-linux"), v.kind === "cloud");
+  const later = !!a && a.service !== "pcloud";
+  show($("v-linux-later"), later);
+  show($("v-linux-text"), !later);
+  show($("v-linux-actions"), !later);
+  $("v-linux-service").textContent = a ? a.serviceTitle : "";
 }
 
 async function fillVaultForm(v) {
@@ -621,127 +729,336 @@ $("btn-remove-ok").addEventListener("click", () => run($("remove-result"), async
   setNotice($("vaults-notice"), "good", `${v ? v.name : "The vault"} was removed from CryptBridge. Its files are untouched.`);
 }));
 
-// ---------- pCloud account ----------
+// ---------- cloud accounts ----------
 
 function renderAccount(s) {
-  const region = s.pcloudHost === "eapi.pcloud.com" ? "EU" : (s.pcloudHost ? "US" : "");
-  const via = s.signInAppId ? "your own pCloud app" : "rclone's shared access";
-  $("account-state").textContent = s.signedIn ? `Signed in (pCloud ${region} region) through ${via}.` : "Not signed in.";
-  $("btn-signin").textContent = s.signedIn ? "Sign in again" : "Sign in to pCloud";
-  show($("btn-signout"), s.signedIn);
-  show($("signin-hint-shared"), !s.ownPCloudApp);
-  show($("signin-hint-own"), s.ownPCloudApp);
-  const usage = s.signedIn && s.usage && s.usage.total > 0;
+  const a = currentAccount();
+  if (!a) return;
+  $("acc-title").textContent = longName(a);
+  const region = a.region ? ` (pCloud ${a.region} region)` : "";
+  const via = a.signedInWithOwnApp ? "your own app" : "rclone's shared access";
+  $("account-state").textContent = a.signedIn ? `Signed in${region} through ${via}.` : "Not signed in.";
+  $("btn-signin").textContent = a.signedIn ? "Sign in again" : `Sign in to ${a.serviceTitle}`;
+  show($("btn-signout"), a.signedIn);
+  const usage = a.signedIn && a.usage && a.usage.total > 0;
   show($("account-usage"), usage);
   if (usage) {
-    $("account-usage-fill").style.width = (s.usage.used / s.usage.total * 100).toFixed(1) + "%";
-    $("account-usage-text").textContent = `${formatBytes(s.usage.used)} used, ${formatBytes(s.usage.free)} free of ${formatBytes(s.usage.total)}`;
+    $("account-usage-fill").style.width = (a.usage.used / a.usage.total * 100).toFixed(1) + "%";
+    $("account-usage-text").textContent = `${formatBytes(a.usage.used)} used, ${formatBytes(a.usage.free)} free of ${formatBytes(a.usage.total)}`;
   }
+  $("account-hint").textContent = a.vaultCount === 0 ?
+    "No vault in this account yet — add one with “Add vault”." :
+    `${a.vaultCount} vault(s) in this account. Vaults on this PC do not need it.`;
+  $("btn-acc-remove").disabled = a.vaultCount > 0;
+  $("acc-remove-text").textContent = a.vaultCount > 0 ?
+    `This account holds ${a.vaultCount} vault(s). Remove them from CryptBridge first.` :
+    "CryptBridge forgets the sign-in and your own app. Your files in the cloud are not touched.";
+  if (filledAccount !== a.id) {
+    filledAccount = a.id;
+    $("acc-name").value = a.name;
+    $("acc-rename-result").textContent = "";
+    show($("account-result"), false);
+    placeAppCard(serviceByType(a.service), "account");
+    loadAppFields(a);
+  }
+  renderApp(a);
 }
 
-// pcloudDrivesOff disconnects the connected pCloud drives (asking about
-// uploads) and returns their IDs, or null if the user kept a drive.
-async function pcloudDrivesOff() {
+// accountDrivesOff disconnects the connected drives of an account (asking
+// about uploads) and returns their IDs, or null if the user kept a drive.
+async function accountDrivesOff(id) {
   const ids = [];
   for (const v of snapshot.vaults) {
-    if (v.kind !== "pcloud" || !isActive(v)) continue;
+    if (v.kind !== "cloud" || v.account !== id || !isActive(v)) continue;
     if (!(await disconnectVault(v.id))) return null;
     ids.push(v.id);
   }
   return ids;
 }
 
-// signIn runs the pCloud sign-in in the browser. A mounted drive keeps
-// using the old sign-in, so connected pCloud drives are disconnected first
-// and connected again afterwards — also when the sign-in fails or is
-// cancelled, so that nothing is left worse than before.
-async function signIn() {
-  openTab("vaults", "account");
-  const reconnect = await pcloudDrivesOff();
+// signIn runs the browser sign-in for an account again. A mounted drive
+// keeps using the old sign-in, so the account's connected drives are
+// disconnected first and connected again afterwards — also when the
+// sign-in fails or is cancelled, so that nothing is left worse than before.
+async function signIn(id) {
+  openTab("vaults", "account:" + id);
+  const a = accountByID(id);
+  if (!a) return;
+  const reconnect = await accountDrivesOff(id);
   if (reconnect === null) return;
 
   let failure = null;
-  show($("signin-waiting"), true);
-  show($("signin-link-row"), false);
+  startSignInWaiting(a.service, a.ownApp);
   try {
-    await api.SignIn();
+    await api.SignIn(id);
   } catch (err) {
     failure = err;
   } finally {
-    show($("signin-waiting"), false);
+    stopSignInWaiting();
   }
-  for (const id of reconnect) {
+  for (const vid of reconnect) {
     try {
-      await api.Connect(id);
+      await api.Connect(vid);
     } catch (err) {
       failure = failure || err;
     }
   }
   if (failure) throw failure;
   setNotice($("account-result"), "good", reconnect.length > 0 ?
-    "Signed in to pCloud. The pCloud drives are connected again." : "Signed in to pCloud.");
+    `Signed in to ${a.name}. Its drives are connected again.` : `Signed in to ${a.name}.`);
+}
+
+// startSignInWaiting tells the user to sign in in the browser, with the
+// hints that fit the service and the app.
+function startSignInWaiting(serviceType, ownApp) {
+  const service = serviceByType(serviceType);
+  $("signin-waiting-text").textContent =
+    `Please sign in to ${service ? service.title : "the cloud"} in the browser window that has just opened.`;
+  show($("signin-link-row"), false);
+  document.querySelectorAll("#signin-waiting [data-hint-service], #signin-waiting [data-hint-app]").forEach((hint) => {
+    const forService = !hint.dataset.hintService || hint.dataset.hintService === serviceType;
+    const forApp = !hint.dataset.hintApp || (hint.dataset.hintApp === "own") === !!ownApp;
+    show(hint, forService && forApp);
+  });
+  document.querySelectorAll("#signin-waiting .redirect-url").forEach((code) => { code.textContent = service ? service.redirectUrl : ""; });
+  show($("signin-waiting"), true);
+}
+
+function stopSignInWaiting() {
+  show($("signin-waiting"), false);
+  show($("question"), false);
 }
 
 let signInLink = "";
-$("btn-signin").addEventListener("click", () => run($("account-result"), signIn));
-$("btn-resignin").addEventListener("click", () => run($("account-result"), signIn));
+$("btn-signin").addEventListener("click", () => run($("account-result"), () => signIn(accountPage(currentPage))));
 $("btn-signin-cancel").addEventListener("click", () => api.CancelSignIn());
 $("signin-link").addEventListener("click", () => signInLink && api.OpenURL(signInLink));
 $("btn-signout").addEventListener("click", () => run($("account-result"), async () => {
-  if (!confirm("Sign out of pCloud?\n\nThe pCloud drives are disconnected first. The vault keys are kept.")) return;
-  if ((await pcloudDrivesOff()) === null) return;
-  await api.SignOut();
-  setNotice($("account-result"), "info", "Signed out of pCloud.");
+  const a = currentAccount();
+  if (!a || !confirm(`Sign out of ${a.name}?\n\nIts drives are disconnected first. The vault keys are kept.`)) return;
+  if ((await accountDrivesOff(a.id)) === null) return;
+  await api.SignOut(a.id);
+  setNotice($("account-result"), "info", `Signed out of ${a.name}.`);
+}));
+$("btn-acc-rename").addEventListener("click", () => run($("account-result"), async () => {
+  const id = accountPage(currentPage);
+  $("acc-rename-result").textContent = "";
+  await api.RenameAccount(id, $("acc-name").value);
+  render(await api.GetSnapshot()); // the snapshot event may arrive only after this
+  $("acc-name").value = accountByID(id).name;
+  $("acc-rename-result").textContent = "Saved.";
+}));
+$("btn-acc-remove").addEventListener("click", () => run($("account-result"), async () => {
+  const a = currentAccount();
+  if (!a || !confirm(`Remove ${a.name} from CryptBridge?\n\nCryptBridge forgets its sign-in` +
+      (a.ownApp ? " and your own app" : "") + ". Your files in the cloud are not touched; you can add the account again at any time.")) return;
+  await api.RemoveAccount(a.id);
+  render(await api.GetSnapshot());
+  openPage(snapshot.accounts.length > 0 ? "account:" + snapshot.accounts[0].id : "add-account");
+  setNotice($("vaults-notice"), "good", `${a.name} was removed from CryptBridge. Your files in the cloud are untouched.`);
 }));
 
-// ---------- own pCloud app ----------
+// ---------- own app of an account ----------
 
-function renderApp(s) {
-  let state = "rclone's shared access (no own app saved).";
-  if (s.ownPCloudApp && s.signedIn && s.signInAppId === s.pcloudClientId) {
-    state = `Your own pCloud app (client ID ${s.pcloudClientId}).`;
-  } else if (s.ownPCloudApp && s.signedIn) {
-    state = `Your own app (client ID ${s.pcloudClientId}) is saved, but the current sign-in was made without it. ` +
-      "Sign in again to use it.";
-  } else if (s.ownPCloudApp) {
-    state = `Your own app (client ID ${s.pcloudClientId}) is saved and is used when you sign in.`;
+// The company whose app it is, for the texts.
+const APP_OWNERS = { pcloud: "pCloud", drive: "Google", dropbox: "Dropbox" };
+
+const APP_INTROS = {
+  pcloud: "CryptBridge signs in to pCloud through rclone. Without an own app it uses rclone's shared access, which pCloud " +
+    "has blocked for hours at a time before (most recently on 5 October 2026). With your own app, CryptBridge no longer " +
+    "depends on it. Your vaults stay exactly as they are — same keys, same files; you only sign in once more.",
+  drive: "Google Drive needs your own Google app: Google is retiring rclone's shared access during 2026. Setting it up " +
+    "takes about 15 minutes, once, and costs nothing. The guide below shows every step.",
+  dropbox: "Optional: without an own app, CryptBridge signs in through rclone's shared access to Dropbox, which works. " +
+    "Your own app keeps you independent of the limits that access shares with every rclone user.",
+};
+
+// placeAppCard puts the card for the own app of a service into a page
+// ("account" or "add"), or hides it where the service offers none.
+function placeAppCard(service, where) {
+  const card = $("app-card");
+  if (!service || service.app === "none") {
+    show(card, false);
+    return;
   }
-  $("app-state").textContent = state;
-  show($("btn-remove-app"), s.ownPCloudApp);
+  $(where === "account" ? "account-app-slot" : "add-account-app-slot").append(card);
+  card.dataset.where = where;
+  const owner = APP_OWNERS[service.type] || service.title;
+  $("app-title").textContent = service.app === "required" ?
+    `Your own ${owner} app (needed)` : `Own ${owner} app ${where === "add" ? "(optional)" : "— recommended"}`;
+  $("app-intro").textContent = APP_INTROS[service.type] || "";
+  document.querySelectorAll("#app-card .only-account").forEach((node) => show(node, where === "account"));
+  document.querySelectorAll("#app-card .guide").forEach((guide) => {
+    show(guide, guide.dataset.service === service.type);
+    guide.open = service.app === "required" && where === "add";
+  });
+  document.querySelectorAll("#app-card .redirect-url").forEach((code) => { code.textContent = service.redirectUrl; });
+  show($("app-result"), false);
+  show(card, true);
 }
 
-function loadAppFields() {
-  $("app-client-id").value = snapshot.pcloudClientId || "";
+function renderApp(a) {
+  if ($("app-card").dataset.where !== "account") return;
+  let state = "rclone's shared access (no own app saved).";
+  if (a.ownApp && a.signedIn && a.signedInWithOwnApp) {
+    state = `Your own app (client ID ${a.clientId}).`;
+  } else if (a.ownApp && a.signedIn) {
+    state = `Your own app (client ID ${a.clientId}) is saved, but the current sign-in was made without it. Sign in again to use it.`;
+  } else if (a.ownApp) {
+    state = `Your own app (client ID ${a.clientId}) is saved and is used when you sign in.`;
+  } else if (a.appRule === "required") {
+    state = "No app saved yet — it is needed to sign in.";
+  }
+  $("app-state").textContent = state;
+  show($("btn-remove-app"), a.ownApp && a.appRule === "optional");
+}
+
+// loadAppFields fills the fields with the saved client ID of an account;
+// the secret is never sent to the window.
+function loadAppFields(a) {
+  $("app-client-id").value = a ? a.clientId || "" : "";
   $("app-client-secret").value = "";
   $("app-client-secret").type = "password";
-  $("app-client-secret").placeholder = snapshot.ownPCloudApp ? "saved — enter it again only to change it" : "";
-  show($("app-result"), false);
+  $("app-client-secret").placeholder = a && a.ownApp ? "saved — enter it again only to change it" : "";
 }
 
 $("btn-save-app").addEventListener("click", () => run($("app-result"), async () => {
-  await api.SetPCloudApp($("app-client-id").value, $("app-client-secret").value);
+  const a = currentAccount();
+  if (!a) return;
+  await api.SetAccountApp(a.id, $("app-client-id").value, $("app-client-secret").value);
   render(await api.GetSnapshot());
-  loadAppFields();
-  if (!snapshot.signedIn) {
+  loadAppFields(accountByID(a.id));
+  if (!a.signedIn) {
     setNotice($("app-result"), "good", "Saved. Your app is used when you sign in above.");
     return;
   }
-  if (confirm("Your pCloud app is saved.\n\nSign in again now, so that CryptBridge uses it? " +
-      "Connected pCloud drives are disconnected for the sign-in and connected again afterwards.")) {
-    await signIn();
+  if (confirm(`Your app is saved.\n\nSign in to ${a.name} again now, so that CryptBridge uses it? ` +
+      "Its connected drives are disconnected for the sign-in and connected again afterwards.")) {
+    await signIn(a.id);
     return;
   }
   setNotice($("app-result"), "good", "Saved. CryptBridge uses your app from the next sign-in (Sign in again, above).");
 }));
 
 $("btn-remove-app").addEventListener("click", () => run($("app-result"), async () => {
-  if (!confirm("Use rclone's shared access again instead of your own pCloud app?\n\n" +
+  const a = currentAccount();
+  if (!a || !confirm("Use rclone's shared access again instead of your own app?\n\n" +
       "Your current sign-in keeps working; the shared access is used from the next sign-in.")) return;
-  await api.SetPCloudApp("", "");
+  await api.SetAccountApp(a.id, "", "");
   render(await api.GetSnapshot());
-  loadAppFields();
+  loadAppFields(accountByID(a.id));
   setNotice($("app-result"), "info", "Removed. The next sign-in uses rclone's shared access.");
 }));
+
+// ---------- adding a cloud account ----------
+
+let addService = ""; // rclone's name of the chosen service
+
+// What each service needs, shown on its choice.
+const SERVICE_NOTES = {
+  pcloud: "Sign in in the browser. Your own pCloud app is optional (recommended).",
+  drive: "Needs your own free Google app — the guide shows how (about 15 minutes, once).",
+  onedrive: "Sign in in the browser with your Microsoft account.",
+  dropbox: "Sign in in the browser. Your own Dropbox app is optional.",
+};
+
+function prepareAddAccount() {
+  const box = $("service-choices");
+  if (box.children.length === 0) {
+    for (const service of services) {
+      const choice = el("button", "choice");
+      choice.dataset.service = service.type;
+      choice.append(icon("cloud", "choice-icon"), el("strong", "", service.title), el("span", "muted", SERVICE_NOTES[service.type] || ""));
+      choice.addEventListener("click", () => setAddService(service.type));
+      box.append(choice);
+    }
+  }
+  if (addService) placeAppCard(serviceByType(addService), "add");
+}
+
+function setAddService(type) {
+  const service = serviceByType(type);
+  if (!service) return;
+  const changed = type !== addService;
+  addService = type;
+  document.querySelectorAll("#service-choices .choice").forEach((c) => c.classList.toggle("active", c.dataset.service === type));
+  placeAppCard(service, "add");
+  if (changed) {
+    loadAppFields(null);
+    $("add-account-name").value = "";
+  }
+  $("add-account-name").placeholder = service.title;
+  $("add-account-step").textContent = service.app === "none" ? "2" : "3";
+  $("add-account-text").textContent = `A browser window opens with the sign-in page of ${service.title}. ` +
+    "Sign in there and allow the access; CryptBridge waits and continues by itself." +
+    (type === "onedrive" ? " CryptBridge uses rclone's access to OneDrive: personal Microsoft accounts cannot have an app of their own." : "");
+  show($("add-account-signin"), true);
+  show($("add-account-result"), false);
+}
+
+$("btn-add-account").addEventListener("click", () => run($("add-account-result"), async () => {
+  const service = serviceByType(addService);
+  if (!service) return;
+  show($("add-account-result"), false);
+  const clientId = $("app-client-id").value;
+  startSignInWaiting(service.type, clientId.trim() !== "");
+  let id;
+  try {
+    id = await api.AddAccount({
+      service: service.type,
+      name: $("add-account-name").value,
+      clientId: clientId,
+      clientSecret: $("app-client-secret").value,
+    });
+  } finally {
+    stopSignInWaiting();
+  }
+  loadAppFields(null);
+  $("add-account-name").value = "";
+  render(await api.GetSnapshot());
+  openPage("account:" + id);
+  const a = accountByID(id);
+  setNotice($("vaults-notice"), "good", `${a ? a.name : service.title} was added. ` +
+    "To keep files in it, add a vault with “Add vault”.");
+}));
+
+// ---------- questions while signing in ----------
+
+// showQuestion shows a question rclone asks while signing in, for example
+// which of several OneDrive drives to use. Choices become a list; otherwise
+// the answer is typed.
+function showQuestion(q) {
+  const choices = q.choices || [];
+  $("question-help").textContent = q.help || q.name;
+  const list = $("question-choices");
+  list.replaceChildren();
+  const preferred = choices.some((c) => c.value === q.default) ? q.default : (choices[0] || {}).value;
+  for (const c of choices) {
+    const label = el("label", "check");
+    const radio = el("input");
+    radio.type = "radio";
+    radio.name = "question-choice";
+    radio.value = c.value;
+    radio.checked = c.value === preferred;
+    label.append(radio, el("span", "", c.help && c.help !== c.value ? c.help : c.value));
+    list.append(label);
+  }
+  show($("question-field"), choices.length === 0 || !q.exclusive);
+  $("question-input").type = q.password ? "password" : "text";
+  $("question-input").value = choices.length === 0 ? q.default || "" : "";
+  show($("question"), true);
+}
+
+$("btn-question-ok").addEventListener("click", () => {
+  const typed = $("question-input").value.trim();
+  const chosen = document.querySelector("input[name=question-choice]:checked");
+  show($("question"), false);
+  api.AnswerSignInQuestion(typed !== "" || !chosen ? typed : chosen.value);
+});
+$("btn-question-cancel").addEventListener("click", () => {
+  show($("question"), false);
+  api.CancelSignIn();
+});
 
 // copyWithFeedback copies a text and lets the button say so for a moment.
 async function copyWithFeedback(button, text) {
@@ -751,7 +1068,7 @@ async function copyWithFeedback(button, text) {
   setTimeout(() => { button.textContent = label; }, 1500);
 }
 
-// The page is not selectable, so texts to paste into pCloud's form have a
+// The page is not selectable, so texts to paste into a cloud's form have a
 // Copy button. Line breaks of the HTML source are not part of the text.
 document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () =>
   copyWithFeedback(b, $(b.dataset.copy).textContent.replace(/\s+/g, " ").trim())));
@@ -768,32 +1085,68 @@ document.querySelectorAll("[data-generate]").forEach((b) => b.addEventListener("
 
 // ---------- adding a vault ----------
 
-let addKind = "";       // "pcloud" or "local"
+let addKind = "";       // "cloud" or "local"
+let addAccount = "";    // kind cloud: the ID of the account
 let autoName = "";      // the name CryptBridge suggested, replaced when the folder changes
-let candidates = [];    // vaults found in pCloud by the search
+let candidates = [];    // vaults found in the cloud by the search
 
 function addMode() {
   return document.querySelector("input[name=add-mode]:checked").value;
 }
 
-function renderAddAvailability(s) {
-  show($("add-signin-needed"), addKind === "pcloud" && !s.signedIn);
-  show($("add-form"), addKind === "local" || (addKind === "pcloud" && s.signedIn));
+function renderAddAvailability() {
+  const a = addKind === "cloud" ? accountByID(addAccount) : undefined;
+  const needsSignIn = addKind === "cloud" && (!a || !a.signedIn);
+  show($("add-signin-needed"), needsSignIn);
+  $("add-signin-text").textContent = a ? `Vaults in ${a.name} need its sign-in first.` : "";
+  show($("add-form"), addKind === "local" || (addKind === "cloud" && !needsSignIn));
+}
+$("add-signin-link").addEventListener("click", () => openPage("account:" + addAccount));
+
+// renderAddChoices offers each cloud account as a place for a vault. The
+// choices are built again only when the accounts change.
+let addChoicesKey = "";
+function renderAddChoices(s) {
+  const key = s.accounts.map((a) => [a.id, a.name, a.serviceTitle].join("\n")).join("\n\n");
+  if (key === addChoicesKey) return;
+  addChoicesKey = key;
+  document.querySelectorAll("#add-choices .choice[data-account]").forEach((node) => node.remove());
+  for (const a of s.accounts) {
+    const choice = el("button", "choice");
+    choice.dataset.kind = "cloud";
+    choice.dataset.account = a.id;
+    choice.append(icon("cloud", "choice-icon"), el("strong", "", "In " + a.name),
+      el("span", "muted", `Your files are encrypted on this PC and stored in ${a.name === a.serviceTitle ? "your " + a.name : longName(a)}.`));
+    choice.addEventListener("click", () => setAddKind("cloud", a.id));
+    $("add-choices").insertBefore(choice, $("choice-local"));
+  }
+  if (addKind === "cloud" && !accountByID(addAccount)) setAddKind("", "");
+  markAddChoice();
+}
+
+function markAddChoice() {
+  document.querySelectorAll("#add-choices .choice").forEach((c) =>
+    c.classList.toggle("active", !!addKind && c.dataset.kind === addKind && (c.dataset.account || "") === addAccount));
 }
 
 async function prepareAdd() {
-  renderAddAvailability(snapshot || {});
+  renderAddAvailability();
   applyAddMode();
   if (addKind) await fillLetters($("add-letter"), "", $("add-letter").value);
 }
 
-function setAddKind(kind) {
-  if (kind === addKind) return;
+function setAddKind(kind, account) {
+  if (kind === addKind && account === addAccount) return;
   addKind = kind;
-  document.querySelectorAll(".choice").forEach((c) => c.classList.toggle("active", c.dataset.kind === kind));
-  $("add-folder").value = kind === "pcloud" ? "CryptBridge" : "";
-  $("add-folder-label").textContent = kind === "pcloud" ? "Folder in pCloud" : "Folder on this PC or a USB drive";
-  $("btn-add-browse").textContent = kind === "pcloud" ? "Browse pCloud…" : "Choose folder…";
+  addAccount = account;
+  markAddChoice();
+  const a = accountByID(account);
+  const where = a ? a.name : "";
+  $("add-folder").value = kind === "cloud" ? "CryptBridge" : "";
+  $("add-folder-label").textContent = kind === "cloud" ? `Folder in ${where}` : "Folder on this PC or a USB drive";
+  $("btn-add-browse").textContent = kind === "cloud" ? `Browse ${where}…` : "Choose folder…";
+  $("btn-find").textContent = `Search ${where}`;
+  candidates = [];
   show($("add-folder-info"), false);
   show($("candidates"), false);
   show($("add-result"), false);
@@ -805,13 +1158,13 @@ function setAddKind(kind) {
   prepareAdd();
 }
 
-document.querySelectorAll(".choice").forEach((c) => c.addEventListener("click", () => setAddKind(c.dataset.kind)));
+$("choice-local").addEventListener("click", () => setAddKind("local", ""));
 
 function applyAddMode() {
   const isNew = addMode() === "new";
   document.querySelectorAll("#page-add .only-new, #browser .only-new").forEach((node) => show(node, isNew));
   document.querySelectorAll("#page-add .only-existing").forEach((node) => {
-    show(node, !isNew && (!node.classList.contains("only-pcloud") || addKind === "pcloud"));
+    show(node, !isNew && (!node.classList.contains("only-cloud") || addKind === "cloud"));
   });
   show($("add-result"), false);
 }
@@ -848,7 +1201,7 @@ async function inspectAddFolder() {
   }
   const mine = ++inspectRun;
   try {
-    const folder = await api.InspectFolder(addKind, path);
+    const folder = await api.InspectFolder(addKind, addAccount, path);
     if (mine !== inspectRun) return; // a newer look is on its way
     const kind = !folder.exists ? "missing" : folder.looksLikeVault ? "vault" : folder.entries === 0 ? "empty" : "plain";
     const [tone, text] = FOLDER_TEXTS[kind][addMode() === "new" ? "new" : "existing"];
@@ -865,7 +1218,7 @@ async function inspectAddFolder() {
 $("add-folder").addEventListener("change", () => { suggestName(); inspectAddFolder(); });
 
 $("btn-add-browse").addEventListener("click", () => run($("add-result"), async () => {
-  if (addKind === "pcloud") {
+  if (addKind === "cloud") {
     const path = $("add-folder").value.trim();
     await openBrowser(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
     return;
@@ -878,8 +1231,10 @@ $("btn-add-browse").addEventListener("click", () => run($("add-result"), async (
 }));
 
 $("btn-find").addEventListener("click", () => run($("add-result"), async () => {
-  setNotice($("add-result"), "info", "Searching pCloud for vaults… (only names are read, nothing is downloaded)");
-  candidates = (await api.FindVaults()) || [];
+  const a = accountByID(addAccount);
+  if (!a) return;
+  setNotice($("add-result"), "info", `Searching ${a.name} for vaults… (only names are read, nothing is downloaded)`);
+  candidates = (await api.FindVaults(a.id)) || [];
   const list = $("candidates");
   list.replaceChildren();
   for (const c of candidates) {
@@ -895,13 +1250,14 @@ $("btn-find").addEventListener("click", () => run($("add-result"), async () => {
   }
   show(list, candidates.length > 0);
   setNotice($("add-result"), "info", candidates.length === 0 ?
-    "No vault found in your pCloud." : "Click a folder to use it, then enter password and salt.");
+    `No vault found in ${a.name}.` : "Click a folder to use it, then enter password and salt.");
 }));
 
 function addRequest(acceptUnverifiable) {
   const isNew = addMode() === "new";
   return {
     kind: addKind,
+    account: addAccount,
     name: $("add-name").value,
     letter: $("add-letter").value,
     autoConnect: $("add-auto").checked,
@@ -983,11 +1339,13 @@ function showAddedNotice(id, text) {
   show(notice, true);
 }
 
-// ---------- folder browser for pCloud ----------
+// ---------- folder browser for a cloud account ----------
 
 let browserPath = "";
 
 async function openBrowser(path) {
+  const a = accountByID(addAccount);
+  $("browser-title").textContent = `Choose a folder in ${a ? a.name : "the cloud"}`;
   show($("browser"), true);
   $("browser-new-name").value = "";
   applyAddMode();
@@ -1002,7 +1360,7 @@ async function browseTo(path) {
   show($("browser-note"), false);
   let folder;
   try {
-    folder = await api.InspectFolder("pcloud", path);
+    folder = await api.InspectFolder("cloud", addAccount, path);
   } catch (err) {
     list.replaceChildren();
     setNotice($("browser-note"), "error", errorText(err));
@@ -1033,13 +1391,15 @@ async function browseTo(path) {
 }
 
 function vaultAt(path) {
-  return snapshot.vaults.find((v) => v.kind === "pcloud" && v.location.toLowerCase() === path.toLowerCase());
+  return snapshot.vaults.find((v) => v.kind === "cloud" && v.account === addAccount &&
+    v.location.toLowerCase() === path.toLowerCase());
 }
 
 function renderBrowserCrumbs(path) {
   const crumbs = $("browser-crumbs");
   crumbs.replaceChildren();
-  const top = el("button", "link", "pCloud");
+  const a = accountByID(addAccount);
+  const top = el("button", "link", a ? a.name : "Cloud");
   top.addEventListener("click", () => browseTo(""));
   crumbs.append(top);
   let sofar = "";
@@ -1117,13 +1477,22 @@ function rcloneCommands(d) {
   const keys = `filename_encryption=${d.filenameEncryption} directory_name_encryption=${d.directoryNameEncryption} ` +
     `filename_encoding=${d.filenameEncoding} suffix=${d.suffix} password="${d.password}"` +
     (d.salt ? ` password2="${d.salt}"` : "") + " --obscure";
-  const lines = d.kind === "local" ? [
-    `rclone config create cbvault crypt remote="${d.vaultPath}" ${keys}`,
-  ] : [
-    `rclone config create cbpcloud pcloud hostname=${d.pcloudHost}`,
-    "    (a browser opens: sign in to pCloud)",
-    `rclone config create cbvault crypt remote="cbpcloud:${d.vaultPath}" ${keys}`,
-  ];
+  let lines;
+  if (d.kind === "local") {
+    lines = [`rclone config create cbvault crypt remote="${d.vaultPath}" ${keys}`];
+  } else if (d.service === "pcloud") {
+    lines = [
+      `rclone config create cbpcloud pcloud hostname=${d.pcloudHost}`,
+      "    (a browser opens: sign in to pCloud)",
+      `rclone config create cbvault crypt remote="cbpcloud:${d.vaultPath}" ${keys}`,
+    ];
+  } else {
+    const ownApp = d.service === "drive" ? " client_id=YOUR-CLIENT-ID client_secret=YOUR-CLIENT-SECRET" : "";
+    lines = [`rclone config create cbcloud ${d.service}${ownApp}`];
+    if (ownApp) lines.push("    (the client ID and secret of your own Google app)");
+    lines.push(`    (a browser opens: sign in to ${d.serviceTitle})`,
+      `rclone config create cbvault crypt remote="cbcloud:${d.vaultPath}" ${keys}`);
+  }
   lines.push("    (keep --obscure: without it rclone may store the password wrongly)", "rclone ls cbvault:");
   return lines.join("\n");
 }
@@ -1137,12 +1506,14 @@ async function showSheet(id) {
   $("s-warning").textContent = local ?
     "Keep this sheet like a house key. Anyone who has it — and the vault folder or a copy of it — can read your vault. " +
       "Without the password and the salt, nobody can open the vault." :
-    "Keep this sheet like a house key. Anyone who has it — and access to your pCloud — can read your vault. " +
-      "Without the password and the salt, nobody can open the vault, not even pCloud.";
+    `Keep this sheet like a house key. Anyone who has it — and access to your ${d.serviceTitle} — can read your vault. ` +
+      `Without the password and the salt, nobody can open the vault, not even ${d.serviceTitle}.`;
   $("s-created").textContent = d.createdAt;
-  document.querySelectorAll(".s-pcloud").forEach((row) => show(row, !local));
-  $("s-region").textContent = local ? "" : `${d.region} (${d.pcloudHost})`;
-  $("s-path-label").textContent = local ? "Vault folder (on this PC or a USB drive)" : "Vault folder in pCloud";
+  document.querySelectorAll(".s-cloud").forEach((row) => show(row, !local));
+  $("s-cloud").textContent = local ? "" : `${d.serviceTitle} (account “${d.accountName}” in CryptBridge)`;
+  document.querySelectorAll(".s-pcloud").forEach((row) => show(row, d.service === "pcloud"));
+  $("s-region").textContent = d.service === "pcloud" ? `${d.region} (${d.pcloudHost})` : "";
+  $("s-path-label").textContent = local ? "Vault folder (on this PC or a USB drive)" : `Vault folder in ${d.serviceTitle}`;
   $("s-path").textContent = d.vaultPath;
   $("s-password").textContent = d.password;
   $("s-salt").textContent = d.salt || "(none)";
@@ -1154,8 +1525,10 @@ async function showSheet(id) {
   $("s-with-cryptbridge").replaceChildren(el("strong", "", "With CryptBridge: "), document.createTextNode(local ?
     "Add vault → On this PC or a USB drive → Open an existing vault, choose the folder, enter password and salt. " +
       "The check code must match the one above." :
-    "sign in to pCloud, Add vault → In pCloud → Open an existing vault, enter folder, password and salt " +
-      "(on the Linux server: the setup asks for them). The check code must match the one above."));
+    `add your ${d.serviceTitle} account (Vaults → Add cloud account), then Add vault → In ${d.accountName} → ` +
+      "Open an existing vault, enter folder, password and salt" +
+      (d.service === "pcloud" ? " (on the Linux server: the setup asks for them)" : "") +
+      ". The check code must match the one above."));
   $("s-rclone").textContent = rcloneCommands(d);
   $("s-backup").textContent = local ?
     `Back up this vault like any folder: copy the whole folder ${d.vaultPath} to another disk. The copy stays encrypted.` : "";
@@ -1290,7 +1663,7 @@ $("btn-unlock").addEventListener("click", unlock);
 $("unlock-password").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
 
 $("btn-reset-app").addEventListener("click", () => run($("unlock-result"), async () => {
-  if (!confirm("Reset CryptBridge?\n\nThe pCloud sign-in, all vaults with their keys and the app password are deleted " +
+  if (!confirm("Reset CryptBridge?\n\nThe cloud accounts, all vaults with their keys and the app password are deleted " +
       "from this PC. The files of your vaults stay untouched.\n\nTo open your vaults again you need password and salt " +
       "from their emergency sheets.")) return;
   if (!confirm("Really reset CryptBridge? This cannot be undone.")) return;
@@ -1599,13 +1972,12 @@ async function init() {
   await refreshSystemTheme();
   window.runtime.EventsOn("snapshot", render);
   window.runtime.EventsOn("signin-link", (link) => { signInLink = link; show($("signin-link-row"), true); });
+  window.runtime.EventsOn("signin-question", showQuestion);
   window.runtime.EventsOn("download-progress", (pct) => { $("download-fill").style.width = pct + "%"; });
   applyAddMode();
-  const redirectURL = await api.PCloudRedirectURL();
-  document.querySelectorAll(".redirect-url").forEach((node) => { node.textContent = redirectURL; });
+  services = (await api.Services()) || [];
   const s = await api.GetSnapshot();
   render(s);
-  loadAppFields();
   if (s.phase === "setup") openTab("vaults", "add");
 }
 

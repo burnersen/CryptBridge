@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
@@ -65,15 +65,17 @@ type VaultSnapshot struct {
 	ID          string               `json:"id"`
 	Name        string               `json:"name"`
 	Kind        string               `json:"kind"`
+	Account     string               `json:"account"`     // kind cloud: ID of the account
+	AccountName string               `json:"accountName"` // kind cloud: name of the account
 	Letter      string               `json:"letter"`
 	AutoConnect bool                 `json:"autoConnect"`
-	Location    string               `json:"location"` // pCloud folder or folder on this PC; "" while locked
+	Location    string               `json:"location"` // folder in the cloud or on this PC; "" while locked
 	HasKeys     bool                 `json:"hasKeys"`
 	State       VaultState           `json:"state"`
 	Message     string               `json:"message"`
 	Fingerprint string               `json:"fingerprint"`
 	Drive       drive.Status         `json:"drive"`
-	Space       *drive.Space         `json:"space"` // local vaults: the disk; pCloud: see Snapshot.Usage
+	Space       *drive.Space         `json:"space"` // local vaults: the disk; cloud: see AccountSnapshot.Usage
 	Size        *settings.SizeRecord `json:"size"`
 	Counting    *SizeProgress        `json:"counting"`
 	SizeError   string               `json:"sizeError"`
@@ -110,6 +112,7 @@ func (e *Engine) vaultSnapshotLocked(v settings.Vault) VaultSnapshot {
 		ID:          v.ID,
 		Name:        v.Name,
 		Kind:        v.Kind,
+		Account:     v.Account,
 		Letter:      v.Letter,
 		AutoConnect: v.AutoConnect,
 		Location:    location(v),
@@ -127,8 +130,12 @@ func (e *Engine) vaultSnapshotLocked(v settings.Vault) VaultSnapshot {
 	if snap.Drive.Transfers == nil {
 		snap.Drive.Transfers = []drive.Transfer{}
 	}
-	if v.Kind == settings.KindPCloud && !e.settings.SignedIn() && rt.state == StateDisconnected {
-		snap.Message = "Sign in to pCloud to connect this drive."
+	if v.Kind == settings.KindCloud {
+		a, _ := e.settings.Account(v.Account)
+		snap.AccountName = a.Name
+		if !a.SignedIn() && rt.state == StateDisconnected {
+			snap.Message = fmt.Sprintf("Sign in to %s to connect this drive.", a.Name)
+		}
 	}
 	return snap
 }
@@ -145,24 +152,24 @@ func (e *errFolderMissing) Error() string {
 
 // errWrongFolder: the folder of a vault does not hold the vault — the keys
 // do not open it (for example because another USB drive got the drive
-// letter, or another pCloud folder took its place), or it is empty although
+// letter, or another cloud folder took its place), or it is empty although
 // a vault always holds at least its check file (the vault folder was moved
 // or renamed).
 type errWrongFolder struct {
 	name, path string
 	empty      bool
-	cloud      bool // the folder is in pCloud, not on a drive of this PC
+	account    string // the name of the cloud account holding the folder; "" for a folder of this PC
 }
 
 func (e *errWrongFolder) Error() string {
 	const nothingDone = "Nothing was connected and nothing was written"
 	switch {
-	case e.cloud && e.empty:
-		return fmt.Sprintf("the pCloud folder %s is empty or gone, but the vault %q is not — was it renamed or moved? %s",
-			e.path, e.name, nothingDone)
-	case e.cloud:
-		return fmt.Sprintf("the keys of %q do not open the pCloud folder %s — was another folder put in its place? %s",
-			e.name, e.path, nothingDone)
+	case e.account != "" && e.empty:
+		return fmt.Sprintf("the folder %s in %s is empty or gone, but the vault %q is not — was it renamed or moved? %s",
+			e.path, e.account, e.name, nothingDone)
+	case e.account != "":
+		return fmt.Sprintf("the keys of %q do not open the folder %s in %s — was another folder put in its place? %s",
+			e.name, e.path, e.account, nothingDone)
 	case e.empty:
 		return fmt.Sprintf("the folder %s is empty, but the vault %q is not — was the vault folder moved? %s",
 			e.path, e.name, nothingDone)
@@ -171,15 +178,17 @@ func (e *errWrongFolder) Error() string {
 		e.name, e.path, nothingDone)
 }
 
-// errNotChecked: pCloud could not be asked whether the vault's folder still
-// holds the vault, for example while this PC is offline. Nothing is
-// connected unchecked; the drive keeps trying as after a refused sign-in.
+// errNotChecked: the cloud service could not be asked whether the vault's
+// folder still holds the vault, for example while this PC is offline.
+// Nothing is connected unchecked; the drive keeps trying as after a refused
+// sign-in.
 type errNotChecked struct {
-	err error
+	account string // the name of the cloud account
+	err     error
 }
 
 func (e *errNotChecked) Error() string {
-	return fmt.Sprintf("the vault could not be checked in pCloud, so its drive was not connected: %v", e.err)
+	return fmt.Sprintf("the vault could not be checked in %s, so its drive was not connected: %v", e.account, e.err)
 }
 
 func (e *errNotChecked) Unwrap() error { return e.err }
@@ -311,9 +320,9 @@ func (e *Engine) connectFailed(v settings.Vault, err error) {
 			rt.state = StateError
 			rt.message = err.Error()
 			rt.otherFolder = true
-		case (pcloud.IsSignInProblem(err) || errors.As(err, &unchecked)) && autoReconnect:
-			// Keep trying: the drive comes by itself once pCloud accepts
-			// the sign-in again and answers the check of the vault.
+		case (cloud.IsSignInProblem(err) || errors.As(err, &unchecked)) && autoReconnect:
+			// Keep trying: the drive comes by itself once the service
+			// accepts the sign-in again and answers the check of the vault.
 			rt.state = StateError
 			rt.message = err.Error()
 		default:
@@ -333,8 +342,9 @@ func (e *Engine) mountLocked(ctx context.Context, v settings.Vault, otherFolder 
 		return drive.FolderID{}, err
 	}
 	local := v.Kind == settings.KindLocal
-	if !local && !e.currentSettings().SignedIn() {
-		return drive.FolderID{}, errors.New("sign in to pCloud first")
+	account, _ := e.currentSettings().Account(v.Account)
+	if !local && !account.SignedIn() {
+		return drive.FolderID{}, fmt.Errorf("sign in to %s first", account.Name)
 	}
 	if err := e.prepareLocked(ctx); err != nil {
 		return drive.FolderID{}, err
@@ -353,7 +363,7 @@ func (e *Engine) mountLocked(ctx context.Context, v settings.Vault, otherFolder 
 		if folder, err = checkLocalFolder(ctx, client, v, otherFolder); err != nil {
 			return drive.FolderID{}, err
 		}
-	} else if err := e.checkPCloudFolderLocked(ctx, client, v); err != nil {
+	} else if err := e.checkCloudFolderLocked(ctx, client, account, v); err != nil {
 		return drive.FolderID{}, err
 	}
 	err := drive.Mount(ctx, client, drive.Settings{
@@ -400,7 +410,7 @@ func checkLocalFolder(ctx context.Context, client *rcd.Client, v settings.Vault,
 	if err != nil {
 		return drive.FolderID{}, err
 	}
-	check, err := verifyFolder(ctx, client, v)
+	check, err := verifyFolder(ctx, client, v, "")
 	if err != nil {
 		return drive.FolderID{}, err
 	}
@@ -413,41 +423,43 @@ func checkLocalFolder(ctx context.Context, client *rcd.Client, v settings.Vault,
 	return folder, nil
 }
 
-// checkPCloudFolderLocked makes sure, before a pCloud drive is connected,
-// that pCloud accepts the sign-in and that the vault's folder still holds
-// this vault. A renamed or replaced folder would otherwise appear as an
-// empty drive, and files copied to it would land beside the vault. Without
-// an answer from pCloud nothing is connected (errNotChecked).
-func (e *Engine) checkPCloudFolderLocked(ctx context.Context, client *rcd.Client, v settings.Vault) error {
-	if err := e.checkSignInLocked(ctx, client); err != nil {
+// checkCloudFolderLocked makes sure, before a cloud drive is connected, that
+// the service accepts the sign-in of its account and that the vault's
+// folder still holds this vault. A renamed or replaced folder would
+// otherwise appear as an empty drive, and files copied to it would land
+// beside the vault. Without an answer from the service nothing is connected
+// (errNotChecked).
+func (e *Engine) checkCloudFolderLocked(ctx context.Context, client *rcd.Client, account settings.Account, v settings.Vault) error {
+	if err := e.checkSignInLocked(ctx, client, account); err != nil {
 		return err
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, keyCheckTimeout)
 	defer cancel()
-	check, err := verifyFolder(checkCtx, client, v)
+	check, err := verifyFolder(checkCtx, client, v, account.Name)
 	var wrong *errWrongFolder
 	if errors.As(err, &wrong) {
 		return err
 	}
 	if err != nil {
-		return &errNotChecked{err: err}
+		return &errNotChecked{account: account.Name, err: err}
 	}
 	if err := restoreCheckFile(checkCtx, client, v, check); err != nil {
-		return &errNotChecked{err: err}
+		return &errNotChecked{account: account.Name, err: err}
 	}
 	return nil
 }
 
 // verifyFolder makes sure the keys of v open the vault in its folder: wrong
 // keys would write files that the right keys cannot read, and an empty
-// folder means the vault is no longer where it was.
-func verifyFolder(ctx context.Context, client *rcd.Client, v settings.Vault) (vault.Verification, error) {
+// folder means the vault is no longer where it was. account is the name of
+// the cloud account holding the folder, "" for a folder of this PC.
+func verifyFolder(ctx context.Context, client *rcd.Client, v settings.Vault, account string) (vault.Verification, error) {
 	base, cfg := placeOf(v)
 	check, err := vault.Verify(ctx, client, base, cfg)
 	if err != nil {
 		return check, err
 	}
-	wrong := &errWrongFolder{name: v.Name, path: location(v), cloud: v.Kind != settings.KindLocal}
+	wrong := &errWrongFolder{name: v.Name, path: location(v), account: account}
 	switch check.Verdict {
 	case vault.VerdictMismatch:
 		return check, wrong
@@ -475,27 +487,6 @@ func currentFolderID(v settings.Vault) drive.FolderID {
 	}
 	folder, _ := drive.IdentifyFolder(localPath(v))
 	return folder
-}
-
-// checkSignInLocked asks pCloud whether it accepts the sign-in before a
-// drive is mounted; otherwise the drive would appear but stay empty without
-// a word of explanation. Other problems (offline, pCloud busy, a slow
-// answer) are left to the check of the vault folder that follows, which
-// needs pCloud anyway. An answer from the last minute is good enough, so
-// that several pCloud drives do not ask one after another.
-func (e *Engine) checkSignInLocked(ctx context.Context, client *rcd.Client) error {
-	e.mu.Lock()
-	problem := e.signInProblem
-	e.mu.Unlock()
-	if problem == "" && time.Since(e.lastUsage) < signInRecheckEvery {
-		return nil
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, signInCheckTimeout)
-	defer cancel()
-	if err := e.readUsageLocked(checkCtx, client); pcloud.IsSignInProblem(err) {
-		return err
-	}
-	return nil
 }
 
 // readStatus reads the status of a vault's drive; a failure gives an empty

@@ -4,7 +4,7 @@
 
 //go:build windows
 
-package pcloud
+package cloud
 
 import (
 	"syscall"

@@ -5,44 +5,9 @@
 package pcloud
 
 import (
-	"context"
 	"errors"
-	"strings"
 	"testing"
 )
-
-// authorizeOutput is what "rclone authorize pcloud" printed (measured
-// 2026-10-10), with the token replaced.
-const authorizeOutput = `2026/10/10 21:29:22 NOTICE: Make sure your Redirect URL is set to "http://localhost:53682/" in your custom config.
-2026/10/10 21:29:22 NOTICE: If your browser doesn't open automatically go to the following link: http://127.0.0.1:53682/auth?state=UJZrH6HmJTbfTd1tBD1_DA
-2026/10/10 21:29:22 NOTICE: Log in and authorize rclone for access
-2026/10/10 21:29:22 NOTICE: Waiting for code...
-2026/10/10 21:30:27 NOTICE: Got code
-Paste the following into your remote machine --->
-{"access_token":"TESTTOKEN","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}
-<---End paste
-`
-
-func TestScanAuthorizeOutput(t *testing.T) {
-	var links []string
-	token, err := scanAuthorizeOutput(strings.NewReader(authorizeOutput), func(l string) { links = append(links, l) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := `{"access_token":"TESTTOKEN","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}`; token != want {
-		t.Fatalf("token = %q", token)
-	}
-	if len(links) != 1 || links[0] != "http://127.0.0.1:53682/auth?state=UJZrH6HmJTbfTd1tBD1_DA" {
-		t.Fatalf("links = %v", links)
-	}
-}
-
-func TestScanAuthorizeOutputWithoutToken(t *testing.T) {
-	token, err := scanAuthorizeOutput(strings.NewReader("NOTICE: Waiting for code...\n"), nil)
-	if err != nil || token != "" {
-		t.Fatalf("got %q, %v; want no token", token, err)
-	}
-}
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
@@ -98,44 +63,5 @@ func TestIsSignInProblem(t *testing.T) {
 	}
 	if IsSignInProblem(Classify(errors.New("pcloud error: x (5000)"))) || IsSignInProblem(nil) {
 		t.Error("a server problem or no error is not a sign-in problem")
-	}
-}
-
-func TestNewApp(t *testing.T) {
-	app, err := NewApp("  DnONSzyJXpm ", "\tAbCdEfGhIjKlMnOpQrStUvWxYz12\n")
-	if err != nil || app.ClientID != "DnONSzyJXpm" || app.ClientSecret != "AbCdEfGhIjKlMnOpQrStUvWxYz12" || !app.IsSet() {
-		t.Fatalf("got %+v, %v; want trimmed codes", app, err)
-	}
-	if app, err := NewApp(" ", ""); err != nil || app.IsSet() {
-		t.Fatalf("empty codes: got %+v, %v; want rclone's app", app, err)
-	}
-	for _, bad := range [][2]string{
-		{"DnONSzyJXpm", ""},             // secret missing
-		{"", "AbCdEfGhIjKl"},            // ID missing
-		{"--config=x", "AbCdEfGhIjKl"},  // would be read as an option
-		{"Dn ON", "AbCdEfGhIjKl"},       // space inside
-		{"DnONSzyJXpm", "abc\"; rm -x"}, // not a code at all
-		{"abc", "AbCdEfGhIjKl"},         // too short
-	} {
-		if _, err := NewApp(bad[0], bad[1]); err == nil {
-			t.Errorf("NewApp(%q, %q) accepted", bad[0], bad[1])
-		}
-	}
-}
-
-func TestAuthorizeCommandKeepsCodesOffTheCommandLine(t *testing.T) {
-	app := App{ClientID: "OwnClientId", ClientSecret: "OwnClientSecret"}
-	cmd := authorizeCommand(context.Background(), "rclone.exe", app)
-	if line := strings.Join(cmd.Args, " "); strings.Contains(line, app.ClientID) || strings.Contains(line, app.ClientSecret) {
-		t.Fatalf("codes on the command line: %s", line)
-	}
-	env := strings.Join(cmd.Env, "\n")
-	for _, want := range []string{"RCLONE_PCLOUD_CLIENT_ID=OwnClientId", "RCLONE_PCLOUD_CLIENT_SECRET=OwnClientSecret"} {
-		if !strings.Contains(env, want) {
-			t.Errorf("environment lacks %s", want)
-		}
-	}
-	if plain := authorizeCommand(context.Background(), "rclone.exe", App{}); plain.Env != nil {
-		t.Error("without an own app the environment must be inherited unchanged")
 	}
 }

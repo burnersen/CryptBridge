@@ -44,7 +44,7 @@ func (e *Engine) CountSize(ctx context.Context, id string) error {
 	if !ok {
 		return errUnknownVault
 	}
-	client, err := e.clientForKindLocked(ctx, v.Kind)
+	client, err := e.clientForPlaceLocked(ctx, v)
 	if err != nil {
 		return err
 	}

@@ -22,13 +22,13 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
-// Names of the remotes in rclone's in-memory configuration. A vault's remote
-// is remotePrefix plus its ID ("cbvault" for the vault taken over from
-// CryptBridge 0.3), and rclone names the vault's cache folder after it.
-const (
-	pcloudRemote = "cbpcloud"
-	remotePrefix = "cb"
-)
+// remotePrefix starts the names of the remotes in rclone's in-memory
+// configuration. A vault's remote is the prefix plus its ID ("cbvault" for
+// the vault taken over from CryptBridge 0.3), and rclone names the vault's
+// cache folder after it. An account's remote is the prefix plus the
+// account's ID ("cbpcloud" for the account taken over from CryptBridge 0.6).
+// The IDs cannot collide: vault IDs start with "v", new account IDs with "a".
+const remotePrefix = "cb"
 
 // maxNameLength keeps vault names short enough for Explorer.
 const maxNameLength = 32
@@ -60,12 +60,13 @@ func location(v settings.Vault) string {
 }
 
 // placeOf returns the remote a vault lives on and its configuration with the
-// folder relative to that remote: "cbpcloud:" and the pCloud folder, or the
-// drive ("E:/") and the folder on it. Keeping the drive letter out of the
-// folder keeps the check code of a USB drive the same under any letter.
+// folder relative to that remote: the account's remote ("cbpcloud:") and the
+// folder in the cloud, or the drive ("E:/") and the folder on it. Keeping
+// the drive letter out of the folder keeps the check code of a USB drive the
+// same under any letter.
 func placeOf(v settings.Vault) (string, vault.Config) {
 	if v.Kind != settings.KindLocal {
-		return pcloudRemote + ":", v.Config
+		return remoteName(v.Account) + ":", v.Config
 	}
 	return splitLocal(v.Config)
 }
@@ -88,7 +89,7 @@ func configureVault(ctx context.Context, client *rcd.Client, v settings.Vault) e
 // gets the same ID — and so the same cache folder — if the vault is removed
 // and added again, so files that waited in the cache are found again.
 func newVaultID(v settings.Vault, taken []settings.Vault) string {
-	sum := sha256.Sum256([]byte(v.Kind + "\n" + strings.ToLower(location(v))))
+	sum := sha256.Sum256([]byte(placeKey(v) + "\n" + strings.ToLower(location(v))))
 	digest := hex.EncodeToString(sum[:])
 	for length := 8; ; length += 4 {
 		id := "v" + digest[:length]
@@ -96,6 +97,25 @@ func newVaultID(v settings.Vault, taken []settings.Vault) string {
 			return id
 		}
 	}
+}
+
+// placeKey tells the places of vaults apart: a local folder, or the account
+// that holds the folder. The pCloud account taken over from CryptBridge 0.6
+// keeps the key its vaults had then ("pcloud"), so that their IDs stay.
+func placeKey(v settings.Vault) string {
+	switch {
+	case v.Kind == settings.KindLocal:
+		return settings.KindLocal
+	case v.Account == settings.MigratedAccountID:
+		return "pcloud"
+	}
+	return settings.KindCloud + "\n" + v.Account
+}
+
+// samePlace reports whether two vaults are in the same account, or both on
+// this PC.
+func samePlace(a, b settings.Vault) bool {
+	return a.Kind == b.Kind && (a.Kind == settings.KindLocal || a.Account == b.Account)
 }
 
 func hasID(vaults []settings.Vault, id string) bool {
@@ -187,7 +207,8 @@ func protectedFolders(paths appdir.Paths, cacheDir string) []string {
 }
 
 // overlaps reports whether two folders are the same or one is inside the
-// other, ignoring upper and lower case (Windows and pCloud do).
+// other, ignoring upper and lower case. Windows, pCloud, OneDrive and Dropbox
+// ignore it too; Google Drive does not, where this is merely on the safe side.
 func overlaps(a, b, separator string) bool {
 	a = strings.TrimSuffix(strings.ToLower(a), separator)
 	b = strings.TrimSuffix(strings.ToLower(b), separator)
@@ -202,7 +223,7 @@ func overlaps(a, b, separator string) bool {
 // overwrite each other's changes.
 func checkNoOverlap(candidate settings.Vault, vaults []settings.Vault) error {
 	for _, other := range vaults {
-		if other.ID == candidate.ID || other.Kind != candidate.Kind || other.Config.Path == "" {
+		if other.ID == candidate.ID || !samePlace(candidate, other) || other.Config.Path == "" {
 			continue
 		}
 		separator := "/"

@@ -2,7 +2,7 @@
 
 # CryptBridge
 
-### Your private files in pCloud or on your own disks, locked so that only you can open them, and as easy to use as any other drive.
+### Your private files in pCloud, Google Drive, OneDrive, Dropbox or on your own disks, locked so that only you can open them, and as easy to use as any other drive.
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4)
@@ -15,17 +15,18 @@
 
 ## What is CryptBridge?
 
-CryptBridge locks (encrypts) your files on your own PC before they go to [pCloud](https://www.pcloud.com).
-pCloud, and anyone who might ever get into your account, only sees scrambled names and contents. Only
-you hold the key.
+CryptBridge locks (encrypts) your files on your own PC before they go to your cloud:
+[pCloud](https://www.pcloud.com), [Google Drive](https://drive.google.com),
+[OneDrive](https://onedrive.live.com) or [Dropbox](https://www.dropbox.com). The cloud provider, and anyone
+who might ever get into your account, only sees scrambled names and contents. Only you hold the key.
 
 On your PC you hardly notice any of this: your locked folder simply shows up as a drive, for example
 `Z:`, and you use it like any other drive. Copy files in, open them, play films, delete them.
 
 **What is a vault?** That is what CryptBridge calls such a locked folder. It is a normal folder, in
-pCloud or on a disk or USB stick, whose files are locked with two secrets of your choice: a **password**
-and a **salt** (a second password). Together they are the **keys** of the vault. Without them, the files
-are useless to anyone: to pCloud, to a thief, and to me.
+your cloud or on a disk or USB stick, whose files are locked with two secrets of your choice: a
+**password** and a **salt** (a second password). Together they are the **keys** of the vault. Without
+them, the files are useless to anyone: to your cloud provider, to a thief, and to me.
 
 > For the technically minded: a vault is an [rclone crypt](https://rclone.org/crypt/) folder. CryptBridge
 > uses the free tool rclone, so you can always open your vaults with plain rclone too, even without
@@ -34,8 +35,10 @@ are useless to anyone: to pCloud, to a thief, and to me.
 ## What can it do?
 
 - **Drives on Windows.** Every vault gets its own drive letter. Several vaults can be open at once:
-  vaults in pCloud, and [vaults on your PC or a USB drive](#vaults-on-this-pc-or-a-usb-drive) that need
-  no cloud and no account at all.
+  vaults in your clouds, and [vaults on your PC or a USB drive](#vaults-on-this-pc-or-a-usb-drive) that
+  need no cloud and no account at all.
+- **Several clouds at once.** pCloud, Google Drive, OneDrive and Dropbox, also several accounts of the
+  same service. See [Cloud accounts](#cloud-accounts).
 - **Films on your TV at home (optional).** Your PC can share its drives with the TV, phone or tablet in
   your home network, for example for video players such as Infuse or Kodi. See
   [LAN access](#lan-access-optional).
@@ -46,8 +49,8 @@ are useless to anyone: to pCloud, to a thief, and to me.
 
 ```mermaid
 flowchart TB
-    PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("pCloud")]
-    Cloud <-->|locked| Server["Your Linux server<br/>(optional)"]
+    PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("Your cloud<br/>pCloud, Google Drive,<br/>OneDrive, Dropbox")]
+    Cloud <-->|locked| Server["Your Linux server<br/>(optional, pCloud)"]
     Server -->|secure connection| Player["Video player<br/>anywhere"]
     PC -->|"home network (optional)"| TV["TV, phone, tablet<br/>at home"]
 ```
@@ -63,28 +66,31 @@ flowchart TB
   CryptBridge tells you if it is missing.
 - rclone 1.75 or newer, the tool that does the locking. If it is missing, CryptBridge downloads it for
   you from rclone.org and checks that the download is genuine.
-- For vaults in pCloud: a pCloud account.
+- For vaults in the cloud: an account at pCloud, Google Drive, OneDrive or Dropbox. Google Drive also
+  needs [your own free Google app](#google-drive-your-own-google-app-required).
 
 **Four steps**
 
 1. **Install WinFsp**, then download and start **`CryptBridge.exe`** from the
    [latest release](https://github.com/burnersen/CryptBridge/releases/latest). There is no installer.
    CryptBridge lives in the system tray, the small icons at the bottom right next to the clock.
-2. **Sign in to pCloud** (only for vaults in pCloud): *Vaults tab > pCloud account > Sign in to pCloud*.
-   Your browser opens the pCloud sign-in page. CryptBridge finds out by itself whether your account is in
-   the EU or the US. Recommended as well, now or later: your [own pCloud app](#own-pcloud-app-recommended).
-3. **Add a vault:** *Vaults tab > Add vault*. Choose where it is (**in pCloud** or **on this PC or a USB
-   drive**), then:
+2. **Add your cloud account** (only for vaults in the cloud): *Vaults tab > Add cloud account*, choose
+   the service and click *Sign in*. Your browser opens the sign-in page of the service; sign in there and
+   allow the access. For Google Drive, set up your own Google app first: the guide is right there on
+   the page. See [Cloud accounts](#cloud-accounts) for what each service needs.
+3. **Add a vault:** *Vaults tab > Add vault*. Choose where it is (**in one of your cloud accounts** or
+   **on this PC or a USB drive**), then:
    - **Create a new vault:** CryptBridge makes up a strong password and salt for you.
    - **Open an existing vault:** enter its password and salt. *Browse* shows your folders (vaults are
-     marked with a lock); *Search pCloud* finds vaults anywhere in your pCloud.
+     marked with a lock); *Search* finds vaults anywhere in that cloud.
 
    Give the vault a name and a drive letter.
 4. **Done.** The vault appears as a drive right away. The **Status tab** shows all drives, how much
    space is left where they live, their size and running uploads.
 
 > ⚠️ **Write down the password and the salt, or print the emergency sheet.** Without them nobody can
-> open your vault: not pCloud, not CryptBridge, not me. There is no "forgot password" for a vault.
+> open your vault: not your cloud provider, not CryptBridge, not me. There is no "forgot password" for a
+> vault.
 
 ### The tray icon
 
@@ -139,10 +145,12 @@ needs room for the largest file you copy at once. It holds readable copies of yo
 - **Uploads are never cut off silently.** CryptBridge shows running uploads and warns you before you
   disconnect or quit while they run.
 - **The drive survives problems.** rclone runs as a program of its own: if the window crashes, the drive
-  stays; if rclone stops, CryptBridge brings the drive back. If pCloud refuses the sign-in, CryptBridge
-  says so plainly, asks pCloud again every minute and reconnects by itself once pCloud accepts it again.
-  Without internet, a pCloud drive does not appear at first, because its keys cannot be tested yet. It
-  appears by itself as soon as pCloud can be reached again.
+  stays; if rclone stops, CryptBridge brings the drive back. If a cloud refuses the sign-in, CryptBridge
+  says so plainly, asks again every minute and reconnects by itself once the cloud accepts it again.
+  Without internet, a cloud drive does not appear at first, because its keys cannot be tested yet. It
+  appears by itself as soon as the cloud can be reached again.
+- **Sign-ins stay fresh.** Some clouds (Microsoft above all) hand out a new sign-in every time the old
+  one is renewed. CryptBridge keeps the new one, so you do not have to sign in again every few months.
 
 ### The file `.cryptbridge-vault`
 
@@ -163,10 +171,11 @@ back by itself the next time the drive connects.
 
 ## Vaults on this PC or a USB drive
 
-A vault does not have to be in pCloud. It can also be a folder on any disk of your PC: an internal
+A vault does not have to be in the cloud. It can also be a folder on any disk of your PC: an internal
 disk, a USB stick, an external disk, or a network folder that has a drive letter. It is locked and
-unlocked only on your PC, the same way as in pCloud, and needs neither pCloud nor a sign-in. The folder
-itself only ever holds locked files, so you can copy it to another disk as a backup and it stays locked.
+unlocked only on your PC, the same way as in the cloud, and needs neither a cloud nor a sign-in. The
+folder itself only ever holds locked files, so you can copy it to another disk as a backup and it stays
+locked.
 
 - **USB drives:** with *connect on start*, the vault connects as soon as its drive is plugged in (while
   CryptBridge is running). If the drive is pulled out while the vault is connected, CryptBridge closes
@@ -180,7 +189,8 @@ itself only ever holds locked files, so you can copy it to another disk as a bac
 - **The cache:** a local disk is fast, so only files being written pass through the cache, and they
   leave it a minute after their last use.
 - Not possible on a Windows disk: vaults whose file names use the *base64* setting. Windows does not
-  tell upper from lower case in file names, so two locked names could land on the same file.
+  tell upper from lower case in file names, so two locked names could land on the same file. The same
+  goes for OneDrive and Dropbox.
 
 ---
 
@@ -203,12 +213,98 @@ open your drives and print your emergency sheets. Set an **app password** at *Se
 - After a wrong password, the next try has to wait a little longer (up to 30 seconds).
 
 **Forgot the app password?** It cannot be recovered, but your files are not lost. Click *Forgot the app
-password?* on the lock screen, then *Reset CryptBridge*. Sign in to pCloud again and add your vaults
-again with the password and salt from their **emergency sheets**.
+password?* on the lock screen, then *Reset CryptBridge*. Add your cloud accounts again, then your vaults
+with the password and salt from their **emergency sheets**.
 
 What the app lock cannot do: Windows itself remembers recently opened file names and preview pictures,
 and deleted files can be recovered from an unencrypted disk. Turn on **BitLocker** for the disk with the
 cache folder, and lock Windows when you leave the PC.
+
+---
+
+## Cloud accounts
+
+Add your clouds at *Vaults tab > Add cloud account*. Each account gets its own page there, with the
+sign-in, the free space, a name you can change, and *Remove from CryptBridge* (possible once no vault
+lies in it; your files in the cloud are never touched). You can add several accounts of the same
+service, for example a private and a work Google Drive.
+
+| Service | Sign-in | Own app |
+|---|---|---|
+| **pCloud** | in the browser; CryptBridge finds out by itself whether your account is in the EU or the US | optional, recommended: [own pCloud app](#own-pcloud-app-recommended) |
+| **Google Drive** | in the browser | **required**: [your own Google app](#google-drive-your-own-google-app-required) |
+| **OneDrive** | in the browser with your Microsoft account | not possible with a personal Microsoft account, so rclone's access is used |
+| **Dropbox** | in the browser | optional: [own Dropbox app](#own-dropbox-app-optional) |
+
+**Signing in** works the same everywhere: CryptBridge opens the sign-in page of the service in your
+browser, you sign in there and allow the access, and CryptBridge continues by itself. Your password for
+the cloud is typed only on the page of the service; CryptBridge never sees it. If the service has a
+question afterwards (OneDrive, for example, if your account has more than one drive), CryptBridge shows it
+in a small window. If you close the browser instead, click *Cancel* in CryptBridge.
+
+Good to know:
+
+- **Tested (October 2026)** with pCloud, Google Drive, OneDrive and Dropbox at the same time, including
+  films streamed from all of them.
+- **OneDrive:** the *Personal Vault* of OneDrive and files *shared with you* cannot be used for a vault.
+  Choose a normal folder.
+- **Dropbox:** CryptBridge uploads files to Dropbox one by one. Dropbox may slow this down a little when
+  you copy very many small files at once; rclone then waits and carries on by itself.
+- **Linux server:** the [server setup](#linux-server) works with vaults in pCloud for now. Vaults in the
+  other clouds follow in a later version.
+- **Updating from CryptBridge 0.6 or older:** your pCloud account and your vaults are taken over by
+  themselves when CryptBridge 0.7 starts (with the app lock: when you unlock it). The old settings stay
+  next to the new ones as `settings.dat.v2-backup`. Older versions of CryptBridge cannot read the new
+  settings.
+
+### Own Dropbox app (optional)
+
+Without an app of your own, CryptBridge uses rclone's shared access to Dropbox, which works. Your own app
+keeps you independent of the limits that access shares with every rclone user. It takes about five
+minutes and needs no approval:
+
+1. Open the **[Dropbox App Console](https://www.dropbox.com/developers/apps)**, sign in and click
+   **Create app**. Choose **Scoped access** and **Full Dropbox**, and give it a name of your own, for
+   example "CryptBridge" followed by your name (Dropbox wants names that nobody else uses).
+2. On the **Permissions** tab, tick `account_info.read`, `files.metadata.write`, `files.content.write`,
+   `files.content.read` and `sharing.write`, then click **Submit**.
+3. On the **Settings** tab, add `http://localhost:53682/` under **OAuth 2 Redirect URIs** and click
+   **Add**.
+4. In CryptBridge, enter the **App key** as *Client ID* and the **App secret** as *Client secret*: when
+   you add the account, or later on the page of your Dropbox account (then sign in again).
+
+---
+
+## Google Drive: your own Google app (required)
+
+Google is retiring the shared access that all rclone users had (Google wants to charge for it during
+2026). So CryptBridge signs in to Google Drive only through **an app of your own**. Setting it up takes
+about 15 minutes, once, and costs nothing. One app serves all your Google accounts. The same guide is in
+CryptBridge on the page for adding a Google Drive account, with Copy buttons.
+
+1. Open the **[Google Cloud Console](https://console.cloud.google.com/projectcreate)** and sign in with
+   your Google account. Create a new project, for example `CryptBridge`, and make sure it is selected at
+   the top of the page.
+2. Turn on the **[Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com)**:
+   click **Enable**.
+3. Open the **[Google Auth Platform](https://console.cloud.google.com/auth/overview)** and click **Get
+   started**. App name `CryptBridge (personal)`, your own email address as support and contact address,
+   audience **External**. Agree and click **Create**.
+4. Open **[Data access](https://console.cloud.google.com/auth/scopes)**, click **Add or remove scopes**
+   and add `https://www.googleapis.com/auth/drive` (tick it in the list, or paste it under *Manually add
+   scopes*). Click **Update**, then **Save**.
+5. Open **[Audience](https://console.cloud.google.com/auth/audience)**, add your own Google address under
+   **Test users**, then click **Publish app** and confirm. Important: while the app stays in *Testing*,
+   Google ends every sign-in after 7 days. If Google asks for a homepage and a privacy policy first,
+   enter them under **Branding**, for example `https://github.com/burnersen/CryptBridge`.
+6. Open **[Clients](https://console.cloud.google.com/auth/clients)**, click **Create client**, choose the
+   application type **Desktop app**, name it `CryptBridge` and click **Create**.
+7. Copy the **Client ID** and the **Client secret** into CryptBridge (*Add cloud account > Google Drive*)
+   and click *Sign in*.
+8. Google then warns that it has not verified the app. That is expected: it is your own app, which only
+   you use. Click **Advanced**, then **Go to CryptBridge (personal) (unsafe)** and **Continue**.
+
+The client ID and secret are stored encrypted with your Windows account, like your sign-ins.
 
 ---
 
@@ -238,7 +334,7 @@ Request the app **now, while everything works**: pCloud has to approve it, which
    | Write access | **Yes**, needed to upload files |
    | Website | `https://github.com/burnersen/CryptBridge` |
    | Expected number of users | `1` |
-   | Reason | the text below (also in CryptBridge at *Vaults > pCloud account*, with a Copy button) |
+   | Reason | the text below (also in CryptBridge on the page of your pCloud account, with a Copy button) |
 
    ```text
    Personal use only. I use the open-source tool CryptBridge (https://github.com/burnersen/CryptBridge), which is based on rclone, to access my own pCloud account: it shows an encrypted folder of my pCloud as a drive on my own computers. Only my own pCloud account will use this app. It needs access to all folders because my existing encrypted folders are not inside an app folder, and write access to upload my files.
@@ -248,9 +344,10 @@ Request the app **now, while everything works**: pCloud has to approve it, which
    `http://localhost:53682/` under **Redirect URIs**, exactly like this. Without it, the sign-in ends with
    *redirect_uri is not authorized*. Set *Allow implicit grant* to **Disallow** (CryptBridge does not need
    it). Publisher, description and icon can stay empty. Click **Save changes**.
-4. In CryptBridge: *Vaults > pCloud account > Own pCloud app*, paste the **Client ID** and the **Client
-   secret**, click **Save app** and confirm the new sign-in. Connected pCloud drives are disconnected for
-   the sign-in and connected again afterwards. The page then says *… through your own pCloud app*.
+4. In CryptBridge, on the page of your pCloud account (*Vaults tab*, under *Cloud accounts*), section
+   *Own pCloud app*: paste the **Client ID** and the **Client secret**, click **Save app** and confirm the
+   new sign-in. Connected pCloud drives are disconnected for the sign-in and connected again afterwards.
+   The page then says *… through your own app*.
 5. **Linux server** (not urgent: its sign-in keeps working until pCloud blocks rclone's shared access
    again): create a new transfer block on the page of the vault, run `sudo cryptbridge setup` on the
    server, answer **n** to *Keep the pCloud sign-in and vault keys from the last setup?* and paste the
@@ -337,7 +434,9 @@ The VPN has to give your devices an address of your home network:
 *Optional, for advanced users.* Want to watch your films anywhere, without your PC at home running? Rent
 a small Linux server (a VPS) and let one setup script turn it into a streaming server for your pCloud
 vault. Your video player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from
-it over a secure connection (HTTPS). On the server itself, the vault is the folder `~/CryptBridge`.
+it over a secure connection (HTTPS). On the server itself, the vault is the folder `~/CryptBridge`. The
+server setup works with vaults in pCloud for now; vaults in Google Drive, OneDrive or Dropbox follow in a
+later version.
 
 Tested on **Ubuntu 26.04 with an XFCE desktop**, on a server that already had its own firewall rules,
 fail2ban jails and third-party package sources. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
@@ -420,9 +519,9 @@ Your files stay in pCloud the whole time; the servers only pass them through.
 ## Moving your existing files into a vault
 
 Copy them onto the vault's drive (on the server: into `~/CryptBridge`), check that they arrived, then
-delete the originals. Plan for space: **until you delete an original, the file is in pCloud twice**
-(unlocked and locked). Move in portions that fit into your free pCloud space, and check whether deleted
-files still count against your storage while they sit in pCloud's trash.
+delete the originals. Plan for space: **until you delete an original, the file is in your cloud twice**
+(unlocked and locked). Move in portions that fit into your free space in the cloud, and check whether
+deleted files still count against your storage while they sit in the cloud's trash.
 
 ---
 
@@ -432,11 +531,15 @@ files still count against your storage while they sit in pCloud's trash.
 |---|---|
 | "These keys do NOT open the vault" | Password, salt, folder or an advanced setting does not match. Nothing was changed. Check them against your emergency sheet. |
 | "The keys … do not open the folder" (vault on your PC) | Another drive got the vault's drive letter. Nothing was connected or written. |
-| "The pCloud folder … is empty or gone" | The vault's folder in pCloud was renamed or moved. Nothing was connected or written. Rename it back, or add the vault again from its new place. |
-| A pCloud drive does not appear, "could not be checked in pCloud" | pCloud cannot be reached right now (no internet?). The drive appears by itself once pCloud answers. |
-| "pCloud no longer accepts the sign-in (error 2095)" | Often a passing problem at pCloud: CryptBridge asks again every minute and reconnects by itself. After a password change or "log out of all devices" it stays: click **Sign in again** on the Status tab, then bring the sign-in to the server with a new transfer block. |
-| Browser shows "Invalid 'client_id'" during sign-in | pCloud is blocking rclone's shared access. Try again later, or use your [own pCloud app](#own-pcloud-app-recommended). With your own app: check the client ID at *Vaults > pCloud account*. |
-| Browser shows "redirect_uri is not authorized" | Add `http://localhost:53682/` to the Redirect URIs of your app on pCloud. |
+| "The folder … in … is empty or gone" | The vault's folder in the cloud was renamed or moved. Nothing was connected or written. Rename it back, or add the vault again from its new place. |
+| A cloud drive does not appear, "could not be checked in …" | The cloud cannot be reached right now (no internet?). The drive appears by itself once the cloud answers. |
+| "pCloud no longer accepts the sign-in (error 2095)" | Often a passing problem at pCloud: CryptBridge asks again every minute and reconnects by itself. After a password change or "log out of all devices" it stays: click **Sign in to … again** on the Status tab, then bring the sign-in to the server with a new transfer block. |
+| "… no longer accepts the sign-in: it has run out or was withdrawn" | Click **Sign in to … again** on the Status tab. Google Drive: if your Google app is still in *Testing*, Google ends every sign-in after 7 days; publish the app (step 5 of the [Google guide](#google-drive-your-own-google-app-required)). |
+| "… does not accept your own app" | The client ID or secret is wrong, or the app was deleted. Correct them on the page of the account, then sign in again. |
+| Google shows "Google hasn't verified this app" | Expected with your own Google app: click **Advanced**, then **Go to … (unsafe)**. |
+| "the port 53682 that receives the sign-in is in use" | Another sign-in is still waiting, perhaps in a window of rclone. Finish or close it and try again. |
+| pCloud page shows "Invalid 'client_id'" during sign-in | pCloud is blocking rclone's shared access. Try again later, or use your [own pCloud app](#own-pcloud-app-recommended). With your own app: check the client ID on the page of your pCloud account. |
+| Browser shows "redirect_uri is not authorized" (or similar) | Add `http://localhost:53682/` to the redirect addresses of your own pCloud or Dropbox app. A Google desktop app needs no such address. |
 | Check codes differ between PC and server | The keys or settings differ. Bring them over again with a transfer block. |
 | Drive letter in use | Choose another letter on the page of the vault (while it is disconnected). |
 | Quit warns about uploads | Files not yet in the vault stay on this PC and are written into it the next time you connect. Do not delete the cache folder in the meantime. |
@@ -468,10 +571,14 @@ Used by the Windows drive and by the server mount (the server's WebDAV reads fro
 | `--vfs-cache-max-size` | 20G (server: half the free space at most) | keeps the disk from filling up |
 | `--vfs-cache-min-free-space` | 10G Windows / 5G server | emergency brake for the disk |
 | `--vfs-read-ahead` | 128M | reads ahead of the player |
-| `--dir-cache-time` / `--poll-interval` | 24h / 1m | fast browsing; pCloud reports changes every minute |
+| `--dir-cache-time` / `--poll-interval` | 24h / 1m | fast browsing; the cloud reports changes every minute |
 
-`--no-modtime` is used for the server's WebDAV only. The drives keep real file dates: pCloud delivers
+`--no-modtime` is used for the server's WebDAV only. The drives keep real file dates: the clouds deliver
 them with every folder listing, so they cost nothing, and you can sort by date.
+
+Dropbox accounts get `batch_mode off`. With rclone's default batch uploads, a key check that rclone drops
+from its cache ends the upload batcher of the same Dropbox folder, and every later upload fails with
+*batcher is shutting down*.
 
 Vaults on the PC do not need any of the streaming values: they use `--vfs-cache-mode writes`,
 `--vfs-cache-max-age 1m` and `--dir-cache-time 10s`.

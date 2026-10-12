@@ -5,6 +5,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,8 +15,13 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
+// pcloudVault is a vault in the pCloud account taken over from 0.6.
 func pcloudVault(id, name, letter, path string) settings.Vault {
-	return settings.Vault{ID: id, Name: name, Kind: settings.KindPCloud, Letter: letter, Config: vault.Config{Path: path}}
+	return cloudVault(settings.MigratedAccountID, id, name, letter, path)
+}
+
+func cloudVault(account, id, name, letter, path string) settings.Vault {
+	return settings.Vault{ID: id, Name: name, Kind: settings.KindCloud, Account: account, Letter: letter, Config: vault.Config{Path: path}}
 }
 
 func localVault(id, name, letter, path string) settings.Vault {
@@ -42,6 +49,24 @@ func TestRemoteNames(t *testing.T) {
 	taken := []settings.Vault{{ID: id}}
 	if longer := newVaultID(added, taken); longer == id || !strings.HasPrefix(longer, id) {
 		t.Fatalf("ID taken: got %q, want a longer one starting with %q", longer, id)
+	}
+}
+
+// A vault in the pCloud account taken over from 0.6 must get the ID it got
+// then, so that a removed and added again vault finds its cache folder.
+func TestVaultIDsOfAccounts(t *testing.T) {
+	sum := sha256.Sum256([]byte("pcloud\nmedia/films")) // how 0.6 derived it
+	if got, want := newVaultID(pcloudVault("", "", "", "Media/Films"), nil), "v"+hex.EncodeToString(sum[:])[:8]; got != want {
+		t.Fatalf("pCloud vault ID %q, want %q as in 0.6", got, want)
+	}
+	inPCloud := newVaultID(pcloudVault("", "", "", "Films"), nil)
+	inDrive := newVaultID(cloudVault("a1b2c3d4", "", "", "", "Films"), nil)
+	inOther := newVaultID(cloudVault("a9f8e7d6", "", "", "", "Films"), nil)
+	if inDrive == inPCloud || inDrive == inOther {
+		t.Fatalf("the same folder in different accounts got the same ID: %s %s %s", inPCloud, inDrive, inOther)
+	}
+	if base, _ := placeOf(cloudVault("a1b2c3d4", "v1", "Films", "Y", "Films")); base != "cba1b2c3d4:" {
+		t.Fatalf("placeOf in another account = %q, want cba1b2c3d4:", base)
 	}
 }
 
@@ -123,7 +148,8 @@ func TestCheckNoOverlap(t *testing.T) {
 	}
 	for _, good := range []settings.Vault{
 		pcloudVault("", "", "", "Media/Films 2"),
-		localVault("", "", "", `E:\Media\Films`), // same words, other storage
+		cloudVault("a1b2c3d4", "", "", "", "Media/Films"), // same folder, other account
+		localVault("", "", "", `E:\Media\Films`),          // same words, other storage
 		localVault("", "", "", `F:\Private`),
 	} {
 		if err := checkNoOverlap(good, vaults); err != nil {

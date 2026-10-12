@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
@@ -56,8 +57,12 @@ func liveSettingsWith(t *testing.T, appLock *passlock.Key, change func(*vault.Co
 	letter := free[len(free)-2] // leave Z: alone if it is free
 	paths := testPaths(t.TempDir())
 	s := settings.Defaults(paths.CacheDir)
-	s.PCloud = account
-	s.Vaults = []settings.Vault{{ID: testVaultID, Name: "Test vault", Kind: settings.KindPCloud, Letter: letter, AutoConnect: true, Config: vaultCfg}}
+	s.Accounts = []settings.Account{{
+		ID: settings.MigratedAccountID, Service: cloud.PCloud, Name: "pCloud",
+		Remote: map[string]string{"type": cloud.PCloud, "hostname": account.Hostname, "token": account.Token},
+	}}
+	s.Vaults = []settings.Vault{{ID: testVaultID, Name: "Test vault", Kind: settings.KindCloud, Account: settings.MigratedAccountID,
+		Letter: letter, AutoConnect: true, Config: vaultCfg}}
 	s.AppLock = appLock != nil
 	if err := settings.Save(paths.SettingsFile, s, appLock); err != nil {
 		t.Fatal(err)
@@ -176,18 +181,18 @@ func TestLiveSignInProblem(t *testing.T) {
 
 	// 1. pCloud starts refusing the sign-in while the drive is connected.
 	refused := pcloud.Account{Hostname: account.Hostname, Token: `{"access_token":"refused","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}`}
-	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, refused); err != nil {
+	if err := pcloud.Configure(ctx, clientOf(e), remoteName(settings.MigratedAccountID), refused); err != nil {
 		t.Fatal(err)
 	}
 	askPCloudNow(e)
-	waitFor(t, "sign-in warning", 15*time.Second, func() bool { return e.Snapshot().SignInProblem != "" })
-	t.Logf("warning: %s", e.Snapshot().SignInProblem)
+	waitFor(t, "sign-in warning", 15*time.Second, func() bool { return pcloudProblem(e) != "" })
+	t.Logf("warning: %s", pcloudProblem(e))
 
 	// 2. The warning must stay, and the drive must stay connected (until
 	// version 0.1.1 the next status round hid the warning after 2 s).
 	for end := time.Now().Add(3 * pollEvery); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
-		if snap := e.Snapshot(); snap.SignInProblem == "" || vaultOf(e, testVaultID).State != StateConnected {
-			t.Fatalf("warning %q, state %q; want the warning to stay while connected", snap.SignInProblem, vaultOf(e, testVaultID).State)
+		if problem := pcloudProblem(e); problem == "" || vaultOf(e, testVaultID).State != StateConnected {
+			t.Fatalf("warning %q, state %q; want the warning to stay while connected", problem, vaultOf(e, testVaultID).State)
 		}
 	}
 
@@ -196,7 +201,7 @@ func TestLiveSignInProblem(t *testing.T) {
 	if err := e.Disconnect(ctx, testVaultID, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Connect(ctx, testVaultID); !pcloud.IsSignInProblem(err) {
+	if err := e.Connect(ctx, testVaultID); !cloud.IsSignInProblem(err) {
 		t.Fatalf("connect while refused: got %v, want a sign-in problem", err)
 	}
 	if _, err := os.Stat(letter + `:\`); err == nil {
@@ -206,11 +211,11 @@ func TestLiveSignInProblem(t *testing.T) {
 
 	// 4. pCloud accepts the sign-in again: the drive comes back by itself
 	// and the warning goes away.
-	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, account); err != nil {
+	if err := pcloud.Configure(ctx, clientOf(e), remoteName(settings.MigratedAccountID), account); err != nil {
 		t.Fatal(err)
 	}
 	waitState(t, e, testVaultID, StateConnected, 90*time.Second)
-	if problem := e.Snapshot().SignInProblem; problem != "" {
+	if problem := pcloudProblem(e); problem != "" {
 		t.Fatalf("warning still shown after pCloud accepted the sign-in: %s", problem)
 	}
 }
@@ -236,7 +241,7 @@ func TestLivePCloudUnreachable(t *testing.T) {
 	}
 
 	unreachable := pcloud.Account{Hostname: "eapi.pcloud.invalid", Token: account.Token}
-	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, unreachable); err != nil {
+	if err := pcloud.Configure(ctx, clientOf(e), remoteName(settings.MigratedAccountID), unreachable); err != nil {
 		t.Fatal(err)
 	}
 	var unchecked *errNotChecked
@@ -249,7 +254,7 @@ func TestLivePCloudUnreachable(t *testing.T) {
 	waitState(t, e, testVaultID, StateReconnecting, 15*time.Second)
 	t.Logf("while unreachable: %s", vaultOf(e, testVaultID).Message)
 
-	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, account); err != nil {
+	if err := pcloud.Configure(ctx, clientOf(e), remoteName(settings.MigratedAccountID), account); err != nil {
 		t.Fatal(err)
 	}
 	waitState(t, e, testVaultID, StateConnected, 90*time.Second)
@@ -264,7 +269,7 @@ func TestLivePCloudWrongFolder(t *testing.T) {
 		change  func(*vault.Config)
 		message string
 	}{
-		{"wrong password", func(c *vault.Config) { c.Password += " wrong" }, "do not open the pCloud folder"},
+		{"wrong password", func(c *vault.Config) { c.Password += " wrong" }, "do not open the folder"},
 		{"renamed folder", func(c *vault.Config) { c.Path += missing }, "is empty or gone"},
 	}
 	for _, c := range cases {
@@ -324,7 +329,7 @@ func TestLiveAppLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
-	if snap := e.Snapshot(); !snap.Locked || snap.Phase != PhaseLocked || snap.SignedIn || vaultOf(e, testVaultID).HasKeys || clientOf(e) != nil {
+	if snap := e.Snapshot(); !snap.Locked || snap.Phase != PhaseLocked || accountOf(e, settings.MigratedAccountID).SignedIn || vaultOf(e, testVaultID).HasKeys || clientOf(e) != nil {
 		t.Fatalf("start: %+v; want locked without secrets and without rclone", snap)
 	}
 	if got := e.Snapshot().UnlockConnects; len(got) != 1 || got[0] != letter {
@@ -355,7 +360,7 @@ func TestLiveAppLock(t *testing.T) {
 	if err := e.Lock(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if snap := e.Snapshot(); !snap.Locked || snap.SignedIn || vaultOf(e, testVaultID).HasKeys {
+	if snap := e.Snapshot(); !snap.Locked || accountOf(e, settings.MigratedAccountID).SignedIn || vaultOf(e, testVaultID).HasKeys {
 		t.Fatalf("right after Lock: %+v; want the secrets gone at once", snap)
 	}
 	t.Logf("right after Lock: %q", e.Snapshot().Message)

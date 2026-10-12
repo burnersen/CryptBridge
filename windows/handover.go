@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -39,11 +40,13 @@ func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	if err != nil {
 		return TransferResult{}, err
 	}
-	if v.Kind != settings.KindPCloud {
+	if v.Kind != settings.KindCloud {
 		return TransferResult{}, errors.New("only a vault in pCloud can be opened on the Linux server")
 	}
-	if !a.core.Snapshot().SignedIn {
-		return TransferResult{}, errors.New("sign in to pCloud first")
+	// The Linux setup knows pCloud only, for now.
+	signIn, err := a.core.PCloudSignIn(v.Account)
+	if err != nil {
+		return TransferResult{}, fmt.Errorf("only a vault in pCloud can be opened on the Linux server: %w", err)
 	}
 	code, err := transfer.NewCode()
 	if err != nil {
@@ -51,7 +54,7 @@ func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	}
 	block, err := transfer.Seal(transfer.Bundle{
 		CreatedAt:   time.Now().UTC(),
-		PCloud:      a.core.PCloudAccount(),
+		PCloud:      signIn,
 		Vault:       v.Config,
 		Fingerprint: a.core.Fingerprint(id),
 	}, code)
@@ -85,10 +88,13 @@ func (a *App) CopyText(text string) error {
 type SheetData struct {
 	CreatedAt               string `json:"createdAt"`
 	Name                    string `json:"name"`
-	Kind                    string `json:"kind"`   // settings.KindPCloud or settings.KindLocal
-	Region                  string `json:"region"` // pCloud only
-	PCloudHost              string `json:"pcloudHost"`
-	VaultPath               string `json:"vaultPath"` // folder in pCloud or on this PC
+	Kind                    string `json:"kind"`         // settings.KindCloud or settings.KindLocal
+	Service                 string `json:"service"`      // cloud: rclone's backend name, e.g. "drive"
+	ServiceTitle            string `json:"serviceTitle"` // cloud: e.g. "Google Drive"
+	AccountName             string `json:"accountName"`  // cloud: the account's name in CryptBridge
+	Region                  string `json:"region"`       // pCloud only
+	PCloudHost              string `json:"pcloudHost"`   // pCloud only
+	VaultPath               string `json:"vaultPath"`    // folder in the cloud or on this PC
 	Password                string `json:"password"`
 	Salt                    string `json:"salt"`
 	FilenameEncryption      string `json:"filenameEncryption"`
@@ -126,11 +132,17 @@ func (a *App) EmergencySheet(id, appPassword string) (SheetData, error) {
 		sheet.VaultPath = filepath.Clean(v.Config.Path)
 		return sheet, nil
 	}
-	account := a.core.PCloudAccount()
-	sheet.PCloudHost = account.Hostname
-	sheet.Region = "US"
-	if account.Hostname == pcloud.HostEU {
-		sheet.Region = "EU (Europe)"
+	for _, account := range a.core.Snapshot().Accounts {
+		if account.ID == v.Account {
+			sheet.Service, sheet.ServiceTitle, sheet.AccountName = account.Service, account.ServiceTitle, account.Name
+		}
+	}
+	if signIn, err := a.core.PCloudSignIn(v.Account); err == nil {
+		sheet.PCloudHost = signIn.Hostname
+		sheet.Region = "US"
+		if signIn.Hostname == pcloud.HostEU {
+			sheet.Region = "EU (Europe)"
+		}
 	}
 	return sheet, nil
 }

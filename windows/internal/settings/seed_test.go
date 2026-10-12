@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
 )
@@ -26,8 +27,12 @@ func TestSeedDevProfile(t *testing.T) {
 	}
 	_, account, vaultCfg := testenv.Live(t)
 	s := Defaults(filepath.Join(profile, "CryptBridge", "cache"))
-	s.PCloud = account
-	test := Vault{ID: MigratedVaultID, Name: "Test vault", Kind: KindPCloud, Letter: DefaultDriveLetter, AutoConnect: true, Config: vaultCfg}
+	s.Accounts = []Account{{
+		ID: MigratedAccountID, Service: cloud.PCloud, Name: migratedAccountName,
+		Remote: map[string]string{"type": cloud.PCloud, "hostname": account.Hostname, "token": account.Token},
+	}}
+	test := Vault{ID: MigratedVaultID, Name: "Test vault", Kind: KindCloud, Account: MigratedAccountID,
+		Letter: DefaultDriveLetter, AutoConnect: true, Config: vaultCfg}
 	if letter := os.Getenv("CRYPTBRIDGE_SEED_LETTER"); letter != "" {
 		test.Letter = letter
 	}

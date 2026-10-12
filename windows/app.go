@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
 	"github.com/burnersen/CryptBridge/windows/internal/engine"
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
@@ -49,14 +49,17 @@ type App struct {
 	stopCore   context.CancelFunc
 	signInMu   sync.Mutex
 	stopSignIn context.CancelFunc
-	quitOnce   sync.Once
-	themeMu    sync.Mutex
-	theme      string // the theme the window shows now
+	// signInAnswers carries the answer to a question rclone asked during a
+	// sign-in (see askInWindow).
+	signInAnswers chan string
+	quitOnce      sync.Once
+	themeMu       sync.Mutex
+	theme         string // the theme the window shows now
 }
 
 // NewApp wires the parts together; nothing runs before startup.
 func NewApp(core *engine.Engine, paths appdir.Paths, startHidden bool) *App {
-	app := &App{core: core, paths: paths, startHidden: startHidden}
+	app := &App{core: core, paths: paths, startHidden: startHidden, signInAnswers: make(chan string)}
 	app.tray = newTray(app)
 	return app
 }
@@ -149,11 +152,13 @@ func (a *App) onSessionEvent(event sessionEvent) {
 	switch event {
 	case sessionLocked:
 		if !snap.Locked {
+			a.CancelSignIn()           // a sign-in waiting for the browser would hold up locking
 			_ = a.core.Lock(a.coreCtx) // problems show up in the window
 		}
 	case sessionEnding:
 		ctx, cancel := context.WithTimeout(a.coreCtx, sessionEndTimeout)
 		defer cancel()
+		a.CancelSignIn()
 		_ = a.core.LockNow(ctx)
 	case sessionUnlocked:
 		a.askForPasswordIfWanted()
@@ -175,6 +180,7 @@ func (a *App) Unlock(password string) error {
 
 // Lock locks CryptBridge now.
 func (a *App) Lock() error {
+	a.CancelSignIn() // a sign-in waiting for the browser would hold up locking
 	return a.core.Lock(a.coreCtx)
 }
 
@@ -203,16 +209,62 @@ func (a *App) ResetApp() error {
 	return a.core.Reset(a.coreCtx)
 }
 
-// SignIn opens the pCloud sign-in in the browser and waits for it. The link
-// is also sent to the window ("signin-link") in case the browser does not
-// open by itself.
-func (a *App) SignIn() error {
+// Services lists the cloud services an account can be added for.
+func (a *App) Services() []cloud.Service {
+	return a.core.Services()
+}
+
+// AddAccount signs in to a cloud service in the browser and adds the
+// account; it returns the new account's ID. See signInContext for what the
+// window gets meanwhile.
+func (a *App) AddAccount(req engine.NewAccount) (string, error) {
+	ctx, done := a.signInContext()
+	defer done()
+	return a.core.AddAccount(ctx, req, a.showSignInLink, a.askInWindow)
+}
+
+// SignIn signs in to an existing account again.
+func (a *App) SignIn(id string) error {
+	ctx, done := a.signInContext()
+	defer done()
+	return a.core.SignIn(ctx, id, a.showSignInLink, a.askInWindow)
+}
+
+// signInContext starts a sign-in that CancelSignIn can stop. While it runs,
+// the window gets the sign-in link ("signin-link") in case the browser does
+// not open by itself, and any question rclone asks ("signin-question"),
+// to be answered with AnswerSignInQuestion.
+func (a *App) signInContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(a.coreCtx)
 	a.signInMu.Lock()
 	a.stopSignIn = cancel
 	a.signInMu.Unlock()
-	defer cancel()
-	return a.core.SignIn(ctx, func(link string) { runtime.EventsEmit(a.ctx, "signin-link", link) })
+	return ctx, cancel
+}
+
+func (a *App) showSignInLink(link string) {
+	runtime.EventsEmit(a.ctx, "signin-link", link)
+}
+
+// askInWindow shows a question of rclone in the window and waits for the
+// answer, or for the sign-in to be cancelled.
+func (a *App) askInWindow(ctx context.Context, q cloud.Question) (string, error) {
+	runtime.EventsEmit(a.ctx, "signin-question", q)
+	select {
+	case answer := <-a.signInAnswers:
+		return answer, nil
+	case <-ctx.Done():
+		return "", errors.New("the sign-in was cancelled")
+	}
+}
+
+// AnswerSignInQuestion answers the question the window shows. An answer
+// while no question waits is dropped: the sign-in has ended meanwhile.
+func (a *App) AnswerSignInQuestion(answer string) {
+	select {
+	case a.signInAnswers <- answer:
+	default:
+	}
 }
 
 // CancelSignIn stops a running sign-in.
@@ -224,20 +276,26 @@ func (a *App) CancelSignIn() {
 	}
 }
 
-// SignOut forgets the pCloud sign-in.
-func (a *App) SignOut() error {
-	return a.core.SignOut(a.coreCtx)
+// SignOut forgets the sign-in of an account.
+func (a *App) SignOut(id string) error {
+	return a.core.SignOut(a.coreCtx, id)
 }
 
-// SetPCloudApp stores the codes of the user's own pCloud app (both empty:
-// rclone's built-in app again). It takes effect with the next sign-in.
-func (a *App) SetPCloudApp(clientID, clientSecret string) error {
-	return a.core.SetPCloudApp(clientID, clientSecret)
+// SetAccountApp stores the codes of the user's own app for an account (both
+// empty: rclone's app again, where allowed). It takes effect with the next
+// sign-in.
+func (a *App) SetAccountApp(id, clientID, clientSecret string) error {
+	return a.core.SetAccountApp(id, clientID, clientSecret)
 }
 
-// PCloudRedirectURL is the address an own pCloud app must allow.
-func (a *App) PCloudRedirectURL() string {
-	return pcloud.RedirectURL
+// RenameAccount changes the name an account is shown with.
+func (a *App) RenameAccount(id, name string) error {
+	return a.core.RenameAccount(id, name)
+}
+
+// RemoveAccount makes CryptBridge forget an account without vaults.
+func (a *App) RemoveAccount(id string) error {
+	return a.core.RemoveAccount(a.coreCtx, id)
 }
 
 // NewPassword returns a strong random password.
@@ -250,15 +308,15 @@ func (a *App) DefaultVault(path string) vault.Config {
 	return vault.NewDefault(path)
 }
 
-// FindVaults scans pCloud for existing vaults.
-func (a *App) FindVaults() ([]vault.Candidate, error) {
-	return a.core.FindVaults(a.coreCtx)
+// FindVaults scans a cloud account for existing vaults.
+func (a *App) FindVaults(accountID string) ([]vault.Candidate, error) {
+	return a.core.FindVaults(a.coreCtx, accountID)
 }
 
 // InspectFolder looks into a folder while the user chooses where a vault
-// is (kind "pcloud" or "local").
-func (a *App) InspectFolder(kind, path string) (vault.Folder, error) {
-	return a.core.InspectFolder(a.coreCtx, kind, path)
+// is (kind "cloud" with an account, or "local").
+func (a *App) InspectFolder(kind, accountID, path string) (vault.Folder, error) {
+	return a.core.InspectFolder(a.coreCtx, kind, accountID, path)
 }
 
 // ChooseVaultFolder lets the user pick a folder of this PC for a vault.
@@ -417,11 +475,13 @@ func (a *App) OpenWinFspDownload() {
 func (a *App) OpenURL(url string) error {
 	for _, allowed := range []string{
 		"https://github.com/burnersen/CryptBridge",
-		"https://docs.pcloud.com/my_apps/", // where users request their own pCloud app
+		"https://docs.pcloud.com/my_apps/",        // where users request their own pCloud app
+		"https://console.cloud.google.com/",       // where users set up their own Google app
+		"https://www.dropbox.com/developers/apps", // where users set up their own Dropbox app
 		"https://winfsp.dev/",
 		"https://rclone.org/",
 		"https://www.gnu.org/licenses/",
-		"http://127.0.0.1:", // the pCloud sign-in link printed by rclone
+		"http://127.0.0.1:", // the sign-in link printed by rclone
 	} {
 		if strings.HasPrefix(url, allowed) {
 			runtime.BrowserOpenURL(a.ctx, url)
@@ -437,6 +497,7 @@ func (a *App) OpenURL(url string) error {
 func (a *App) Quit(force bool) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	a.CancelSignIn() // a sign-in waiting for the browser would hold up quitting
 	pending, err := pendingOf(a.core.Shutdown(ctx, force))
 	if pending > 0 {
 		return pending, nil

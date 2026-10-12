@@ -4,7 +4,7 @@
 
 // Package settings stores everything CryptBridge needs to remember. The
 // whole file is encrypted with Windows DPAPI, bound to the user's Windows
-// account: the pCloud sign-in and the vault keys never touch the disk in a
+// account: the cloud sign-ins and the vault keys never touch the disk in a
 // readable form.
 //
 // With the app lock on, the secrets are sealed once more with the user's
@@ -17,27 +17,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 
+	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
-// fileHeader marks the file format. Version 2 holds a list of vaults;
-// version 1 (CryptBridge 0.1 to 0.3) held exactly one. The header changed so
-// that an older CryptBridge refuses the new file instead of reading it
-// without the vault list and losing the list with its next save.
-var (
-	fileHeader   = []byte("CryptBridge-Settings-2\n")
-	legacyHeader = []byte("CryptBridge-Settings-1\n")
-)
+// fileHeader marks the file format. Version 3 holds a list of cloud
+// accounts; version 2 (CryptBridge 0.4 to 0.6) held one pCloud account and a
+// list of vaults; version 1 (CryptBridge 0.1 to 0.3) held exactly one vault.
+// The header changes with the format so that an older CryptBridge refuses
+// the new file instead of reading it without the new parts and losing them
+// with its next save.
+var fileHeader = []byte("CryptBridge-Settings-3\n")
 
-// LegacyBackupSuffix is added to the name of the settings file for the copy
-// of a version 1 file that is kept when it is converted.
-const LegacyBackupSuffix = ".v1-backup"
+// olderFormats are the headers of earlier formats, which are converted when
+// read, and the suffix of the copy kept when such a file is replaced.
+var olderFormats = []struct {
+	header       []byte
+	backupSuffix string
+}{
+	{[]byte("CryptBridge-Settings-1\n"), ".v1-backup"},
+	{[]byte("CryptBridge-Settings-2\n"), ".v2-backup"},
+}
+
+// version1Header marks the format of CryptBridge 0.1 to 0.3.
+var version1Header = olderFormats[0].header
 
 // Default sizes of the drive cache.
 const (
@@ -57,9 +68,19 @@ const (
 
 // Where a vault lives.
 const (
-	KindPCloud = "pcloud" // a folder in the pCloud account
-	KindLocal  = "local"  // a folder on this PC or on a drive plugged into it
+	KindCloud = "cloud" // a folder in one of the cloud accounts
+	KindLocal = "local" // a folder on this PC or on a drive plugged into it
 )
+
+// kindPCloud marked the vaults in the one pCloud account of version 2 files.
+const kindPCloud = "pcloud"
+
+// MigratedAccountID is the ID of the pCloud account taken over from a
+// version 1 or 2 file. Its rclone remote keeps the name it had ("cbpcloud").
+const MigratedAccountID = "pcloud"
+
+// migratedAccountName is how the taken-over pCloud account is called.
+const migratedAccountName = "pCloud"
 
 // Window themes.
 const (
@@ -103,12 +124,13 @@ type FolderMark struct {
 
 // Vault is one vault and its drive.
 type Vault struct {
-	ID          string       `json:"id"`               // never changes; names the vault in rclone and its cache folder
-	Name        string       `json:"name"`             // shown in the window and in Explorer
-	Kind        string       `json:"kind"`             // KindPCloud or KindLocal
-	Letter      string       `json:"letter"`           // drive letter without colon
-	AutoConnect bool         `json:"autoConnect"`      // connect when CryptBridge starts (local: also when the folder appears)
-	Folder      *FolderMark  `json:"folder,omitempty"` // local: the folder the drive was last connected to
+	ID          string       `json:"id"`                // never changes; names the vault in rclone and its cache folder
+	Name        string       `json:"name"`              // shown in the window and in Explorer
+	Kind        string       `json:"kind"`              // KindCloud or KindLocal
+	Account     string       `json:"account,omitempty"` // KindCloud: ID of the account that holds the folder
+	Letter      string       `json:"letter"`            // drive letter without colon
+	AutoConnect bool         `json:"autoConnect"`       // connect when CryptBridge starts (local: also when the folder appears)
+	Folder      *FolderMark  `json:"folder,omitempty"`  // local: the folder the drive was last connected to
 	LastSize    *SizeRecord  `json:"lastSize,omitempty"`
 	Config      vault.Config `json:"config"` // location and keys: protected by the app lock
 }
@@ -116,6 +138,22 @@ type Vault struct {
 // HasKeys reports whether the location and keys of the vault are known.
 func (v Vault) HasKeys() bool {
 	return v.Config.Password != "" && v.Config.NormalisedPath() != ""
+}
+
+// Account is a sign-in at a cloud service. There can be several accounts of
+// the same service.
+type Account struct {
+	ID      string `json:"id"`      // never changes; names the account in rclone
+	Service string `json:"service"` // rclone's backend name, e.g. cloud.Drive
+	Name    string `json:"name"`    // shown in the window
+	// The secrets, protected by the app lock:
+	App    cloud.App         `json:"app"`              // the user's own app; empty: rclone's
+	Remote map[string]string `json:"remote,omitempty"` // rclone's settings of the account, the token among them; empty while signed out
+}
+
+// SignedIn reports whether a sign-in is stored for the account.
+func (a Account) SignedIn() bool {
+	return a.Remote["token"] != ""
 }
 
 // LANAccess is one way for the other devices of the home network into the
@@ -199,21 +237,23 @@ func (old lanVersion1) convert() LAN {
 
 // Settings is everything CryptBridge remembers.
 type Settings struct {
-	PCloud        pcloud.Account `json:"pcloud"`
-	PCloudApp     pcloud.App     `json:"pcloudApp"`   // empty: rclone's built-in app
-	SignInAppID   string         `json:"signInAppId"` // client ID the sign-in was made with; empty: rclone's app
-	Vaults        []Vault        `json:"vaults"`
-	Cache         Cache          `json:"cache"`
-	AutoReconnect bool           `json:"autoReconnect"` // reconnect after a drive was lost unexpectedly
-	Theme         string         `json:"theme"`         // ThemeAuto, ThemeLight or ThemeDark
-	AppLock       bool           `json:"appLock"`       // the secrets are sealed with the app password
-	LockOffered   bool           `json:"lockOffered"`   // the app password was offered once (set up or declined)
-	LAN           LAN            `json:"lan"`
+	Accounts      []Account `json:"accounts"`
+	Vaults        []Vault   `json:"vaults"`
+	Cache         Cache     `json:"cache"`
+	AutoReconnect bool      `json:"autoReconnect"` // reconnect after a drive was lost unexpectedly
+	Theme         string    `json:"theme"`         // ThemeAuto, ThemeLight or ThemeDark
+	AppLock       bool      `json:"appLock"`       // the secrets are sealed with the app password
+	LockOffered   bool      `json:"lockOffered"`   // the app password was offered once (set up or declined)
+	LAN           LAN       `json:"lan"`
 }
 
-// Clone returns a copy that can be changed without changing s: the vault
-// list is copied, not shared.
+// Clone returns a copy that can be changed without changing s: the account
+// and vault lists are copied, not shared.
 func (s Settings) Clone() Settings {
+	s.Accounts = slices.Clone(s.Accounts)
+	for i := range s.Accounts {
+		s.Accounts[i].Remote = maps.Clone(s.Accounts[i].Remote)
+	}
 	s.Vaults = slices.Clone(s.Vaults)
 	for i := range s.Vaults {
 		if record := s.Vaults[i].LastSize; record != nil {
@@ -238,19 +278,38 @@ func (s Settings) Vault(id string) (Vault, bool) {
 	return Vault{}, false
 }
 
+// Account returns the account with the given ID.
+func (s Settings) Account(id string) (Account, bool) {
+	for _, a := range s.Accounts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Account{}, false
+}
+
 // secrets are the parts of the settings that the app password protects.
-// Everything else (vault names and letters, behaviour) stays readable, so
-// that a locked CryptBridge can still show its window and tidy up.
+// Everything else (account and vault names, letters, behaviour) stays
+// readable, so that a locked CryptBridge can still show its window and tidy
+// up.
 type secrets struct {
-	PCloud      pcloud.Account          `json:"pcloud"`
-	PCloudApp   pcloud.App              `json:"pcloudApp"`
-	SignInAppID string                  `json:"signInAppId"`
-	VaultKeys   map[string]vault.Config `json:"vaultKeys"`       // by vault ID
-	Vault       *vault.Config           `json:"vault,omitempty"` // only in version 1 files
+	Accounts  map[string]accountSecrets `json:"accounts"`        // by account ID
+	VaultKeys map[string]vault.Config   `json:"vaultKeys"`       // by vault ID
+	Vault     *vault.Config             `json:"vault,omitempty"` // only in version 1 files
 	// The passwords of the LAN accesses: they open the drives from the network.
 	LANStreamingPassword string `json:"lanStreamingPassword"`
 	LANFullPassword      string `json:"lanFullPassword"`
 	LANPassword          string `json:"lanPassword,omitempty"` // only from CryptBridge 0.5: its one access
+	// The one pCloud sign-in of version 1 and 2 files.
+	PCloud      *pcloud.Account `json:"pcloud,omitempty"`
+	PCloudApp   *cloud.App      `json:"pcloudApp,omitempty"`
+	SignInAppID string          `json:"signInAppId,omitempty"`
+}
+
+// accountSecrets are the secrets of one account.
+type accountSecrets struct {
+	App    cloud.App         `json:"app"`
+	Remote map[string]string `json:"remote,omitempty"`
 }
 
 // upgradeLAN gives the password of CryptBridge 0.5's one access to the access
@@ -273,6 +332,12 @@ type fileFormat struct {
 	Settings
 	Sealed *passlock.Sealed `json:"sealed,omitempty"`
 
+	// The one pCloud sign-in of version 1 and 2 files; convertVersion2 moves
+	// it into the account list. Empty in the current format.
+	PCloud      *pcloud.Account `json:"pcloud,omitempty"`
+	PCloudApp   *cloud.App      `json:"pcloudApp,omitempty"`
+	SignInAppID string          `json:"signInAppId,omitempty"` // client ID the sign-in was made with; empty: rclone's app
+
 	// lanVersion1Full: the file came from CryptBridge 0.5, and its one LAN
 	// access allowed changes. Its sealed password belongs to the full access.
 	lanVersion1Full bool
@@ -282,13 +347,15 @@ type fileFormat struct {
 // derived from the app password.
 var ErrNeedsKey = errors.New("the settings are locked with the app password")
 
-// WithoutSecrets returns the settings with sign-in, vault locations, vault
-// keys and the LAN passwords removed: what a locked CryptBridge knows.
+// WithoutSecrets returns the settings with sign-ins, own apps, vault
+// locations, vault keys and the LAN passwords removed: what a locked
+// CryptBridge knows.
 func (s Settings) WithoutSecrets() Settings {
 	s = s.Clone()
-	s.PCloud = pcloud.Account{}
-	s.PCloudApp = pcloud.App{}
-	s.SignInAppID = ""
+	for i := range s.Accounts {
+		s.Accounts[i].App = cloud.App{}
+		s.Accounts[i].Remote = nil
+	}
 	for i := range s.Vaults {
 		s.Vaults[i].Config = vault.Config{}
 	}
@@ -298,14 +365,16 @@ func (s Settings) WithoutSecrets() Settings {
 }
 
 func (s Settings) secrets() secrets {
+	accounts := make(map[string]accountSecrets, len(s.Accounts))
+	for _, a := range s.Accounts {
+		accounts[a.ID] = accountSecrets{App: a.App, Remote: a.Remote}
+	}
 	keys := make(map[string]vault.Config, len(s.Vaults))
 	for _, v := range s.Vaults {
 		keys[v.ID] = v.Config
 	}
 	return secrets{
-		PCloud:               s.PCloud,
-		PCloudApp:            s.PCloudApp,
-		SignInAppID:          s.SignInAppID,
+		Accounts:             accounts,
 		VaultKeys:            keys,
 		LANStreamingPassword: s.LAN.Streaming.Password,
 		LANFullPassword:      s.LAN.Full.Password,
@@ -315,15 +384,14 @@ func (s Settings) secrets() secrets {
 // withSecrets puts the secrets back. A vault whose keys are not among them
 // is dropped: without location and keys it could never be opened, and the
 // placeholder for the vault of a locked version 1 file may stand for no
-// vault at all.
+// vault at all. Likewise, the placeholder for the pCloud account of a locked
+// version 1 or 2 file is dropped if there was no such account.
 func (s Settings) withSecrets(sec secrets) Settings {
 	s = s.Clone()
-	s.PCloud = sec.PCloud
-	s.PCloudApp = sec.PCloudApp
-	s.SignInAppID = sec.SignInAppID
 	s.LAN.Streaming.Password = sec.LANStreamingPassword
 	s.LAN.Full.Password = sec.LANFullPassword
-	kept := s.Vaults[:0]
+
+	keptVaults := s.Vaults[:0]
 	for _, v := range s.Vaults {
 		keys, found := sec.VaultKeys[v.ID]
 		if !found && v.ID == MigratedVaultID && sec.Vault != nil {
@@ -334,11 +402,54 @@ func (s Settings) withSecrets(sec secrets) Settings {
 		}
 		v.Config = keys
 		if v.HasKeys() {
-			kept = append(kept, v)
+			keptVaults = append(keptVaults, v)
 		}
 	}
-	s.Vaults = kept
+	s.Vaults = keptVaults
+
+	keptAccounts := s.Accounts[:0]
+	for _, a := range s.Accounts {
+		own, found := sec.Accounts[a.ID]
+		if !found && a.ID == MigratedAccountID {
+			own.App, own.Remote = pcloudSecrets(sec.PCloud, sec.PCloudApp, sec.SignInAppID)
+			found = own.Remote != nil || own.App.IsSet() || s.usesAccount(a.ID)
+		}
+		if !found {
+			continue
+		}
+		a.App, a.Remote = own.App, own.Remote
+		keptAccounts = append(keptAccounts, a)
+	}
+	s.Accounts = keptAccounts
 	return s
+}
+
+// usesAccount reports whether a vault lies in the account with the given ID.
+func (s Settings) usesAccount(id string) bool {
+	return slices.ContainsFunc(s.Vaults, func(v Vault) bool { return v.Kind == KindCloud && v.Account == id })
+}
+
+// pcloudSecrets turns the one pCloud sign-in of version 1 and 2 files into
+// the secrets of an account: rclone's settings of the remote as CryptBridge
+// 0.6 registered it (hostname and token), and the own app. The client ID
+// the sign-in was made with is kept with it, as rclone keeps it for the
+// other services.
+func pcloudSecrets(account *pcloud.Account, app *cloud.App, signInAppID string) (cloud.App, map[string]string) {
+	var own cloud.App
+	if app != nil {
+		own = *app
+	}
+	if account == nil || account.Token == "" {
+		return own, nil
+	}
+	remote := map[string]string{"type": cloud.PCloud, "hostname": account.Hostname, "token": account.Token}
+	if signInAppID != "" {
+		remote["client_id"] = signInAppID
+		if signInAppID == own.ClientID {
+			remote["client_secret"] = own.ClientSecret
+		}
+	}
+	return own, remote
 }
 
 // Defaults returns the settings of a fresh installation.
@@ -353,11 +464,6 @@ func Defaults(cacheDir string) Settings {
 		Theme:         ThemeAuto,
 		LAN:           defaultLAN(),
 	}
-}
-
-// SignedIn reports whether a pCloud sign-in is stored.
-func (s Settings) SignedIn() bool {
-	return s.PCloud.Token != "" && s.PCloud.Hostname != ""
 }
 
 // Load reads the settings. A missing file is not an error: it means a fresh
@@ -401,28 +507,41 @@ func Unlock(path, defaultCacheDir, password string) (Settings, *passlock.Key, er
 	return stored.Settings.withSecrets(sec), key, nil
 }
 
-// IsLegacy reports whether the file at path is a version 1 file, which is
+// IsLegacy reports whether the file at path has an older format, which is
 // converted the next time the settings are saved.
 func IsLegacy(path string) bool {
-	head := make([]byte, len(legacyHeader))
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	n, _ := f.Read(head)
-	return bytes.Equal(head[:n], legacyHeader)
+	_, found := olderFormatOf(path)
+	return found
 }
 
-// RemoveLegacyBackup deletes the copy of a version 1 file. It holds the
-// secrets protected as they were back then, so it goes when their
-// protection changes (app password set, changed or reset).
-func RemoveLegacyBackup(path string) error {
-	err := os.Remove(path + LegacyBackupSuffix)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+// olderFormatOf returns the index in olderFormats of the file's format.
+func olderFormatOf(path string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
 	}
-	return err
+	defer f.Close()
+	head := make([]byte, len(fileHeader))
+	n, _ := io.ReadFull(f, head)
+	for i, format := range olderFormats {
+		if bytes.Equal(head[:n], format.header) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// RemoveLegacyBackups deletes the copies of files in older formats. They
+// hold the secrets protected as they were back then, so they go when their
+// protection changes (app password set, changed or reset).
+func RemoveLegacyBackups(path string) error {
+	for _, format := range olderFormats {
+		backup := path + format.backupSuffix
+		if err := os.Remove(backup); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete %s: %w", backup, err)
+		}
+	}
+	return nil
 }
 
 // SetAside renames a settings file that could not be read, so that setting
@@ -445,7 +564,8 @@ func SetAside(path string) (string, error) {
 // maxSetAside limits the number of unreadable settings files kept.
 const maxSetAside = 20
 
-// readFile reads and decrypts the DPAPI layer, converting a version 1 file.
+// readFile reads and decrypts the DPAPI layer, converting files of older
+// formats.
 func readFile(path, defaultCacheDir string) (fileFormat, error) {
 	stored := fileFormat{Settings: Defaults(defaultCacheDir)}
 	data, err := os.ReadFile(path)
@@ -455,10 +575,8 @@ func readFile(path, defaultCacheDir string) (fileFormat, error) {
 	if err != nil {
 		return stored, fmt.Errorf("read settings: %w", err)
 	}
-	header := fileHeader
-	if bytes.HasPrefix(data, legacyHeader) {
-		header = legacyHeader
-	} else if !bytes.HasPrefix(data, fileHeader) {
+	header, known := headerOf(data)
+	if !known {
 		return stored, errors.New("settings file has an unknown format (was it written by a newer CryptBridge?)")
 	}
 	plain, err := unprotect(data[len(header):])
@@ -466,29 +584,66 @@ func readFile(path, defaultCacheDir string) (fileFormat, error) {
 		return stored, fmt.Errorf("decrypt settings (was the file copied from another Windows account?): %w", err)
 	}
 	defer clear(plain)
-	if bytes.Equal(header, legacyHeader) {
-		converted, err := fromVersion1(plain, defaultCacheDir)
-		if err != nil {
-			return fileFormat{Settings: Defaults(defaultCacheDir)}, fmt.Errorf("read settings: %w", err)
-		}
-		return converted, nil
+	if bytes.Equal(header, version1Header) {
+		stored, err = fromVersion1(plain, defaultCacheDir)
+	} else {
+		err = json.Unmarshal(plain, &stored)
 	}
-	if err := json.Unmarshal(plain, &stored); err != nil {
+	if err != nil {
 		return fileFormat{Settings: Defaults(defaultCacheDir)}, fmt.Errorf("read settings: %w", err)
 	}
 	if old, found := lanVersion1Of(plain); found {
 		stored.LAN = old.convert()
 		stored.lanVersion1Full = old.AllowChanges
 	}
+	if !bytes.Equal(header, fileHeader) {
+		stored.convertVersion2()
+	}
 	return stored, nil
+}
+
+// headerOf returns the header the file content starts with, if it is one of
+// the known formats.
+func headerOf(data []byte) ([]byte, bool) {
+	if bytes.HasPrefix(data, fileHeader) {
+		return fileHeader, true
+	}
+	for _, format := range olderFormats {
+		if bytes.HasPrefix(data, format.header) {
+			return format.header, true
+		}
+	}
+	return nil, false
+}
+
+// convertVersion2 turns the one pCloud account of version 1 and 2 files
+// into the first entry of the account list, and the pCloud vaults into
+// vaults of that account. With the app lock on, the sign-in is still
+// sealed: the account is listed without it, and Unlock fills it in, or
+// drops the account if there was none.
+func (f *fileFormat) convertVersion2() {
+	usesPCloud := false
+	for i := range f.Vaults {
+		if f.Vaults[i].Kind == kindPCloud {
+			f.Vaults[i].Kind = KindCloud
+			f.Vaults[i].Account = MigratedAccountID
+			usesPCloud = true
+		}
+	}
+	account := Account{ID: MigratedAccountID, Service: cloud.PCloud, Name: migratedAccountName}
+	account.App, account.Remote = pcloudSecrets(f.PCloud, f.PCloudApp, f.SignInAppID)
+	if usesPCloud || f.AppLock || account.SignedIn() || account.App.IsSet() {
+		f.Accounts = append([]Account{account}, f.Accounts...)
+	}
+	f.PCloud, f.PCloudApp, f.SignInAppID = nil, nil, ""
 }
 
 // fileVersion1 is the content of a version 1 file (CryptBridge 0.1 to 0.3).
 type fileVersion1 struct {
-	PCloud      pcloud.Account `json:"pcloud"`
-	PCloudApp   pcloud.App     `json:"pcloudApp"`
-	SignInAppID string         `json:"signInAppId"`
-	Vault       vault.Config   `json:"vault"`
+	PCloud      *pcloud.Account `json:"pcloud"`
+	PCloudApp   *cloud.App      `json:"pcloudApp"`
+	SignInAppID string          `json:"signInAppId"`
+	Vault       vault.Config    `json:"vault"`
 	Drive       struct {
 		Letter            string `json:"letter"`
 		CacheDir          string `json:"cacheDir"`
@@ -502,10 +657,11 @@ type fileVersion1 struct {
 	Sealed        *passlock.Sealed `json:"sealed,omitempty"`
 }
 
-// fromVersion1 converts a version 1 file: its single vault becomes the first
-// vault of the list, with the drive letter and "connect on start" it had.
-// With the app lock on, the vault keys are still sealed; the vault is listed
-// without them, and Unlock fills them in from the sealed part.
+// fromVersion1 converts a version 1 file into the content of a version 2
+// file: its single vault becomes the first vault of the list, with the drive
+// letter and "connect on start" it had. With the app lock on, the vault keys
+// are still sealed; the vault is listed without them, and Unlock fills them
+// in from the sealed part.
 func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 	defaults := Defaults(defaultCacheDir)
 	var old fileVersion1
@@ -520,9 +676,6 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 	}
 
 	converted := Settings{
-		PCloud:      old.PCloud,
-		PCloudApp:   old.PCloudApp,
-		SignInAppID: old.SignInAppID,
 		Cache: Cache{
 			Dir:          old.Drive.CacheDir,
 			MaxSize:      old.Drive.CacheMaxSize,
@@ -537,7 +690,7 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 	migrated := Vault{
 		ID:          MigratedVaultID,
 		Name:        migratedVaultName,
-		Kind:        KindPCloud,
+		Kind:        kindPCloud,
 		Letter:      old.Drive.Letter,
 		AutoConnect: old.AutoConnect,
 		Config:      old.Vault,
@@ -545,13 +698,19 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 	if migrated.HasKeys() || (old.AppLock && old.Sealed != nil) {
 		converted.Vaults = []Vault{migrated}
 	}
-	return fileFormat{Settings: converted, Sealed: old.Sealed}, nil
+	return fileFormat{
+		Settings:    converted,
+		Sealed:      old.Sealed,
+		PCloud:      old.PCloud,
+		PCloudApp:   old.PCloudApp,
+		SignInAppID: old.SignInAppID,
+	}, nil
 }
 
 // Save encrypts and writes the settings. With the app lock on, key must be
 // the key from Unlock or passlock.NewKey: the secrets are sealed with it and
 // never written readable. The old file is replaced only after the new one is
-// completely on disk; a version 1 file is kept as a backup first.
+// completely on disk; a file of an older format is kept as a backup first.
 func Save(path string, s Settings, key *passlock.Key) error {
 	stored := fileFormat{Settings: s}
 	if s.AppLock {
@@ -594,18 +753,19 @@ func Save(path string, s Settings, key *passlock.Key) error {
 	return nil
 }
 
-// backUpLegacyFile copies a version 1 file before it is replaced, once: if
-// the conversion ever lost a vault, its keys are still in the copy. An
-// existing copy is never overwritten.
+// backUpLegacyFile copies a file of an older format before it is replaced,
+// once: if the conversion ever lost an account or a vault, its secrets are
+// still in the copy. An existing copy is never overwritten.
 func backUpLegacyFile(path string) error {
-	if !IsLegacy(path) {
+	format, found := olderFormatOf(path)
+	if !found {
 		return nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("back up the old settings: %w", err)
 	}
-	backup, err := os.OpenFile(path+LegacyBackupSuffix, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	backup, err := os.OpenFile(path+olderFormats[format].backupSuffix, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}

@@ -14,10 +14,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/drive"
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
@@ -79,138 +77,28 @@ func (e *Engine) Fingerprint(id string) string {
 	return e.runtimeLocked(id).fingerprint
 }
 
-// SignIn opens the pCloud sign-in in the browser (through the user's own
-// pCloud app, if one is set), finds the account's region and stores the
-// sign-in. The pCloud drives must be disconnected; local drives may stay.
-func (e *Engine) SignIn(ctx context.Context, onLink func(string)) error {
+// FindVaults scans a cloud account for existing vaults.
+func (e *Engine) FindVaults(ctx context.Context, accountID string) ([]vault.Candidate, error) {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
-	client, err := e.pcloudIdleClientLocked(ctx)
-	if err != nil {
-		return err
-	}
-
-	e.mu.Lock()
-	exe := e.rclone.Path
-	app := e.settings.PCloudApp
-	e.mu.Unlock()
-	token, err := pcloud.Authorize(ctx, exe, app, onLink)
-	if err != nil {
-		return err
-	}
-	host, err := pcloud.FindRegion(ctx, client, token)
-	if err != nil {
-		return err
-	}
-	account := pcloud.Account{Hostname: host, Token: token}
-	if err := pcloud.Configure(ctx, client, pcloudRemote, account); err != nil {
-		return err
-	}
-
-	updated := e.currentSettings()
-	updated.PCloud = account
-	updated.SignInAppID = app.ClientID
-	if err := e.saveSettings(updated); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	e.settings = updated
-	e.signInProblem = "" // FindRegion has just seen pCloud accept it
-	e.mu.Unlock()
-	e.lastUsage = time.Time{} // ask pCloud for the free space right away
-
-	// The pCloud vaults sit on top of the account: register them again so
-	// that they use the new sign-in.
-	for _, v := range updated.Vaults {
-		if v.Kind == settings.KindPCloud && v.HasKeys() {
-			if err := configureVault(ctx, client, v); err != nil {
-				return fmt.Errorf("vault %q: %w", v.Name, err)
-			}
-			e.refreshFingerprint(ctx, client, updated, v)
-		}
-	}
-	e.settleLocked(ctx, false)
-	return nil
-}
-
-// SignOut forgets the pCloud sign-in. The vault keys are kept.
-func (e *Engine) SignOut(ctx context.Context) error {
-	e.actionMu.Lock()
-	defer e.actionMu.Unlock()
-	client, err := e.pcloudIdleClientLocked(ctx)
-	if err != nil {
-		return err
-	}
-	updated := e.currentSettings()
-	for _, v := range updated.Vaults {
-		if v.Kind == settings.KindPCloud {
-			_ = vault.Remove(ctx, client, remoteName(v.ID))
-		}
-	}
-	_ = vault.Remove(ctx, client, pcloudRemote)
-
-	updated.PCloud = pcloud.Account{}
-	updated.SignInAppID = ""
-	if err := e.saveSettings(updated); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	e.settings = updated
-	e.usage = nil
-	e.signInProblem = ""
-	e.mu.Unlock()
-	e.settleLocked(ctx, false)
-	return nil
-}
-
-// SetPCloudApp stores the codes of the user's own pCloud app; empty codes
-// mean rclone's built-in app again. It takes effect with the next sign-in;
-// the current sign-in keeps working until then, so the drives may stay
-// connected.
-func (e *Engine) SetPCloudApp(clientID, clientSecret string) error {
-	app, err := pcloud.NewApp(clientID, clientSecret)
-	if err != nil {
-		return err
-	}
-	e.actionMu.Lock()
-	defer e.actionMu.Unlock()
-	if e.isLocked() {
-		return errLocked
-	}
-	updated := e.currentSettings()
-	updated.PCloudApp = app
-	if err := e.saveSettings(updated); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	e.settings = updated
-	e.mu.Unlock()
-	e.publish()
-	return nil
-}
-
-// FindVaults scans pCloud for existing vaults.
-func (e *Engine) FindVaults(ctx context.Context) ([]vault.Candidate, error) {
-	e.actionMu.Lock()
-	defer e.actionMu.Unlock()
-	client, err := e.signedInClientLocked(ctx)
+	client, err := e.signedInClientLocked(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	candidates, err := vault.Detect(ctx, client, pcloudRemote+":")
-	return candidates, e.explain(err)
+	candidates, err := vault.Detect(ctx, client, remoteName(accountID)+":")
+	return candidates, e.explain(settings.Vault{Kind: settings.KindCloud, Account: accountID}, err)
 }
 
 // InspectFolder looks into a folder while the user chooses where a vault
-// is: a folder in pCloud (kind pcloud, "" is the top level) or a folder on
-// this PC. Only names are read.
-func (e *Engine) InspectFolder(ctx context.Context, kind, path string) (vault.Folder, error) {
+// is: a folder in a cloud account (kind cloud, "" is the top level) or a
+// folder on this PC (kind local, account ""). Only names are read.
+func (e *Engine) InspectFolder(ctx context.Context, kind, accountID, path string) (vault.Folder, error) {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 	var place settings.Vault
 	switch kind {
-	case settings.KindPCloud:
-		place = settings.Vault{Kind: kind, Config: vault.Config{Path: path}}
+	case settings.KindCloud:
+		place = settings.Vault{Kind: kind, Account: accountID, Config: vault.Config{Path: path}}
 	case settings.KindLocal:
 		clean, err := e.cleanLocalFolderLocked(path)
 		if err != nil {
@@ -220,14 +108,14 @@ func (e *Engine) InspectFolder(ctx context.Context, kind, path string) (vault.Fo
 	default:
 		return vault.Folder{}, fmt.Errorf("unknown kind of vault %q", kind)
 	}
-	client, err := e.clientForKindLocked(ctx, kind)
+	client, err := e.clientForPlaceLocked(ctx, place)
 	if err != nil {
 		return vault.Folder{}, err
 	}
 	base, cfg := placeOf(place)
 	folder, err := vault.Inspect(ctx, client, base, cfg.NormalisedPath())
 	folder.Path = path
-	return folder, e.explain(err)
+	return folder, e.explain(place, err)
 }
 
 // VaultCheck is the result of testing keys against a folder.
@@ -240,6 +128,7 @@ type VaultCheck struct {
 // NewVault is what the window sends to check or add a vault.
 type NewVault struct {
 	Kind               string       `json:"kind"`
+	Account            string       `json:"account"` // kind cloud: the account that holds the folder
 	Name               string       `json:"name"`
 	Letter             string       `json:"letter"`
 	AutoConnect        bool         `json:"autoConnect"`
@@ -256,12 +145,12 @@ func (e *Engine) CheckVault(ctx context.Context, req NewVault) (VaultCheck, erro
 	if err != nil {
 		return VaultCheck{}, err
 	}
-	client, err := e.clientForKindLocked(ctx, candidate.Kind)
+	client, err := e.clientForPlaceLocked(ctx, candidate)
 	if err != nil {
 		return VaultCheck{}, err
 	}
 	check, err := checkVault(ctx, client, candidate)
-	return check, e.explain(err)
+	return check, e.explain(candidate, err)
 }
 
 // AddVault adds a vault after checking it. With Create, the folder must be
@@ -290,13 +179,13 @@ func (e *Engine) AddVault(ctx context.Context, req NewVault) (VaultCheck, error)
 	}
 	candidate.AutoConnect = req.AutoConnect
 
-	client, err := e.clientForKindLocked(ctx, candidate.Kind)
+	client, err := e.clientForPlaceLocked(ctx, candidate)
 	if err != nil {
 		return VaultCheck{}, err
 	}
 	check, err := checkVault(ctx, client, candidate)
 	if err != nil {
-		return check, e.explain(err)
+		return check, e.explain(candidate, err)
 	}
 	if err := acceptVerdict(check.Verification.Verdict, req.Create, req.AcceptUnverifiable); err != nil {
 		return check, err
@@ -309,7 +198,7 @@ func (e *Engine) AddVault(ctx context.Context, req NewVault) (VaultCheck, error)
 	if check.Verification.Verdict != vault.VerdictUnverifiable && !check.Verification.HasCheckFile {
 		if err := vault.WriteCheckFile(ctx, client, remoteOf(candidate)); err != nil {
 			_ = vault.Remove(ctx, client, remoteName(candidate.ID))
-			return check, e.explain(err)
+			return check, e.explain(candidate, err)
 		}
 	}
 	if candidate.Kind == settings.KindLocal {
@@ -357,23 +246,33 @@ func (e *Engine) placeNewVaultLocked(req NewVault) (settings.Vault, error) {
 		return settings.Vault{}, errLocked
 	}
 	candidate := settings.Vault{Kind: req.Kind, Config: req.Config}
+	// Where upper and lower case are the same, base64 names cannot be kept:
+	// two different encrypted names could land on one file.
+	ignoresCase := ""
 	switch req.Kind {
-	case settings.KindPCloud:
+	case settings.KindCloud:
+		a, ok := e.currentSettings().Account(req.Account)
+		if !ok {
+			return settings.Vault{}, errUnknownAccount
+		}
+		candidate.Account = a.ID
 		candidate.Config.Path = candidate.Config.NormalisedPath()
+		if service := serviceOf(a); service.CaseInsensitive {
+			ignoresCase = service.Title
+		}
 	case settings.KindLocal:
 		clean, err := e.cleanLocalFolderLocked(req.Config.Path)
 		if err != nil {
 			return settings.Vault{}, err
 		}
 		candidate.Config.Path = clean
-		// Windows does not tell upper from lower case in file names, but
-		// base64 names do: two different names could land on one file.
-		if candidate.Config.FilenameEncoding == vault.EncodingBase64 {
-			return settings.Vault{}, errors.New("vaults with base64 file names cannot be kept on a Windows drive: " +
-				"Windows does not tell upper from lower case, so two encrypted names could overwrite each other")
-		}
+		ignoresCase = "Windows"
 	default:
 		return settings.Vault{}, fmt.Errorf("unknown kind of vault %q", req.Kind)
+	}
+	if ignoresCase != "" && candidate.Config.FilenameEncoding == vault.EncodingBase64 {
+		return settings.Vault{}, fmt.Errorf("vaults with base64 file names cannot be kept in %s: it does not tell "+
+			"upper from lower case, so two encrypted names could overwrite each other", ignoresCase)
 	}
 	if err := candidate.Config.Validate(); err != nil {
 		return settings.Vault{}, err
@@ -548,13 +447,6 @@ func (e *Engine) VaultSecrets(id string) (settings.Vault, error) {
 	return v, nil
 }
 
-// PCloudAccount returns the stored sign-in; used for the transfer to the server.
-func (e *Engine) PCloudAccount() pcloud.Account {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.settings.PCloud
-}
-
 // Options are the settings the user can change on the Settings page.
 type Options struct {
 	CacheDir          string `json:"cacheDir"`
@@ -636,68 +528,22 @@ func (e *Engine) anyDriveBusy() bool {
 	return false
 }
 
-// pcloudIdleClientLocked returns a running rclone while no pCloud drive is
-// connected: the sign-in under them must not change while they are in use.
-func (e *Engine) pcloudIdleClientLocked(ctx context.Context) (*rcd.Client, error) {
-	if e.isLocked() {
-		return nil, errLocked
+// clientForPlaceLocked returns a running rclone for working with a vault at
+// its place: a cloud vault needs its account signed in, a local vault not.
+func (e *Engine) clientForPlaceLocked(ctx context.Context, v settings.Vault) (*rcd.Client, error) {
+	if v.Kind == settings.KindCloud {
+		return e.signedInClientLocked(ctx, v.Account)
 	}
-	for _, v := range e.currentSettings().Vaults {
-		if v.Kind != settings.KindPCloud {
-			continue
-		}
-		e.mu.Lock()
-		rt := e.runtimeLocked(v.ID)
-		busy := rt.want || rt.status.Mounted
-		e.mu.Unlock()
-		if busy {
-			return nil, fmt.Errorf("disconnect the pCloud drive %s first", describe(v))
-		}
-	}
-	if err := e.ensureRcloneFoundLocked(); err != nil {
-		return nil, err
-	}
-	return e.ensureDaemonLocked(ctx)
+	return e.runningClientLocked(ctx)
 }
 
-// clientForKindLocked returns a running rclone for working with vaults of a
-// kind: pCloud vaults need the sign-in, local vaults do not.
-func (e *Engine) clientForKindLocked(ctx context.Context, kind string) (*rcd.Client, error) {
-	if kind == settings.KindPCloud {
-		return e.signedInClientLocked(ctx)
-	}
-	if err := e.prepareLocked(ctx); err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.client, nil
-}
-
-// signedInClientLocked returns a running rclone that knows the account.
-func (e *Engine) signedInClientLocked(ctx context.Context) (*rcd.Client, error) {
-	e.mu.Lock()
-	signedIn := e.settings.SignedIn()
-	locked := e.locked
-	e.mu.Unlock()
-	if locked {
-		return nil, errLocked
-	}
-	if !signedIn {
-		return nil, errors.New("sign in to pCloud first")
-	}
-	if err := e.prepareLocked(ctx); err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.client, nil
-}
-
-// refreshFingerprint computes the check code of a vault. A pCloud vault
-// needs the sign-in for it.
+// refreshFingerprint computes the check code of a vault. A cloud vault
+// needs its account signed in for it.
 func (e *Engine) refreshFingerprint(ctx context.Context, client *rcd.Client, s settings.Settings, v settings.Vault) {
-	if client == nil || (v.Kind == settings.KindPCloud && !s.SignedIn()) {
+	if client == nil {
+		return
+	}
+	if a, ok := s.Account(v.Account); v.Kind == settings.KindCloud && (!ok || !a.SignedIn()) {
 		return
 	}
 	base, cfg := placeOf(v)
