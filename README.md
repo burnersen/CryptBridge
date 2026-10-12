@@ -2,7 +2,7 @@
 
 # CryptBridge
 
-### Your encrypted vaults, in pCloud or on your own disks, as Windows drives and as a streaming server for video players.
+### Your private files in pCloud or on your own disks, locked so that only you can open them, and as easy to use as any other drive.
 
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4)
@@ -13,34 +13,107 @@
 
 </div>
 
-CryptBridge keeps your files in [pCloud](https://www.pcloud.com) encrypted with
-[rclone crypt](https://rclone.org/crypt/) (pCloud only ever sees scrambled names and contents) and
-makes them easy to use everywhere:
+## What is CryptBridge?
 
-- **Windows:** a small tray program shows each vault as a drive letter (`Z:` by default). Copy films in,
-  play them, delete them, just like on any other drive. Several vaults can be open at once, each with its
-  own letter: vaults in pCloud, and [vaults in a folder of your PC or on a USB drive](#vaults-on-this-pc-or-a-usb-drive)
-  that are encrypted and decrypted only on your PC, with no cloud and no sign-in needed.
-- **Home network (optional):** the Windows program can also share the connected drives with the other
-  devices of your home network over WebDAV: a read-only **streaming access** for video players such as
-  Infuse or Kodi on a TV, and a separate **full access** for file apps on phones, tablets or a Mac. With a
-  VPN into your home network (for example the WireGuard VPN of your router) your PC at home serves them
-  [away from home, too](#away-from-home-vpn-into-your-home-network), without renting a server. See
+CryptBridge locks (encrypts) your files on your own PC before they go to [pCloud](https://www.pcloud.com).
+pCloud, and anyone who might ever get into your account, only sees scrambled names and contents. Only
+you hold the key.
+
+On your PC you hardly notice any of this: your locked folder simply shows up as a drive, for example
+`Z:`, and you use it like any other drive. Copy files in, open them, play films, delete them.
+
+**What is a vault?** That is what CryptBridge calls such a locked folder. It is a normal folder, in
+pCloud or on a disk or USB stick, whose files are locked with two secrets of your choice: a **password**
+and a **salt** (a second password). Together they are the **keys** of the vault. Without them, the files
+are useless to anyone: to pCloud, to a thief, and to me.
+
+> For the technically minded: a vault is an [rclone crypt](https://rclone.org/crypt/) folder. CryptBridge
+> uses the free tool rclone, so you can always open your vaults with plain rclone too, even without
+> CryptBridge. Existing rclone crypt vaults work as well.
+
+## What can it do?
+
+- **Drives on Windows.** Every vault gets its own drive letter. Several vaults can be open at once:
+  vaults in pCloud, and [vaults on your PC or a USB drive](#vaults-on-this-pc-or-a-usb-drive) that need
+  no cloud and no account at all.
+- **Films on your TV at home (optional).** Your PC can share its drives with the TV, phone or tablet in
+  your home network, for example for video players such as Infuse or Kodi. See
   [LAN access](#lan-access-optional).
-- **Linux server:** one setup script mounts the same vault on the server and offers it over HTTPS
-  (WebDAV) to video players, for example **Infuse** on Apple TV, iPhone and iPad.
+- **Your own streaming server (optional, for advanced users).** A setup script turns a rented Linux
+  server into a streaming server for your pCloud vault, reachable from anywhere over a secure connection.
+  See [Linux server](#linux-server).
+- **Free and open source:** no ads, no tracking, no CryptBridge account.
 
-```
-                       ┌──────────── pCloud (encrypted) ────────────┐
-                       │                                            │
-   Windows PC          │                    Linux server            │
-   CryptBridge.exe ────┘                    rclone mount ──► ~/CryptBridge (desktop, read/write)
-   Z: (read/write)                               │
-                                                 └► WebDAV (read-only) ◄── Caddy (HTTPS) ◄── video player
+```mermaid
+flowchart TB
+    PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("pCloud")]
+    Cloud <-->|locked| Server["Your Linux server<br/>(optional)"]
+    Server -->|secure connection| Player["Video player<br/>anywhere"]
+    PC -->|"home network (optional)"| TV["TV, phone, tablet<br/>at home"]
 ```
 
-Both sides use the **same keys**. A short **check code** (e.g. `7F3A-91C2`) is shown on both sides: if
-the codes match, the keys match.
+---
+
+## Get started on Windows
+
+**What you need**
+
+- Windows 11 (64-bit).
+- [WinFsp](https://winfsp.dev/rel/), a free helper that lets Windows show a vault as a drive.
+  CryptBridge tells you if it is missing.
+- rclone 1.75 or newer, the tool that does the locking. If it is missing, CryptBridge downloads it for
+  you from rclone.org and checks that the download is genuine.
+- For vaults in pCloud: a pCloud account.
+
+**Four steps**
+
+1. **Install WinFsp**, then download and start **`CryptBridge.exe`** from the
+   [latest release](https://github.com/burnersen/CryptBridge/releases/latest). There is no installer.
+   CryptBridge lives in the system tray, the small icons at the bottom right next to the clock.
+2. **Sign in to pCloud** (only for vaults in pCloud): *Vaults tab > pCloud account > Sign in to pCloud*.
+   Your browser opens the pCloud sign-in page. CryptBridge finds out by itself whether your account is in
+   the EU or the US. Recommended as well, now or later: your [own pCloud app](#own-pcloud-app-recommended).
+3. **Add a vault:** *Vaults tab > Add vault*. Choose where it is (**in pCloud** or **on this PC or a USB
+   drive**), then:
+   - **Create a new vault:** CryptBridge makes up a strong password and salt for you.
+   - **Open an existing vault:** enter its password and salt. *Browse* shows your folders (vaults are
+     marked with a lock); *Search pCloud* finds vaults anywhere in your pCloud.
+
+   Give the vault a name and a drive letter.
+4. **Done.** The vault appears as a drive right away. The **Status tab** shows all drives, how much
+   space is left where they live, their size and running uploads.
+
+> ⚠️ **Write down the password and the salt, or print the emergency sheet.** Without them nobody can
+> open your vault: not pCloud, not CryptBridge, not me. There is no "forgot password" for a vault.
+
+### The tray icon
+
+| Colour | Meaning |
+|---|---|
+| **Green** | connected |
+| **Amber** | working or uploading: please do not switch the PC off now |
+| **Red** | a drive has a problem |
+| **Grey** | disconnected, or CryptBridge is locked |
+
+Its menu connects or disconnects all drives, or each one on its own. Closing the window keeps
+CryptBridge running; **Quit** is in the tray menu.
+
+### Your vaults and settings
+
+Every vault has its own page on the **Vaults tab**. There you find its details and its check code, can
+change its name, drive letter and *connect on start*, print its **emergency sheet** (one page with
+everything needed to open the vault again, even without CryptBridge), bring it to a
+[Linux server](#linux-server) (pCloud vaults), or *Remove from CryptBridge*. Removing asks for the
+vault's name to be sure, and never touches the files in the vault.
+
+On the **Settings tab**: light or dark look (or *automatic*, like Windows), *start with Windows*,
+*reconnect automatically*, the [app lock](#app-lock-recommended), the [LAN access](#lan-access-optional)
+and the **cache**.
+
+**The cache** is a folder on your PC where files wait for a short time. Copying to a drive is fast
+because files land there first and are then uploaded in the background. It is shared by all drives and
+needs room for the largest file you copy at once. It holds readable copies of your files, so turn on
+**BitLocker** (Windows' own disk encryption) for that disk.
 
 ---
 
@@ -53,25 +126,21 @@ the codes match, the keys match.
   appears, and refuses keys that do not fit. A small [check file](#the-file-cryptbridge-vault) in every
   vault helps with this.
 - **No vault is overwritten by mistake.** A new vault is only created in an empty folder, never inside
-  another vault, and two vaults can never share a folder. A vault on a USB drive connects only to the
-  very folder it was connected to before (not to a copy on another drive with the same letter), and
-  its drive is closed at once when the folder disappears. Removing a vault from CryptBridge never
-  touches its files.
+  another vault, and two vaults never share a folder. A vault on a USB drive connects only to its very
+  own folder, not to a copy on another stick that got the same drive letter, and its drive closes at
+  once when the folder disappears.
 - **No typing errors between PC and server.** The Windows program packs sign-in and keys into an
-  encrypted *transfer block*; the Linux setup opens it with a one-time code.
-- **Emergency sheet.** One printable page with everything needed to open the vault again, even
-  without CryptBridge, with plain rclone.
-- **Your keys stay yours.** On Windows the settings file is encrypted with your Windows account
-  (DPAPI) and rclone keeps its configuration in memory only. With the optional
-  [app lock](#app-lock-recommended), sign-in and keys are also sealed with a password of your own, and
-  CryptBridge locks itself together with Windows. On the server, keys are readable only by
-  your user. The streaming access of the server is read-only, so a guessed or stolen streaming password
-  cannot delete anything; repeated wrong passwords are blocked by fail2ban.
-- **Uploads are never cut off silently.** Copying to the drive is fast because files land in a local
-  cache first; CryptBridge shows the uploads and warns before you disconnect or quit while they run.
-- **The drive survives problems.** rclone runs as its own process: if the window crashes, the drive
+  encrypted *transfer block*, a piece of text you paste into the server setup together with a one-time
+  code.
+- **Your keys stay yours.** On Windows, CryptBridge's settings are encrypted with your Windows account
+  (DPAPI), and rclone keeps its configuration in memory only. With the optional
+  [app lock](#app-lock-recommended), they are also sealed with a password of your own. On the server,
+  only your user can read the keys.
+- **Uploads are never cut off silently.** CryptBridge shows running uploads and warns you before you
+  disconnect or quit while they run.
+- **The drive survives problems.** rclone runs as a program of its own: if the window crashes, the drive
   stays; if rclone stops, CryptBridge brings the drive back. If pCloud refuses the sign-in, CryptBridge
-  says so plainly, keeps asking pCloud every minute and reconnects by itself once pCloud accepts it again.
+  says so plainly, asks pCloud again every minute and reconnects by itself once pCloud accepts it again.
   Without internet, a pCloud drive does not appear at first, because its keys cannot be tested yet. It
   appears by itself as soon as pCloud can be reached again.
 
@@ -83,9 +152,8 @@ and read this file. The Windows program looks for it when you add the vault and 
 drive appears, the Linux setup when it sets up the server. The file contains just two lines of text
 that say what it is for.
 
-Since version 0.6 you do not see it: the drives, the LAN access and the server's vault folder hide it
-(on the server after running the setup again), while it stays in the vault. You may still meet it
-where the vault is opened another way, for example with plain rclone.
+You do not see it on the drives, in the LAN access or in the server's vault folder, but it stays in the
+vault. You may still meet it where the vault is opened another way, for example with plain rclone.
 
 **Please keep it.** Deleting it does not harm your files. The key test still works without it, using
 some of your other files, but it is less certain until the file is back. The Windows program puts it
@@ -93,118 +161,65 @@ back by itself the next time the drive connects.
 
 ---
 
-## Windows
+## Vaults on this PC or a USB drive
 
-### Requirements
+A vault does not have to be in pCloud. It can also be a folder on any disk of your PC: an internal
+disk, a USB stick, an external disk, or a network folder that has a drive letter. It is locked and
+unlocked only on your PC, the same way as in pCloud, and needs neither pCloud nor a sign-in. The folder
+itself only ever holds locked files, so you can copy it to another disk as a backup and it stays locked.
 
-- Windows 11 (64-bit)
-- [WinFsp](https://winfsp.dev/rel/), which lets Windows show the vault as a drive. CryptBridge tells you
-  if it is missing.
-- rclone 1.75 or newer. If it is not installed, CryptBridge downloads it from rclone.org for you
-  (checked against rclone's published checksum).
-
-### Getting started
-
-1. Install WinFsp, then start `CryptBridge.exe`. It lives in the system tray (bottom right).
-2. For vaults in pCloud: **Vaults tab > pCloud account > Sign in to pCloud.** Your browser opens the
-   pCloud sign-in page. CryptBridge finds out by itself whether your account is in the EU or the US
-   region. Recommended as well: request your [own pCloud app](#own-pcloud-app-recommended); it can be
-   added at any time later. Vaults on your PC need no sign-in.
-3. **Vaults tab > Add vault**, then choose where it is (**in pCloud** or **on this PC or a USB drive**)
-   and whether to **create a new vault** (CryptBridge generates a strong password and salt; write them
-   down or print the emergency sheet) **or open an existing one**. *Browse* shows your pCloud folders
-   (vaults are marked with a lock) or the folders of your PC; *Search pCloud* finds rclone vaults in
-   your whole pCloud. Give the vault a name and a drive letter.
-4. The vault is connected right away and appears as its drive. The **Status tab** shows all drives with
-   their state, the free space where they live, their size and running uploads.
-
-Every vault has its own page on the **Vaults tab**; the list on the left shows which one you are on. The
-page holds its details and check code, name, drive letter, *connect on start*, the emergency sheet, the
-transfer to the Linux server (pCloud vaults) and *Remove from CryptBridge* (asks for the vault's name;
-the files of the vault stay untouched).
-
-The tray icon shows the state at a glance: **green** connected · **amber** working or uploading
-(do not switch the PC off) · **red** a drive has a problem · **grey** disconnected or locked. Its menu
-connects or disconnects all drives, or each one on its own. Closing the window keeps CryptBridge
-running; **Quit** is in the tray menu.
-
-### Settings
-
-On the **Settings** tab: light or dark look (or *automatic*, like Windows), the cache folder and size
-(shared by all drives), *start with Windows*, *reconnect automatically*, the app lock and the LAN access. The cache
-folder needs room for the largest file you copy to a drive at once. Name, drive letter and *connect on
-start* are set for each vault on its page.
-
-### Vaults on this PC or a USB drive
-
-A vault can also be a folder on any disk of your PC: an internal disk, a USB stick or an external
-disk, or a network share connected as a drive letter. It is encrypted and decrypted only on your PC with
-the same rclone crypt as in pCloud, and needs neither pCloud nor a sign-in. The folder itself only ever
-holds encrypted files: you can copy it to another disk as a backup, and it stays encrypted.
-
-- **USB drives:** with *connect on start*, the vault connects as soon as its drive is plugged in (and
+- **USB drives:** with *connect on start*, the vault connects as soon as its drive is plugged in (while
   CryptBridge is running). If the drive is pulled out while the vault is connected, CryptBridge closes
   the vault's drive within about two seconds. Please disconnect first anyway, as with any USB drive.
   Files that were still being written stay on the PC and are written into the vault when it is back.
-- **Copies are not mixed up:** if a copy of the vault (for example a backup on a second stick) shows
-  up under the same path, CryptBridge does not connect it by itself but asks first; otherwise your
-  changes would end up in the wrong copy. The same happens if you move the vault to a new disk: confirm
-  once with the button *This is my vault*.
-- **The check code** of a local vault does not depend on the drive letter its disk gets.
+- **Copies are not mixed up:** if a copy of the vault (for example a backup on a second stick) shows up
+  in the same place, CryptBridge does not connect it by itself but asks first. Otherwise your changes
+  would end up in the wrong copy. The same happens if you move the vault to a new disk: confirm once with
+  the button *This is my vault*.
+- **The check code** of a vault on your PC does not depend on the drive letter its disk gets.
 - **The cache:** a local disk is fast, so only files being written pass through the cache, and they
-  leave it a minute after their last use. The cache holds them decrypted, so turn on BitLocker for the
-  system disk, as for pCloud vaults.
-- Not possible on a Windows disk: vaults with *base64* file names, because Windows does not tell upper
-  from lower case (two encrypted names could land on one file).
+  leave it a minute after their last use.
+- Not possible on a Windows disk: vaults whose file names use the *base64* setting. Windows does not
+  tell upper from lower case in file names, so two locked names could land on the same file.
 
-### Updating from version 0.5
+---
 
-The LAN access keeps working unchanged: with *Allow changes from the network* off it becomes the
-streaming access, with it on the full access, each with the same port, user name and password as
-before. The other access starts off. Should you ever go back to 0.5, set its LAN access up again.
+## App lock (recommended)
 
-### Updating from version 0.3
-
-CryptBridge converts its settings by itself: your vault becomes the first vault in the list, called
-*Vault*, on the same drive letter and with the same keys (rename it on its page if you like). With the
-app lock on, this happens at the first unlock. The old settings file is kept once as
-`%APPDATA%\CryptBridge\settings.dat.v1-backup`; it is deleted when you set, change or reset the app
-password. Version 0.3 cannot read the new settings. If you ever have to go back, rename the backup to
-`settings.dat`.
-
-### App lock (recommended)
-
-Without it, anyone who uses your Windows account, or sits at your unlocked PC, can open the drives and
-the emergency sheets: Windows decrypts CryptBridge's settings for everyone signed in to that account.
-With an **app password** (Settings > *App lock*; CryptBridge offers it once after setup):
+Without an app lock, anyone who uses your Windows account, or sits at your PC while it is unlocked, can
+open your drives and print your emergency sheets. Set an **app password** at *Settings > App lock*
+(CryptBridge also offers it once after setup). Then:
 
 - CryptBridge **starts locked** and asks for the app password once after Windows starts. If a vault
-  connects on start, the window with the password field appears by itself.
-- It **locks itself again with Windows** (`Win+L`, the automatic screen lock, signing out) and asks
-  again when you are back (if drives were connected); they connect again after unlocking.
-- **Locked means nothing readable is left behind:** all drives are closed (running uploads are finished
-  first; when you sign out there is no time for that, so waiting files stay in the cache and are uploaded
-  after the next unlock), rclone is stopped, the cache with readable copies of recently used files and
-  rclone's log are deleted, and sign-in, vault folders and keys exist only sealed with the app password
-  (Argon2id + AES-256, inside the Windows encryption).
-- The **emergency sheets** and the **transfer block** ask for the app password again.
-- Wrong passwords make the next try wait longer (up to 30 seconds).
+  connects on start, the password window appears by itself.
+- It **locks itself together with Windows** (`Win+L`, the automatic screen lock, signing out) and asks
+  again when you are back. Your drives connect again after unlocking.
+- **Locked means nothing readable is left behind.** All drives are closed, the cache with readable copies
+  of recently used files is deleted, and sign-in, vault folders and keys are kept only sealed with your
+  app password (Argon2id and AES-256, on top of the Windows encryption). Running uploads are finished
+  first. When you sign out of Windows there is no time for that: waiting files stay in the cache and are
+  uploaded after the next unlock.
+- **Emergency sheets** and **transfer blocks** ask for the app password again.
+- After a wrong password, the next try has to wait a little longer (up to 30 seconds).
 
-**Forgot the app password?** It cannot be recovered, but your files are not lost: click *Forgot the app
-password?* on the lock screen, then *Reset CryptBridge*. Sign in to pCloud again and add your vaults again
-with password and salt from their **emergency sheets**.
+**Forgot the app password?** It cannot be recovered, but your files are not lost. Click *Forgot the app
+password?* on the lock screen, then *Reset CryptBridge*. Sign in to pCloud again and add your vaults
+again with the password and salt from their **emergency sheets**.
 
-What the app lock cannot cover: Windows itself remembers recently opened file names and preview
-pictures, and deleted files can be recovered from an unencrypted disk. Turn on **BitLocker** for the
-disk with the cache folder, and lock Windows when you leave the PC.
+What the app lock cannot do: Windows itself remembers recently opened file names and preview pictures,
+and deleted files can be recovered from an unencrypted disk. Turn on **BitLocker** for the disk with the
+cache folder, and lock Windows when you leave the PC.
 
-### Own pCloud app (recommended)
+---
 
-CryptBridge signs in to pCloud through rclone. Out of the box that uses **rclone's shared pCloud
-access**, which pCloud has blocked for hours at a time before: on 5 October 2026, for about three hours,
-the browser showed *Invalid 'client_id'* and existing sign-ins failed with *error 2095*. With an app of
-your own, CryptBridge no longer depends on it. **Your vaults do not change:** same keys, same files,
-same check codes. You only sign in once more.
+## Own pCloud app (recommended)
+
+CryptBridge talks to pCloud through rclone. Out of the box it uses **rclone's shared pCloud access**,
+which all rclone users share. pCloud has blocked it for hours before: on 5 October 2026, for about
+three hours, the browser showed *Invalid 'client_id'* and existing sign-ins failed with *error 2095*.
+
+With an **app of your own** (free, at pCloud), CryptBridge no longer depends on that shared access.
+**Your vaults do not change:** same keys, same files, same check codes. You only sign in once more.
 
 > **Tested (October 2026)** with an approved pCloud app: the sign-in works, and the pCloud drives connect
 > through it. The own app is optional: CryptBridge also works right away with rclone's shared access.
@@ -231,76 +246,87 @@ Request the app **now, while everything works**: pCloud has to approve it, which
 
 3. Once pCloud has approved the app, open it on My Apps, switch to **Settings** and enter
    `http://localhost:53682/` under **Redirect URIs**, exactly like this. Without it, the sign-in ends with
-   *redirect_uri is not authorized*. CryptBridge does not need *Allow implicit grant*, so set it to
-   **Disallow**. Publisher, description and icon can stay empty. Click **Save changes**.
-4. In CryptBridge: **Vaults > pCloud account > Own pCloud app**, paste the **Client ID** and the
-   **Client secret**, click **Save app** and confirm the new sign-in. Connected pCloud drives are
-   disconnected for the sign-in and connected again afterwards. The page then says *… through your own
-   pCloud app*.
+   *redirect_uri is not authorized*. Set *Allow implicit grant* to **Disallow** (CryptBridge does not need
+   it). Publisher, description and icon can stay empty. Click **Save changes**.
+4. In CryptBridge: *Vaults > pCloud account > Own pCloud app*, paste the **Client ID** and the **Client
+   secret**, click **Save app** and confirm the new sign-in. Connected pCloud drives are disconnected for
+   the sign-in and connected again afterwards. The page then says *… through your own pCloud app*.
 5. **Linux server** (not urgent: its sign-in keeps working until pCloud blocks rclone's shared access
    again): create a new transfer block on the page of the vault, run `sudo cryptbridge setup` on the
    server, answer **n** to *Keep the pCloud sign-in and vault keys from the last setup?* and paste the
    block.
 
-The codes are stored encrypted with your Windows account like the rest of the settings. rclone gets them
-only for the sign-in itself, and they are not part of the transfer block: the server needs only the
-sign-in.
+Client ID and secret are stored encrypted with your Windows account like the rest of the settings. They
+are used only for signing in and are not part of the transfer block: the server needs only the sign-in.
 
-### LAN access (optional)
+---
 
-CryptBridge can share the connected drives with the other devices of your home network: a TV or Apple TV
-with a video player such as Infuse or Kodi, a phone, a tablet, a Mac. Every connected drive appears there
-as a folder (WebDAV, with user name and password). There are **two accesses**, each with a port, user
-name and password of its own, turned on separately at **Settings > LAN access**:
+## LAN access (optional)
+
+**Watch your films on the TV at home.** CryptBridge can share the connected drives with the other
+devices in your home network (LAN): a TV or Apple TV with a video player such as Infuse or Kodi, a phone,
+a tablet, a Mac. Every connected drive appears there as a folder, protected with a user name and
+password. The devices connect over **WebDAV**, a common standard for sharing files over a network that
+most video players and file apps understand.
+
+There are **two accesses**, each with its own user name and password, turned on separately at
+*Settings > LAN access*:
 
 | Access | Suggested port and user | What the devices may do | For |
 |---|---|---|---|
-| **Streaming access** | `8080`, `stream` | open, play and copy files; nothing can be changed or deleted | TVs and video players |
+| **Streaming access** | `8080`, `stream` | open, play and copy files, but never change or delete anything | TVs and video players |
 | **Full access** | `8081`, `full` | also upload, rename and delete | file apps on devices you trust |
 
-Ports and user names can be changed freely, for example if another program already uses a port. The
-address then looks like `http://192.168.1.20:8080/`. CryptBridge suggests passwords that are easy to type
-with a TV remote, and refuses the same password for both accesses: the streaming password is typed on
-TVs, where others may see it, and must not open the full access.
+The **port** is like a door number on your PC; change it only if another program already uses it. The
+address then looks like `http://192.168.1.20:8080/`, and the Settings page shows the right one for your
+PC. CryptBridge suggests passwords that are easy to type with a TV remote, and refuses the same password
+for both accesses: the streaming password is typed on TVs, where others may see it, and must never open
+the full access.
 
+- **On your devices:** in a video player (Infuse, Kodi), add a WebDAV share with the address, port, user
+  name and password of the **streaming access** (protocol `http`, path `/`). A file app on a phone or
+  tablet gets the **full access** the same way. On a Mac: *Finder > Go > Connect to Server*.
 - **It follows the drives.** A drive that connects appears in the network; a drive leaves the network
-  *before* it disconnects. **Locking CryptBridge ends the LAN access at once**, even while drives still
-  finish their uploads. The PC has to be on and awake.
-- **Changes from the network** (full access only) go into the drive's upload queue like files copied in
+  before it disconnects. Locking CryptBridge ends the LAN access at once. The PC has to be switched on
+  and awake.
+- **Only your home network.** When you turn it on, Windows asks once for permission (the usual
+  administrator prompt) to let the devices of your home network in. This works only if Windows counts
+  your home network as **private**. If it does not, CryptBridge tells you; change it in *Windows Settings
+  > Network & internet > your connection > Network profile type*.
+- **Please note:** inside your home network the files travel **unlocked**, protected by the password
+  only. Do not turn the LAN access on in networks you do not trust, such as a hotel or café.
+- **Other Windows PCs** do not accept this kind of password-protected address without changing their
+  registry. Install CryptBridge there instead.
+
+<details>
+<summary><b>Technical details: firewall rule and changes from the network</b></summary>
+
+- CryptBridge asks Windows for one firewall rule: inbound connections to the ports of the accesses that
+  are on, for rclone only, from devices of the same network, and only on networks Windows counts as
+  private. Turning both accesses off removes the rule again (Windows asks once more); turning the second
+  one on or changing a port updates it.
+- The connection inside the home network is plain HTTP, without TLS.
+- Changes from the network (full access only) go into the drive's upload queue, like files copied in
   Explorer.
-- **Only your home network.** When you turn it on, CryptBridge asks Windows (with the usual
-  administrator prompt) for one firewall rule: inbound connections to the ports of the accesses that are
-  on, for rclone only, from devices of the same network, and only on networks Windows counts as
-  **private**. Turning both accesses off removes the rule again (Windows asks once more); turning the
-  second one on or changing a port updates it. If Windows counts your home network as
-  *public*, CryptBridge says so. Set it to private in Windows Settings > Network & internet > your
-  connection > *Network profile type*.
-- **Mind what it means:** in your home network the files travel **decrypted** and unencrypted (plain
-  HTTP), protected by the password only. Do not turn it on in networks you do not trust.
-- **On your devices:** in a video player (Infuse, Kodi) add a WebDAV share with the address, port, user
-  name and password of the **streaming access** from the Settings page (protocol `http`, path `/`). A file
-  app on a phone or tablet gets the **full access** the same way. On a Mac: Finder > Go > Connect to
-  Server.
-- **Other Windows PCs** refuse password-protected `http://` WebDAV addresses unless their registry is
-  changed. Install CryptBridge there instead.
 
-#### Away from home: VPN into your home network
+</details>
 
-The LAN access is meant for your home network only. Never open its port to the internet on your
-router. To use it on the road, connect your phone, tablet or laptop to your home network through a
-**VPN**: the device then reaches the LAN access as if it were at home, the VPN encrypts the whole way, and
-your own PC at home does the job of a rented server. How smoothly films play then depends on the upload
-speed of your internet connection at home.
+### Away from home: VPN into your home network
 
-CryptBridge's firewall rule lets in devices that have an address of your home network. So pick a VPN
-that gives them one:
+Never open the LAN access to the internet on your router. To use it on the road, connect your phone,
+tablet or laptop to your home network through a **VPN** (a secure tunnel into your home network). The
+device then reaches the LAN access as if it were at home, the VPN encrypts the whole way, and your own PC
+at home does the job of a rented server. How smoothly films play then depends on the upload speed of
+your internet connection at home.
 
-- **The WireGuard VPN of your router**, for example of a FRITZ!Box: devices connected through it get an
-  address of your home network and are let in like at home. Nothing to change in CryptBridge.
-- **Tailscale with a subnet router** in your home network (a router, NAS or Raspberry Pi that advertises
-  your home network): it passes the connections on with its own home network address, which Tailscale
-  does by default, so they are let in, too. Tailscale running only on this PC is *not* supported yet: its
-  devices have addresses of their own (100.x.x.x), which the rule does not let in.
+The VPN has to give your devices an address of your home network:
+
+- **The VPN of your router** (WireGuard), for example of a FRITZ!Box: works, nothing to change in
+  CryptBridge.
+- **Tailscale with a subnet router** in your home network (a router, NAS or Raspberry Pi that makes
+  your home network reachable): works as well.
+- **Tailscale running only on this PC** is *not* supported yet: its devices get addresses of their own
+  (100.x.x.x), which CryptBridge's firewall rule does not let in.
 
 *Not tested yet.* Reports are welcome.
 
@@ -308,19 +334,26 @@ that gives them one:
 
 ## Linux server
 
+*Optional, for advanced users.* Want to watch your films anywhere, without your PC at home running? Rent
+a small Linux server (a VPS) and let one setup script turn it into a streaming server for your pCloud
+vault. Your video player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from
+it over a secure connection (HTTPS). On the server itself, the vault is the folder `~/CryptBridge`.
+
 Tested on **Ubuntu 26.04 with an XFCE desktop**, on a server that already had its own firewall rules,
 fail2ban jails and third-party package sources. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
 tested there yet), with or without a desktop.
 
 ### Before you start
 
-- A **host name** that points to your server: your own domain, or a free name from
-  [DuckDNS](https://www.duckdns.org) (sign in, create e.g. `myvault.duckdns.org`, set its IP to your
-  server's IP). The HTTPS certificate is fetched automatically for it.
-  > ⚠️ Host names of your provider (netcup's `…supersrv.de`, Contabo's `…contaboserver.net`) often do **not**
-  > work: all customers share one Let's Encrypt limit of 50 certificates per week, and it is usually used up.
-  > DuckDNS names have a limit of their own.
-- **Ports 80 and 443** must be reachable (also in your provider's firewall, if it has one).
+- A **host name** for your server, an internet address like `myvault.duckdns.org`: your own domain, or a
+  free name from [DuckDNS](https://www.duckdns.org) (sign in, create a name, set its IP to your server's
+  IP). The certificate for the secure connection is fetched automatically for it.
+  > ⚠️ Host names of your provider (netcup's `…supersrv.de`, Contabo's `…contaboserver.net`) often do
+  > **not** work: all customers share one limit of 50 certificates per week at Let's Encrypt, and it is
+  > usually used up. DuckDNS names have a limit of their own.
+- **Ports 80 and 443** must be reachable, also in your provider's firewall if it has one.
+- A **transfer block** of your vault from the Windows program (*Vaults tab > the page of the vault >
+  Linux server*), or its keys at hand.
 
 ### Setup
 
@@ -329,21 +362,30 @@ curl -fsSLO https://raw.githubusercontent.com/burnersen/CryptBridge/main/linux/s
 sudo bash setup.sh
 ```
 
-The setup asks a few questions and then does everything else:
+The setup asks a few questions and does everything else. When it asks for the keys, paste the
+**transfer block** and type its code. At the end it shows a **check code** (for example `7F3A-91C2`): it
+must be the same as on the vault's page in the Windows program. If the codes match, the keys match.
+
+Afterwards, the command `cryptbridge` (or the *CryptBridge* desktop icon) shows the status and the
+settings for your player, restarts the services or runs the setup again. `cryptbridge streaming` shows
+the settings for your player directly. `sudo cryptbridge uninstall` removes everything except your files
+in pCloud.
+
+<details>
+<summary><b>Technical details: what the setup does</b></summary>
 
 | Step | What happens |
 |---|---|
 | Packages | rclone (checksum verified), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
-| Keys | paste the **transfer block** from the Windows program (*Vaults tab > the page of the vault > Linux server*; pCloud vaults only) and type its code, or enter everything by hand |
-| Check | keys checked against your vault; the **check code** must equal the one in the Windows program |
+| Keys | paste the transfer block and type its code (pCloud vaults only), or enter everything by hand |
+| Check | keys tested against your vault; the check code must equal the one in the Windows program |
 | Vault | mounted at `~/CryptBridge` for your desktop user (`rclone-mount.service`) |
 | Streaming | WebDAV for your video player, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, both services come back by themselves |
 | Firewall | allows 80/443 in ufw (also when ufw stays off, so they are open once it is switched on later), and keeps your SSH and remote-desktop ports open before switching ufw on |
+| Protection | the streaming access is read-only, so a guessed password cannot delete anything; repeated wrong passwords are blocked by fail2ban |
 | Desktop | icons *CryptBridge Vault* and *CryptBridge*, a file-manager bookmark, no film thumbnails |
 
-Afterwards, `cryptbridge` (or the *CryptBridge* desktop icon) shows the status and the settings for your
-player, restarts the services or runs the setup again; `cryptbridge streaming` shows the settings for your
-player directly. `sudo cryptbridge uninstall` removes everything except your files in pCloud.
+</details>
 
 ### Video players
 
@@ -358,10 +400,10 @@ values:
 | Path | `/` |
 | User / password | the user name and password you chose in the setup |
 
-Tested with **Infuse** on Apple TV, iPhone and iPad: **Settings > Shares > Add share > WebDAV**.
+Tested with **Infuse** on Apple TV, iPhone and iPad: *Settings > Shares > Add share > WebDAV*.
 
-> 💡 **For smooth 4K playback in Infuse:** go to **Settings > Playback (Streaming) > Buffer** and set it
-> to **Generous**.
+> 💡 **For smooth 4K playback in Infuse:** go to *Settings > Playback (Streaming) > Buffer* and set it to
+> **Generous**.
 
 ### Moving to a new server
 
@@ -375,16 +417,46 @@ Your files stay in pCloud the whole time; the servers only pass them through.
 
 ---
 
-## Moving existing (unencrypted) files into the vault
+## Moving your existing files into a vault
 
-Copy them into the vault folder (on Windows the drive, on the server `~/CryptBridge`), check that they
-arrived, then delete the originals. Plan for space: **until you delete an original, the film exists
-twice in pCloud** (plain and encrypted). Move in portions that fit into your free pCloud space, and
-check whether deleted files still count against your storage while they sit in pCloud's trash.
+Copy them onto the vault's drive (on the server: into `~/CryptBridge`), check that they arrived, then
+delete the originals. Plan for space: **until you delete an original, the file is in pCloud twice**
+(unlocked and locked). Move in portions that fit into your free pCloud space, and check whether deleted
+files still count against your storage while they sit in pCloud's trash.
 
 ---
 
-## Streaming settings
+## Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| "These keys do NOT open the vault" | Password, salt, folder or an advanced setting does not match. Nothing was changed. Check them against your emergency sheet. |
+| "The keys … do not open the folder" (vault on your PC) | Another drive got the vault's drive letter. Nothing was connected or written. |
+| "The pCloud folder … is empty or gone" | The vault's folder in pCloud was renamed or moved. Nothing was connected or written. Rename it back, or add the vault again from its new place. |
+| A pCloud drive does not appear, "could not be checked in pCloud" | pCloud cannot be reached right now (no internet?). The drive appears by itself once pCloud answers. |
+| "pCloud no longer accepts the sign-in (error 2095)" | Often a passing problem at pCloud: CryptBridge asks again every minute and reconnects by itself. After a password change or "log out of all devices" it stays: click **Sign in again** on the Status tab, then bring the sign-in to the server with a new transfer block. |
+| Browser shows "Invalid 'client_id'" during sign-in | pCloud is blocking rclone's shared access. Try again later, or use your [own pCloud app](#own-pcloud-app-recommended). With your own app: check the client ID at *Vaults > pCloud account*. |
+| Browser shows "redirect_uri is not authorized" | Add `http://localhost:53682/` to the Redirect URIs of your app on pCloud. |
+| Check codes differ between PC and server | The keys or settings differ. Bring them over again with a transfer block. |
+| Drive letter in use | Choose another letter on the page of the vault (while it is disconnected). |
+| Quit warns about uploads | Files not yet in the vault stay on this PC and are written into it the next time you connect. Do not delete the cache folder in the meantime. |
+| A vault on a USB drive says "Waiting for its folder" | Its drive is not plugged in (or got another letter). It connects by itself when the folder is back. If the drive now has another letter, add the vault again from there and remove the old entry. |
+| "… is not the folder the drive was last connected to" | Another drive with a copy of the vault, or the vault was moved. If it is the vault you want to work with from now on, click *This is my vault*. |
+| Remove refuses: files still wait | Connect the vault and let the uploads finish; removing it now would lose those files. |
+| A device at home cannot reach the LAN access | *Settings > LAN access* shows the firewall state: allow it there if needed, and set your network to *private* in Windows if CryptBridge says it is public. Use the address shown there; the PC must be awake. |
+| LAN access: "port … is used by another program" | Choose another port (1024 to 65535) for that access and save. The two accesses need different ports. |
+| The video player cannot reach the server | Run `cryptbridge` on the server: it shows which service is not running. Check ports 80 and 443 at your provider. |
+| No certificate on the server, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep the keys and the account). |
+
+Log files: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server
+`journalctl -u rclone-mount -u rclone-webdav -u caddy`
+
+---
+
+## Technical details
+
+<details>
+<summary><b>Streaming settings (rclone options)</b></summary>
 
 Used by the Windows drive and by the server mount (the server's WebDAV reads from that mount):
 
@@ -404,33 +476,10 @@ them with every folder listing, so they cost nothing, and you can sort by date.
 Vaults on the PC do not need any of the streaming values: they use `--vfs-cache-mode writes`,
 `--vfs-cache-max-age 1m` and `--dir-cache-time 10s`.
 
----
+</details>
 
-## Troubleshooting
-
-| Problem | Answer |
-|---|---|
-| Check codes differ between PC and server | The keys or settings differ. Bring them over again with a transfer block. |
-| "These keys do NOT open the vault" | Password, salt, folder or an advanced setting does not match. Nothing was changed. |
-| "pCloud no longer accepts the sign-in (error 2095)" | Often a passing problem at pCloud: CryptBridge asks again every minute and reconnects by itself. After a password change or "log out of all devices" it lasts: click **Sign in again** on the Status tab, then bring the sign-in to the server with a new transfer block. |
-| Browser shows "Invalid 'client_id'" during sign-in | pCloud is blocking rclone's shared access. Cancel and try again later, or use your [own pCloud app](#own-pcloud-app-recommended). With your own app: check the client ID at *Vaults > pCloud account*. |
-| Browser shows "redirect_uri is not authorized" | Add `http://localhost:53682/` to the Redirect URIs of your app on pCloud. |
-| Drive letter in use | Choose another letter on the page of the vault (while it is disconnected). |
-| Quit warns about uploads | Files not yet in the vault stay on this PC and are written into it the next time you connect. Do not delete the cache folder in the meantime. |
-| A vault on a USB drive says "Waiting for its folder" | Its drive is not plugged in (or got another letter). It connects by itself when the folder is back. If the drive now has another letter, add the vault again from there and remove the old entry. |
-| "… is not the folder the drive was last connected to" | Another drive with a copy of the vault, or the vault was moved. If it is the vault you want to work with from now on, click the button *This is my vault*. |
-| "The keys … do not open the folder" (local vault) | Another drive got the vault's drive letter. Nothing was connected or written. |
-| Remove refuses: files still wait | Connect the vault and let the uploads finish; removing it now would lose those files. |
-| The video player cannot reach the server | `cryptbridge` on the server shows which service is not running; check ports 80/443 at your provider. |
-| A device in the home network cannot reach the LAN access | *Settings > LAN access* shows the firewall state: allow it there if needed, and set your network to *private* in Windows if CryptBridge says it is public. Use the address shown there; the PC must be awake. |
-| LAN access: "port … is used by another program" | Choose another port (1024–65535) for that access and save; the firewall rule is updated with it. The two accesses need different ports. |
-| No HTTPS certificate, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep the keys and the account). |
-
-Logs: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server `journalctl -u rclone-mount -u rclone-webdav -u caddy`
-
----
-
-## Building from source
+<details>
+<summary><b>Building from source</b></summary>
 
 Windows program (Go 1.27 as set in `windows/go.mod`, PowerShell 7):
 
@@ -440,6 +489,8 @@ pwsh -File windows\build.ps1
 
 The version lives in one place, the file `VERSION`; the build script writes it into the program, its file
 properties and `linux/setup.sh`. Tests: `go test ./...` in `windows/`, `bash linux/tests/functions_test.sh`.
+
+</details>
 
 ---
 
