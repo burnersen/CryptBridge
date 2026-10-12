@@ -6,6 +6,7 @@ package vault
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,160 @@ func makeVault(t *testing.T, ctx context.Context, client *rcd.Client, dir, passw
 		}
 	}
 	return cfg
+}
+
+// configureTestVault registers cfg as the remote "cbtest" on base.
+func configureTestVault(t *testing.T, ctx context.Context, client *rcd.Client, base string, cfg Config) {
+	t.Helper()
+	if err := Configure(ctx, client, "cbtest", base, cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), client, "cbtest") })
+}
+
+// putFile writes a file with the given content into the vault behind remote.
+func putFile(t *testing.T, ctx context.Context, client *rcd.Client, remote, name string, content []byte) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"srcFs": dir, "srcRemote": name, "dstFs": remote, "dstRemote": name}
+	if err := client.Call(ctx, "operations/copyfile", request, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// expectVerdict runs Verify and fails unless it gives want; content tells
+// whether a file must have been read for it.
+func expectVerdict(t *testing.T, ctx context.Context, client *rcd.Client, base string, cfg Config, want Verdict, content bool, what string) Verification {
+	t.Helper()
+	got, err := Verify(ctx, client, base, cfg)
+	if err != nil || got.Verdict != want || got.ContentChecked != content {
+		t.Fatalf("%s: %+v %v; want %s with content checked = %v", what, got, err, want, content)
+	}
+	return got
+}
+
+// TestLocalVerifyByContent covers vaults whose names prove nothing. Right
+// and wrong keys take turns, so that a remote cached with old keys shows.
+func TestLocalVerifyByContent(t *testing.T) {
+	ctx, client := localSetup(t)
+	for _, mode := range []string{EncryptionObfuscate, EncryptionOff} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			base, rel := splitLocal(filepath.Join(root, "Vault"))
+			cfg := NewDefault(rel)
+			cfg.FilenameEncryption = mode
+			cfg.Password = "right password"
+			cfg.Password2 = "right salt"
+			configureTestVault(t, ctx, client, base, cfg)
+			if err := WriteCheckFile(ctx, client, "cbtest:"); err != nil {
+				t.Fatal(err)
+			}
+			putFile(t, ctx, client, "cbtest:", "Notes 2026.txt", []byte("some notes"))
+			if err := client.Call(ctx, "operations/mkdir", map[string]any{"fs": "cbtest:", "remote": "Photos"}, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			wrong := cfg
+			wrong.Password = "wrong password"
+			wrongSalt := cfg
+			wrongSalt.Password2 = "wrong salt"
+			expectVerdict(t, ctx, client, base, cfg, VerdictMatch, true, "right keys")
+			expectVerdict(t, ctx, client, base, wrong, VerdictMismatch, true, "wrong password")
+			expectVerdict(t, ctx, client, base, cfg, VerdictMatch, true, "right keys again")
+			expectVerdict(t, ctx, client, base, wrongSalt, VerdictMismatch, true, "wrong salt")
+
+			// The right password with other name settings would mix two
+			// kinds of names in one vault.
+			for _, other := range []string{EncryptionStandard, EncryptionObfuscate, EncryptionOff} {
+				if other == mode {
+					continue
+				}
+				changed := cfg
+				changed.FilenameEncryption = other
+				got, err := Verify(ctx, client, base, changed)
+				if err != nil || got.Verdict != VerdictMismatch {
+					t.Fatalf("right password, names %s instead of %s: %+v %v; want mismatch", other, mode, got, err)
+				}
+			}
+		})
+	}
+}
+
+// TestLocalVerifyObfuscatedCheckFileName covers the case that made names
+// worthless as proof with obfuscate: a wrong password that produces the
+// very name of the check file.
+func TestLocalVerifyObfuscatedCheckFileName(t *testing.T) {
+	ctx, client := localSetup(t)
+	root := t.TempDir()
+	base, rel := splitLocal(filepath.Join(root, "Vault"))
+	cfg := NewDefault(rel)
+	cfg.FilenameEncryption = EncryptionObfuscate
+	cfg.Password = "right password"
+	configureTestVault(t, ctx, client, base, cfg)
+	if err := WriteCheckFile(ctx, client, "cbtest:"); err != nil {
+		t.Fatal(err)
+	}
+	rightName, err := encodeOne(ctx, client, "cbtest:", CheckFileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// About one password in 25 hits the name; 300 tries miss with a
+	// probability of about 5 in a million.
+	var colliding Config
+	for try := range 300 {
+		candidate := cfg
+		candidate.Password = fmt.Sprintf("wrong password %d", try)
+		if err := Configure(ctx, client, "cbguess", base, candidate); err != nil {
+			t.Fatal(err)
+		}
+		name, err := encodeOne(ctx, client, "cbguess:", CheckFileName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == rightName {
+			colliding = candidate
+			break
+		}
+	}
+	_ = Remove(context.Background(), client, "cbguess")
+	if colliding.Password == "" {
+		t.Fatal("no wrong password produced the name of the check file in 300 tries")
+	}
+
+	got := expectVerdict(t, ctx, client, base, colliding, VerdictMismatch, true, "wrong password, same check file name")
+	if !got.HasCheckFile {
+		t.Fatalf("%+v; want the check file found by its name", got)
+	}
+}
+
+// TestLocalVerifyUnverifiable: without a file that can prove the keys, a
+// vault with plain names cannot be checked; with one, it can.
+func TestLocalVerifyUnverifiable(t *testing.T) {
+	ctx, client := localSetup(t)
+	root := t.TempDir()
+	base, rel := splitLocal(filepath.Join(root, "Vault"))
+	cfg := NewDefault(rel)
+	cfg.FilenameEncryption = EncryptionOff
+	cfg.Password = "right password"
+	configureTestVault(t, ctx, client, base, cfg)
+	wrong := cfg
+	wrong.Password = "wrong password"
+
+	putFile(t, ctx, client, "cbtest:", "empty.txt", nil)
+	putFile(t, ctx, client, "cbtest:", "large.bin", make([]byte, maxContentCheckSize))
+	expectVerdict(t, ctx, client, base, cfg, VerdictUnverifiable, false, "only an empty and a large file")
+	expectVerdict(t, ctx, client, base, wrong, VerdictUnverifiable, false, "only an empty and a large file, wrong keys")
+
+	putFile(t, ctx, client, "cbtest:", "small.txt", []byte("small"))
+	expectVerdict(t, ctx, client, base, wrong, VerdictMismatch, true, "a small file, wrong keys")
+	got := expectVerdict(t, ctx, client, base, cfg, VerdictMatch, true, "a small file, right keys")
+	if got.HasCheckFile {
+		t.Fatalf("%+v; want no check file in this vault", got)
+	}
 }
 
 func TestLocalVerifyAndInspect(t *testing.T) {

@@ -22,7 +22,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.6.0"
+readonly CRYPTBRIDGE_VERSION="0.6.1"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -48,6 +48,14 @@ readonly PCLOUD_REMOTE="cbpcloud"
 readonly VAULT_REMOTE="cbvault"
 readonly WEBDAV_ADDR="127.0.0.1:8080"
 readonly CHECK_FILE=".cryptbridge-vault"
+# Key check, the same rules as the Windows program: a wrong key passes one
+# encrypted name by chance in about 256 cases, eight names make that
+# negligible. An encrypted file starts with a 32-byte header, and its content
+# carries a 16-byte authenticator: only a larger file holds content, which
+# opens with the right keys alone. Such a file is read completely.
+readonly MAX_NAMES_TO_CHECK=8
+readonly CRYPT_OVERHEAD_SIZE=48
+readonly MAX_CONTENT_CHECK_SIZE=1048576
 readonly FINGERPRINT_PROBE="cryptbridge/fingerprint"
 readonly HOST_EU="eapi.pcloud.com"
 readonly HOST_US="api.pcloud.com"
@@ -497,7 +505,7 @@ check_pcloud_access() {
 
 verify_keys() {
 	step "Checking the keys"
-	local path raw check_name names opened=0 checked=0 name
+	local path raw check_name opened checked
 	path="$(normalise_path "$CB_VAULT_PATH")"
 	if ! raw="$(rc lsf "$PCLOUD_REMOTE:$path" 2>/dev/null)" || [[ -z "$raw" ]]; then
 		warn "The folder '$path' is empty or does not exist yet."
@@ -509,32 +517,94 @@ verify_keys() {
 		return
 	fi
 
+	if [[ "$VAULT_ENCRYPTION" != "standard" ]]; then
+		# Obfuscated and plain names come out of any keys, the name of the
+		# check file too. Only the content proves the keys.
+		verify_by_content "$path" "$raw"
+		return
+	fi
 	check_name="$(rc backend encode "$VAULT_REMOTE:" "$CHECK_FILE")"
 	if [[ $'\n'"$raw"$'\n' == *$'\n'"$check_name"$'\n'* ]]; then
 		ok "The keys open this vault (check file found)"
 		return
 	fi
-	[[ "$VAULT_ENCRYPTION" == "off" ]] && {
-		warn "This vault does not encrypt file names, so the keys cannot be checked."
-		confirm "Continue anyway?" n || die "Nothing changed."
-		return
-	}
-
-	mapfile -t names <<<"$raw"
-	for name in "${names[@]}"; do
-		[[ -z "$name" ]] && continue
-		((checked < 8)) || break
-		[[ "$name" == */ && "$VAULT_DIRNAMES" != "true" ]] && continue
-		checked=$((checked + 1))
-		if rc backend decode "$VAULT_REMOTE:" "${name%/}" >/dev/null 2>&1; then
-			opened=$((opened + 1))
-		fi
-	done
+	read -r opened checked < <(decrypt_names "$raw")
 	if ((checked > 0 && opened == checked)); then
 		ok "The keys open this vault ($opened of $checked names decrypted)"
 		return
 	fi
 	die "These keys do NOT open the vault in '$path' ($opened of $checked names). Check password, salt and settings — nothing was changed."
+}
+
+# verify_by_content PATH RAW — for vaults whose names prove nothing: the
+# names must still follow the vault's name settings (the content proves only
+# password and salt), and one file must open with the keys.
+verify_by_content() {
+	local path="$1" raw="$2" opened checked sample
+	read -r opened checked < <(decrypt_names "$raw")
+	if ((opened < checked)); then
+		die "These keys do NOT open the vault in '$path' ($opened of $checked names fit its name settings). Check the settings — nothing was changed."
+	fi
+	sample="$(content_sample "$path")"
+	if [[ -z "$sample" ]]; then
+		warn "The keys cannot be checked: the file names of this vault prove nothing, and it holds no small file to test the keys with."
+		confirm "Continue anyway?" n || die "Nothing changed."
+		return
+	fi
+	if opens_content "$sample"; then
+		ok "The keys open this vault (a file was decrypted)"
+		return
+	fi
+	die "These keys do NOT open the vault in '$path' (a file did not decrypt). Check password, salt and settings — nothing was changed."
+}
+
+# decrypt_names RAW — tries to decrypt up to MAX_NAMES_TO_CHECK of the listed
+# names and prints "opened checked". Plain folder names prove nothing.
+decrypt_names() {
+	local name names opened=0 checked=0
+	mapfile -t names <<<"$1"
+	for name in "${names[@]}"; do
+		[[ -z "$name" ]] && continue
+		((checked < MAX_NAMES_TO_CHECK)) || break
+		[[ "$name" == */ ]] && ! folder_names_encrypted && continue
+		checked=$((checked + 1))
+		if rc backend decode "$VAULT_REMOTE:" "${name%/}" >/dev/null 2>&1; then
+			opened=$((opened + 1))
+		fi
+	done
+	printf '%s %s\n' "$opened" "$checked"
+}
+
+# folder_names_encrypted — with file name encryption off, rclone leaves
+# folder names plain whatever the folder setting says.
+folder_names_encrypted() {
+	[[ "$VAULT_DIRNAMES" == "true" && "$VAULT_ENCRYPTION" != "off" ]]
+}
+
+# content_sample PATH — prints the stored name of the smallest file that can
+# prove the keys: larger than an empty encrypted file, and small enough to
+# be read completely. Prints nothing if there is none.
+content_sample() {
+	rc lsf --files-only --format sp --separator $'\t' "$PCLOUD_REMOTE:$1" |
+		awk -v overhead="$CRYPT_OVERHEAD_SIZE" -v max="$MAX_CONTENT_CHECK_SIZE" '
+			{ size = substr($0, 1, index($0, "\t") - 1) + 0; name = substr($0, index($0, "\t") + 1) }
+			size > overhead && size <= max && (best == "" || size < best_size) { best = name; best_size = size }
+			END { if (best != "") print best }'
+}
+
+# opens_content NAME — succeeds if the keys decrypt the file stored as NAME
+# in the vault folder, fails for wrong keys, and stops the setup on any
+# other problem. The variant of the vault remote reads the stored name as it
+# is and decrypts only the content. (The Windows program needs a remote of
+# its own for this because its rclone keeps remotes in a cache; here every
+# rclone call is a new process.)
+opens_content() {
+	local out
+	if out="$(rc md5sum --download "$VAULT_REMOTE,filename_encryption=off,suffix=none:$1" 2>&1)"; then
+		return 0
+	fi
+	[[ "$out" == *"failed to authenticate decrypted block"* ]] && return 1
+	die "A file of the vault could not be read to check the keys: $out"
 }
 
 # Same as the Windows program: sha256(path + "\n" + encrypted probe), first

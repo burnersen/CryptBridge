@@ -923,7 +923,7 @@ const VERDICTS = {
   empty: ["info", "The folder is empty (or does not exist yet): a new vault can be created here."],
   match: ["good", "The keys open this vault."],
   mismatch: ["error", "These keys do NOT open the vault in this folder. Check password, salt and the advanced settings."],
-  unverifiable: ["warn", "This vault does not encrypt file names, so the keys cannot be checked."],
+  unverifiable: ["warn", "The keys cannot be checked: the file names of this vault prove nothing, and it holds no small file to test the keys with."],
 };
 
 function checkText(check) {

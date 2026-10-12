@@ -344,7 +344,7 @@ func acceptVerdict(verdict vault.Verdict, create, acceptUnverifiable bool) error
 	case verdict == vault.VerdictMismatch:
 		return errors.New("these keys do NOT open the vault in this folder. Check password, salt and the advanced settings — nothing was changed")
 	case verdict == vault.VerdictUnverifiable && !acceptUnverifiable:
-		return errors.New("this vault does not encrypt file names, so the keys cannot be checked")
+		return errors.New("the keys cannot be checked: the file names of this vault prove nothing, and it holds no small file to test the keys with")
 	}
 	return nil
 }

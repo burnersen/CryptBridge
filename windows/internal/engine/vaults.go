@@ -143,23 +143,46 @@ func (e *errFolderMissing) Error() string {
 	return fmt.Sprintf("the folder %s is not there — is its drive plugged in?", e.path)
 }
 
-// errWrongFolder: the folder of a local vault is there, but it is not the
-// vault — the keys do not open it (for example because another USB drive got
-// the drive letter), or it is empty although a vault always holds at least
-// its check file (the vault folder was moved and an empty one took its place).
+// errWrongFolder: the folder of a vault does not hold the vault — the keys
+// do not open it (for example because another USB drive got the drive
+// letter, or another pCloud folder took its place), or it is empty although
+// a vault always holds at least its check file (the vault folder was moved
+// or renamed).
 type errWrongFolder struct {
 	name, path string
 	empty      bool
+	cloud      bool // the folder is in pCloud, not on a drive of this PC
 }
 
 func (e *errWrongFolder) Error() string {
-	if e.empty {
-		return fmt.Sprintf("the folder %s is empty, but the vault %q is not — was the vault folder moved? "+
-			"Nothing was connected and nothing was written", e.path, e.name)
+	const nothingDone = "Nothing was connected and nothing was written"
+	switch {
+	case e.cloud && e.empty:
+		return fmt.Sprintf("the pCloud folder %s is empty or gone, but the vault %q is not — was it renamed or moved? %s",
+			e.path, e.name, nothingDone)
+	case e.cloud:
+		return fmt.Sprintf("the keys of %q do not open the pCloud folder %s — was another folder put in its place? %s",
+			e.name, e.path, nothingDone)
+	case e.empty:
+		return fmt.Sprintf("the folder %s is empty, but the vault %q is not — was the vault folder moved? %s",
+			e.path, e.name, nothingDone)
 	}
-	return fmt.Sprintf("the keys of %q do not open the folder %s — maybe another drive got this drive letter. "+
-		"Nothing was connected and nothing was written", e.name, e.path)
+	return fmt.Sprintf("the keys of %q do not open the folder %s — maybe another drive got this drive letter. %s",
+		e.name, e.path, nothingDone)
 }
+
+// errNotChecked: pCloud could not be asked whether the vault's folder still
+// holds the vault, for example while this PC is offline. Nothing is
+// connected unchecked; the drive keeps trying as after a refused sign-in.
+type errNotChecked struct {
+	err error
+}
+
+func (e *errNotChecked) Error() string {
+	return fmt.Sprintf("the vault could not be checked in pCloud, so its drive was not connected: %v", e.err)
+}
+
+func (e *errNotChecked) Unwrap() error { return e.err }
 
 // errOtherFolder: the keys open the folder, but it is not the folder the
 // vault was last connected to — a copy of the vault on another USB drive, or
@@ -277,6 +300,7 @@ func (e *Engine) connectFailed(v settings.Vault, err error) {
 	autoReconnect := e.currentSettings().AutoReconnect
 	var missing *errFolderMissing
 	var other *errOtherFolder
+	var unchecked *errNotChecked
 	e.update(v.ID, func(rt *vaultRuntime) {
 		switch {
 		case errors.As(err, &missing):
@@ -287,9 +311,9 @@ func (e *Engine) connectFailed(v settings.Vault, err error) {
 			rt.state = StateError
 			rt.message = err.Error()
 			rt.otherFolder = true
-		case pcloud.IsSignInProblem(err) && autoReconnect:
+		case (pcloud.IsSignInProblem(err) || errors.As(err, &unchecked)) && autoReconnect:
 			// Keep trying: the drive comes by itself once pCloud accepts
-			// the sign-in again.
+			// the sign-in again and answers the check of the vault.
 			rt.state = StateError
 			rt.message = err.Error()
 		default:
@@ -329,7 +353,7 @@ func (e *Engine) mountLocked(ctx context.Context, v settings.Vault, otherFolder 
 		if folder, err = checkLocalFolder(ctx, client, v, otherFolder); err != nil {
 			return drive.FolderID{}, err
 		}
-	} else if err := e.checkSignInLocked(ctx, client); err != nil {
+	} else if err := e.checkPCloudFolderLocked(ctx, client, v); err != nil {
 		return drive.FolderID{}, err
 	}
 	err := drive.Mount(ctx, client, drive.Settings{
@@ -376,26 +400,71 @@ func checkLocalFolder(ctx context.Context, client *rcd.Client, v settings.Vault,
 	if err != nil {
 		return drive.FolderID{}, err
 	}
-	base, cfg := placeOf(v)
-	check, err := vault.Verify(ctx, client, base, cfg)
+	check, err := verifyFolder(ctx, client, v)
 	if err != nil {
 		return drive.FolderID{}, err
-	}
-	switch check.Verdict {
-	case vault.VerdictMismatch:
-		return drive.FolderID{}, &errWrongFolder{name: v.Name, path: path}
-	case vault.VerdictEmpty:
-		return drive.FolderID{}, &errWrongFolder{name: v.Name, path: path, empty: true}
 	}
 	if !otherFolder && v.Folder != nil && (drive.FolderID{Volume: v.Folder.Volume, Index: v.Folder.Index}) != folder {
 		return drive.FolderID{}, &errOtherFolder{name: v.Name, path: path}
 	}
-	if check.Verdict != vault.VerdictUnverifiable && !check.HasCheckFile {
-		if err := vault.WriteCheckFile(ctx, client, remoteOf(v)); err != nil {
-			return drive.FolderID{}, err
-		}
+	if err := restoreCheckFile(ctx, client, v, check); err != nil {
+		return drive.FolderID{}, err
 	}
 	return folder, nil
+}
+
+// checkPCloudFolderLocked makes sure, before a pCloud drive is connected,
+// that pCloud accepts the sign-in and that the vault's folder still holds
+// this vault. A renamed or replaced folder would otherwise appear as an
+// empty drive, and files copied to it would land beside the vault. Without
+// an answer from pCloud nothing is connected (errNotChecked).
+func (e *Engine) checkPCloudFolderLocked(ctx context.Context, client *rcd.Client, v settings.Vault) error {
+	if err := e.checkSignInLocked(ctx, client); err != nil {
+		return err
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, keyCheckTimeout)
+	defer cancel()
+	check, err := verifyFolder(checkCtx, client, v)
+	var wrong *errWrongFolder
+	if errors.As(err, &wrong) {
+		return err
+	}
+	if err != nil {
+		return &errNotChecked{err: err}
+	}
+	if err := restoreCheckFile(checkCtx, client, v, check); err != nil {
+		return &errNotChecked{err: err}
+	}
+	return nil
+}
+
+// verifyFolder makes sure the keys of v open the vault in its folder: wrong
+// keys would write files that the right keys cannot read, and an empty
+// folder means the vault is no longer where it was.
+func verifyFolder(ctx context.Context, client *rcd.Client, v settings.Vault) (vault.Verification, error) {
+	base, cfg := placeOf(v)
+	check, err := vault.Verify(ctx, client, base, cfg)
+	if err != nil {
+		return check, err
+	}
+	wrong := &errWrongFolder{name: v.Name, path: location(v), cloud: v.Kind != settings.KindLocal}
+	switch check.Verdict {
+	case vault.VerdictMismatch:
+		return check, wrong
+	case vault.VerdictEmpty:
+		wrong.empty = true
+		return check, wrong
+	}
+	return check, nil
+}
+
+// restoreCheckFile puts the check file back into a vault whose keys were
+// just proven but which lost it, so that later checks are quick and certain.
+func restoreCheckFile(ctx context.Context, client *rcd.Client, v settings.Vault, check vault.Verification) error {
+	if check.Verdict == vault.VerdictUnverifiable || check.HasCheckFile {
+		return nil
+	}
+	return vault.WriteCheckFile(ctx, client, remoteOf(v))
 }
 
 // currentFolderID returns the ID of a local vault's folder now, or the zero
@@ -411,9 +480,9 @@ func currentFolderID(v settings.Vault) drive.FolderID {
 // checkSignInLocked asks pCloud whether it accepts the sign-in before a
 // drive is mounted; otherwise the drive would appear but stay empty without
 // a word of explanation. Other problems (offline, pCloud busy, a slow
-// answer) do not stop the connect: rclone copes with them, and the drive
-// works as soon as pCloud can be reached. An answer from the last minute is
-// good enough, so that several pCloud drives do not ask one after another.
+// answer) are left to the check of the vault folder that follows, which
+// needs pCloud anyway. An answer from the last minute is good enough, so
+// that several pCloud drives do not ask one after another.
 func (e *Engine) checkSignInLocked(ctx context.Context, client *rcd.Client) error {
 	e.mu.Lock()
 	problem := e.signInProblem

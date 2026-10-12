@@ -38,8 +38,14 @@ const (
 	signInRecheckEvery = time.Minute
 
 	// signInCheckTimeout limits the sign-in check before connecting. If
-	// pCloud answers more slowly than this, the drive is connected anyway.
+	// pCloud answers more slowly than this, the check of the vault folder
+	// that follows decides.
 	signInCheckTimeout = 10 * time.Second
+
+	// keyCheckTimeout limits the check of a pCloud vault's folder before its
+	// drive is connected. Without an answer in time, nothing is connected
+	// and the drive tries again later.
+	keyCheckTimeout = 20 * time.Second
 
 	// lostAfterFailures: so many failed health checks in a row mean the
 	// rclone process is gone (one failure may just be a busy moment).

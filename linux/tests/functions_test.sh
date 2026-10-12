@@ -96,6 +96,65 @@ for ufw_state in inactive active; do
 done
 unset -f ufw admin_ports confirm
 
+# --- verify_keys with vaults whose names prove nothing (needs rclone) -------
+# A folder stands in for pCloud, so no account is needed.
+rclone_bin="${CB_TEST_RCLONE:-$(command -v rclone || true)}"
+if [[ -n "$rclone_bin" ]]; then
+	cloud_dir="$CB_TEST_ROOT/cloud"
+	mkdir -p "$cloud_dir"
+	# rclone for Windows (when the tests run in Git Bash) needs a Windows path.
+	if command -v cygpath >/dev/null; then cloud_dir="$(cygpath -m "$cloud_dir")"; fi
+
+	# local_conf FILE FOLDER MODE PASSWORD — a conf whose "pCloud" is the folder above
+	local_conf() {
+		{
+			printf '[%s]\ntype = alias\nremote = %s\n\n' "$PCLOUD_REMOTE" "$cloud_dir"
+			printf '[%s]\ntype = crypt\nremote = %s:%s\n' "$VAULT_REMOTE" "$PCLOUD_REMOTE" "$2"
+			printf 'filename_encryption = %s\ndirectory_name_encryption = true\n' "$3"
+			printf 'filename_encoding = base32\nsuffix = .bin\npassword = %s\n' "$(printf '%s' "$4" | "$rclone_bin" obscure -)"
+		} >"$1"
+	}
+	# key_check FOLDER MODE PASSWORD — runs verify_keys, prints "status output"
+	key_check() {
+		CB_VAULT_PATH="$1" VAULT_ENCRYPTION="$2" VAULT_DIRNAMES="true"
+		local_conf "$test_conf" "$1" "$2" "$3"
+		local out status
+		out="$( (verify_keys) 2>&1)"; status=$?
+		printf '%s %s' "$status" "$out"
+	}
+	rc() { "$rclone_bin" --config "$test_conf" "$@"; }
+	confirm() { return 1; } # answers "no" to "Continue anyway?"
+	test_conf="$CB_TEST_ROOT/local.conf"
+
+	for mode in obfuscate off; do
+		local_conf "$test_conf" "Vault-$mode" "$mode" "right password"
+		printf 'This file lets CryptBridge verify the keys of this vault.\r\n' | rc rcat "$VAULT_REMOTE:$CHECK_FILE"
+		printf 'some notes' | rc rcat "$VAULT_REMOTE:Notes 2026.txt"
+		rc mkdir "$VAULT_REMOTE:Photos"
+
+		r="$(key_check "Vault-$mode" "$mode" "right password")"
+		[[ "$r" == "0 "*"a file was decrypted"* ]] && r=accepted
+		check "$mode: verify_keys accepts the right keys by content" accepted "$r"
+		r="$(key_check "Vault-$mode" "$mode" "wrong password")"
+		[[ "$r" == "1 "*"do NOT open"*"did not decrypt"* ]] && r=refused
+		check "$mode: verify_keys refuses a wrong password" refused "$r"
+		r="$(key_check "Vault-$mode" standard "right password")"
+		[[ "$r" == "1 "*"do NOT open"* ]] && r=refused
+		check "$mode: verify_keys refuses the right password with standard names" refused "$r"
+	done
+	r="$(key_check "Vault-obfuscate" off "right password")"
+	[[ "$r" == "1 "*"fit its name settings"* ]] && r=refused
+	check "obfuscate: verify_keys refuses the right password with plain names" refused "$r"
+
+	# Only an empty file: nothing can prove the keys, the user is asked.
+	local_conf "$test_conf" "Vault-empty" off "right password"
+	: | rc rcat "$VAULT_REMOTE:empty.txt"
+	r="$(key_check "Vault-empty" off "right password")"
+	[[ "$r" == "1 "*"cannot be checked"*"Nothing changed"* ]] && r=asked
+	check "off: verify_keys asks when nothing can prove the keys" asked "$r"
+	unset -f rc confirm local_conf key_check
+fi
+
 # --- live part: same check code and key check as the Windows program -------
 if [[ -n "${CB_TEST_CONF:-}" ]]; then
 	rc() { "$CB_TEST_RCLONE" --config "$CB_TEST_CONF" "$@"; }

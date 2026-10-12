@@ -46,10 +46,12 @@ the codes match, the keys match.
 
 ## What makes it safe
 
-- **Keys are checked before anything is written.** rclone crypt never says "wrong password": with a
-  wrong key a vault simply looks empty, and anything copied into it would be encrypted with the wrong
-  key, which would split the vault in two. CryptBridge decrypts existing names first and refuses keys
-  that do not fit. Every vault carries a small [check file](#the-file-cryptbridge-vault) for this.
+- **Wrong keys are caught before they can do harm.** rclone never tells you "wrong password". With
+  wrong keys (password and salt), a vault simply looks empty, and everything you copy into it would be
+  locked with the wrong keys. Your vault would then be split into two parts that no single password
+  opens. That is why CryptBridge tests the keys when you add a vault and every time before its drive
+  appears, and refuses keys that do not fit. A small [check file](#the-file-cryptbridge-vault) in every
+  vault helps with this.
 - **No vault is overwritten by mistake.** A new vault is only created in an empty folder, never inside
   another vault, and two vaults can never share a folder. A vault on a USB drive connects only to the
   very folder it was connected to before (not to a copy on another drive with the same letter), and
@@ -70,21 +72,24 @@ the codes match, the keys match.
 - **The drive survives problems.** rclone runs as its own process: if the window crashes, the drive
   stays; if rclone stops, CryptBridge brings the drive back. If pCloud refuses the sign-in, CryptBridge
   says so plainly, keeps asking pCloud every minute and reconnects by itself once pCloud accepts it again.
+  Without internet, a pCloud drive does not appear at first, because its keys cannot be tested yet. It
+  appears by itself as soon as pCloud can be reached again.
 
 ### The file `.cryptbridge-vault`
 
-Every vault holds a small file named `.cryptbridge-vault`. It is not clutter but part of the key check:
-its encrypted name can only be produced with the right keys, so finding it proves with certainty that
-the keys fit when you add the vault to CryptBridge or set it up on the server. It contains only two
-lines of text that say what it is for.
+Every vault holds a small file named `.cryptbridge-vault`. It is not clutter. CryptBridge uses it to
+make sure that the keys you entered really belong to this vault: only with the right keys can it find
+and read this file. The Windows program looks for it when you add the vault and every time before its
+drive appears, the Linux setup when it sets up the server. The file contains just two lines of text
+that say what it is for.
 
 Since version 0.6 you do not see it: the drives, the LAN access and the server's vault folder hide it
 (on the server after running the setup again), while it stays in the vault. You may still meet it
 where the vault is opened another way, for example with plain rclone.
 
-**Please keep it.** Deleting it does not harm your files, but until it is back the check is weaker:
-CryptBridge then decrypts a few existing file names instead. The Windows program writes the file again
-the next time you add the vault.
+**Please keep it.** Deleting it does not harm your files. The key test still works without it, using
+some of your other files, but it is less certain until the file is back. The Windows program puts it
+back by itself the next time the drive connects.
 
 ---
 

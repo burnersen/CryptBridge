@@ -24,6 +24,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
+	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
 // These tests run against the developer's pCloud test vault; they need
@@ -37,7 +38,17 @@ const testVaultID = settings.MigratedVaultID
 // letter and returns the test profile and the letter.
 func liveSettings(t *testing.T, appLock *passlock.Key) (appdir.Paths, string) {
 	t.Helper()
+	return liveSettingsWith(t, appLock, nil)
+}
+
+// liveSettingsWith is liveSettings with the vault settings changed by change
+// (if not nil), for example to wrong keys.
+func liveSettingsWith(t *testing.T, appLock *passlock.Key, change func(*vault.Config)) (appdir.Paths, string) {
+	t.Helper()
 	_, account, vaultCfg := testenv.Live(t)
+	if change != nil {
+		change(&vaultCfg)
+	}
 	free, err := drive.FreeLetters()
 	if err != nil || len(free) < 2 {
 		t.Skip("no free drive letter")
@@ -201,6 +212,93 @@ func TestLiveSignInProblem(t *testing.T) {
 	waitState(t, e, testVaultID, StateConnected, 90*time.Second)
 	if problem := e.Snapshot().SignInProblem; problem != "" {
 		t.Fatalf("warning still shown after pCloud accepted the sign-in: %s", problem)
+	}
+}
+
+// TestLivePCloudUnreachable: a pCloud drive connects only after its folder
+// proved to hold the vault (since 0.6.1). While pCloud cannot be reached,
+// nothing is connected, and the drive comes by itself once pCloud answers.
+// "Cannot be reached" is simulated with a host name that does not exist.
+func TestLivePCloudUnreachable(t *testing.T) {
+	_, account, _ := testenv.Live(t)
+	paths, letter := liveSettings(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	e := New(paths, "test")
+	if err := e.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
+	waitState(t, e, testVaultID, StateConnected, 60*time.Second)
+	if err := e.Disconnect(ctx, testVaultID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	unreachable := pcloud.Account{Hostname: "eapi.pcloud.invalid", Token: account.Token}
+	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, unreachable); err != nil {
+		t.Fatal(err)
+	}
+	var unchecked *errNotChecked
+	if err := e.Connect(ctx, testVaultID); !errors.As(err, &unchecked) {
+		t.Fatalf("connect while pCloud cannot be reached: got %v, want errNotChecked", err)
+	}
+	if _, err := os.Stat(letter + `:\`); err == nil {
+		t.Fatalf("drive %s: was mounted without checking the vault", letter)
+	}
+	waitState(t, e, testVaultID, StateReconnecting, 15*time.Second)
+	t.Logf("while unreachable: %s", vaultOf(e, testVaultID).Message)
+
+	if err := pcloud.Configure(ctx, clientOf(e), pcloudRemote, account); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, e, testVaultID, StateConnected, 90*time.Second)
+}
+
+// TestLivePCloudWrongFolder: wrong keys or a renamed vault folder stop a
+// pCloud drive for good, without writing anything (since 0.6.1).
+func TestLivePCloudWrongFolder(t *testing.T) {
+	missing := fmt.Sprintf("-renamed-%d", time.Now().UnixNano())
+	cases := []struct {
+		what    string
+		change  func(*vault.Config)
+		message string
+	}{
+		{"wrong password", func(c *vault.Config) { c.Password += " wrong" }, "do not open the pCloud folder"},
+		{"renamed folder", func(c *vault.Config) { c.Path += missing }, "is empty or gone"},
+	}
+	for _, c := range cases {
+		t.Run(c.what, func(t *testing.T) {
+			paths, letter := liveSettingsWith(t, nil, c.change)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			e := New(paths, "test")
+			if err := e.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = e.Shutdown(context.Background(), true) })
+
+			waitState(t, e, testVaultID, StateError, 60*time.Second)
+			if message := vaultOf(e, testVaultID).Message; !strings.Contains(message, c.message) {
+				t.Fatalf("message %q; want it to contain %q", message, c.message)
+			}
+			// It must not keep trying: the folder will not fix itself.
+			time.Sleep(3 * pollEvery)
+			if state := vaultOf(e, testVaultID).State; state != StateError {
+				t.Fatalf("state %q after a while; want it to stay %q", state, StateError)
+			}
+			if _, err := os.Stat(letter + `:\`); err == nil {
+				t.Fatalf("drive %s: was mounted although the folder does not hold the vault", letter)
+			}
+		})
+	}
+
+	// Nothing may have been written where the renamed folder was.
+	_, _, cfg := testenv.Live(t)
+	conf := os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF")
+	out, err := exec.Command("rclone", "--config", conf, "lsf", "cbpcloud:"+cfg.NormalisedPath()+missing).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "directory not found") {
+		t.Fatalf("the missing folder exists now (err %v): %s", err, out)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
@@ -19,8 +20,9 @@ import (
 
 const (
 	// CheckFileName is the plain name of the small file every CryptBridge
-	// vault carries. Its encrypted name can only be produced with the right
-	// keys, so finding it proves the keys with certainty.
+	// vault carries. With standard name encryption, its encrypted name can
+	// only be produced with the right keys, so finding it proves the keys
+	// with certainty. With other name encryption, its content proves them.
 	CheckFileName = ".cryptbridge-vault"
 
 	checkFileContent = "This file lets CryptBridge verify the keys of this vault.\r\n" +
@@ -30,10 +32,30 @@ const (
 	// real vault remote is never touched by a guess.
 	probeRemote = "cbprobe"
 
+	// contentProbeRemote is a second temporary remote with the same keys. It
+	// leaves names as they are stored and decrypts only the content, so it
+	// reads a file whatever the keys make of its name.
+	contentProbeRemote = "cbcontent"
+
+	// suffixNone is rclone's word for "no file ending" with plain names.
+	suffixNone = "none"
+
 	// maxNamesToCheck limits how many existing names are decrypted when a
 	// vault has no check file. A single wrong key passes one name by chance
 	// with a probability of about 1 in 256; eight names make that negligible.
 	maxNamesToCheck = 8
+
+	// An encrypted file starts with a 32-byte header (marker and nonce), and
+	// every block of content carries a 16-byte authenticator. A file of just
+	// the header is empty and opens with any keys, so only larger files can
+	// prove them.
+	cryptHeaderSize    = 32
+	cryptBlockOverhead = 16
+
+	// maxContentCheckSize limits which files are read to prove keys, because
+	// rclone reads such a file completely. The encrypted check file has
+	// 168 bytes.
+	maxContentCheckSize = 1 << 20
 
 	// fingerprintProbe is a fixed path whose encrypted form identifies a set
 	// of keys. The Linux setup computes the same value the same way.
@@ -47,15 +69,16 @@ const (
 	VerdictEmpty        Verdict = "empty"        // nothing in the folder yet: a new vault
 	VerdictMatch        Verdict = "match"        // the keys open the existing vault
 	VerdictMismatch     Verdict = "mismatch"     // the keys do NOT fit — writing would split the vault
-	VerdictUnverifiable Verdict = "unverifiable" // names are not encrypted, so they prove nothing
+	VerdictUnverifiable Verdict = "unverifiable" // nothing in the folder can prove the keys
 )
 
 // Verification reports what Verify found.
 type Verification struct {
-	Verdict      Verdict `json:"verdict"`
-	HasCheckFile bool    `json:"hasCheckFile"`
-	NamesChecked int     `json:"namesChecked"`
-	NamesOpened  int     `json:"namesOpened"`
+	Verdict        Verdict `json:"verdict"`
+	HasCheckFile   bool    `json:"hasCheckFile"`
+	NamesChecked   int     `json:"namesChecked"`
+	NamesOpened    int     `json:"namesOpened"`
+	ContentChecked bool    `json:"contentChecked"` // a file was read to test the keys
 }
 
 // ErrNoFingerprint is returned for vaults without file name encryption: their
@@ -84,37 +107,24 @@ func Verify(ctx context.Context, client *rcd.Client, baseRemote string, c Config
 	if err != nil {
 		return result, err
 	}
-	for _, item := range items {
-		if !item.IsDir && item.Name == checkName {
-			result.Verdict = VerdictMatch
-			result.HasCheckFile = true
-			return result, nil
-		}
-	}
+	result.HasCheckFile = slices.ContainsFunc(items, func(item listItem) bool {
+		return !item.IsDir && item.Name == checkName
+	})
 
-	if c.FilenameEncryption == EncryptionOff {
-		result.Verdict = VerdictUnverifiable
+	if c.FilenameEncryption != EncryptionStandard {
+		// Obfuscated and plain names come out of any keys, the name of the
+		// check file too (measured with obfuscate: about one wrong password
+		// in 25 produces it). Only the content proves the keys.
+		return verifyByContent(ctx, client, baseRemote, c, items, result)
+	}
+	if result.HasCheckFile {
+		result.Verdict = VerdictMatch
 		return result, nil
 	}
-
-	for _, item := range items {
-		if result.NamesChecked == maxNamesToCheck {
-			break
-		}
-		// Plain folder names prove nothing when folder names are not encrypted.
-		if item.IsDir && !c.DirectoryNameEncryption {
-			continue
-		}
-		result.NamesChecked++
-		opened, err := decodeOne(ctx, client, probeRemote+":", item.Name)
-		if err != nil {
-			return result, err
-		}
-		if opened {
-			result.NamesOpened++
-		}
+	result.NamesChecked, result.NamesOpened, err = decodeNames(ctx, client, c, items)
+	if err != nil {
+		return result, err
 	}
-
 	switch {
 	case result.NamesChecked == 0:
 		result.Verdict = VerdictUnverifiable
@@ -124,6 +134,115 @@ func Verify(ctx context.Context, client *rcd.Client, baseRemote string, c Config
 		result.Verdict = VerdictMismatch
 	}
 	return result, nil
+}
+
+// verifyByContent checks the keys of a vault whose names prove nothing by
+// reading one of its files. The names must still follow the vault's naming:
+// the content proves password and salt, but not the name settings, and
+// wrong name settings would mix two kinds of names in one vault.
+func verifyByContent(ctx context.Context, client *rcd.Client, baseRemote string, c Config, items []listItem, result Verification) (Verification, error) {
+	var err error
+	result.NamesChecked, result.NamesOpened, err = decodeNames(ctx, client, c, items)
+	if err != nil {
+		return result, err
+	}
+	if result.NamesOpened < result.NamesChecked {
+		result.Verdict = VerdictMismatch
+		return result, nil
+	}
+
+	sample, found := contentSample(items)
+	if !found {
+		result.Verdict = VerdictUnverifiable
+		return result, nil
+	}
+	opened, err := opensContent(ctx, client, baseRemote, c, sample.Name)
+	if err != nil {
+		return result, err
+	}
+	result.ContentChecked = true
+	if opened {
+		result.Verdict = VerdictMatch
+	} else {
+		result.Verdict = VerdictMismatch
+	}
+	return result, nil
+}
+
+// decodeNames decrypts up to maxNamesToCheck of the listed names with the
+// keys of the probe remote and counts how many of them opened.
+func decodeNames(ctx context.Context, client *rcd.Client, c Config, items []listItem) (checked, opened int, err error) {
+	for _, item := range items {
+		if checked == maxNamesToCheck {
+			break
+		}
+		// Plain folder names prove nothing.
+		if item.IsDir && !encryptsFolderNames(c) {
+			continue
+		}
+		checked++
+		var decrypted bool
+		decrypted, err = decodeOne(ctx, client, probeRemote+":", item.Name)
+		if err != nil {
+			return checked, opened, err
+		}
+		if decrypted {
+			opened++
+		}
+	}
+	return checked, opened, nil
+}
+
+// encryptsFolderNames reports whether rclone changes folder names: with file
+// name encryption off it leaves them plain, whatever the folder setting says.
+func encryptsFolderNames(c Config) bool {
+	return c.DirectoryNameEncryption && c.FilenameEncryption != EncryptionOff
+}
+
+// contentSample picks the smallest file that can prove keys: larger than an
+// empty encrypted file, and small enough to be read quickly.
+func contentSample(items []listItem) (listItem, bool) {
+	var sample listItem
+	found := false
+	for _, item := range items {
+		if item.IsDir || item.Size <= cryptHeaderSize+cryptBlockOverhead || item.Size > maxContentCheckSize {
+			continue
+		}
+		if !found || item.Size < sample.Size {
+			sample, found = item, true
+		}
+	}
+	return sample, found
+}
+
+// opensContent reports whether the keys of c decrypt the file stored under
+// name in the vault folder. Content is authenticated, so wrong keys fail on
+// its first block; that is a normal outcome (false, nil). Other failures,
+// such as a lost connection, are returned as errors.
+func opensContent(ctx context.Context, client *rcd.Client, baseRemote string, c Config, name string) (bool, error) {
+	content := c
+	content.FilenameEncryption = EncryptionOff
+	content.DirectoryNameEncryption = false
+	content.Suffix = suffixNone
+	// A remote of its own, not a variant of the probe remote such as
+	// "cbprobe,suffix=none:": rclone keeps such variants in its cache with
+	// the keys they were first used with (measured with rclone 1.75.1).
+	if err := Configure(ctx, client, contentProbeRemote, baseRemote, content); err != nil {
+		return false, err
+	}
+	defer Remove(context.WithoutCancel(ctx), client, contentProbeRemote)
+
+	// The hash is not needed: reading the content through the keys is the test.
+	request := map[string]any{"fs": contentProbeRemote + ":", "remote": name, "hashType": "md5", "download": true}
+	err := client.Call(ctx, "operations/hashsumfile", request, nil)
+	if err == nil {
+		return true, nil
+	}
+	var apiErr *rcd.APIError
+	if errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "failed to authenticate decrypted block") {
+		return false, nil
+	}
+	return false, fmt.Errorf("read a file to check the keys: %w", err)
 }
 
 // Fingerprint returns a short code such as "7F3A-91C2" that is identical on
