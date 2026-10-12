@@ -9,20 +9,20 @@
 # rclone-crypt encrypted pCloud vault:
 #
 #   pCloud <-> rclone mount (rclone-mount.service) -> ~/CryptBridge (read/write in the desktop)
-#                  \-> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- Infuse
+#                  \-> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
 #
 # Run it again at any time to repair or change the setup. After the first run
 # it is also installed as the command "cryptbridge" (status, restart, ...).
 #
 #   sudo bash setup.sh            set up or change CryptBridge
-#   cryptbridge                   menu: status, Infuse settings, restart, ...
+#   cryptbridge                   menu: status, streaming settings, restart, ...
 #   sudo cryptbridge uninstall    remove CryptBridge (keeps your files in pCloud)
 
 set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.5.0"
+readonly CRYPTBRIDGE_VERSION="0.6.0"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -64,7 +64,7 @@ readonly DIR_CACHE_TIME="24h"
 readonly POLL_INTERVAL="1m"
 readonly DEFAULT_CACHE_MAX_GB=20
 
-# bcrypt cost of the Infuse password; see choose_webdav_account.
+# bcrypt cost of the streaming password; see choose_webdav_account.
 readonly BCRYPT_COST=10
 
 # --- Transfer block from the Windows program -----------------------------
@@ -576,15 +576,15 @@ choose_cache() {
 }
 
 choose_webdav_account() {
-	step "Account for Infuse"
-	if [[ -s "$HTPASSWD" ]] && [[ -n "${CB_WEBDAV_USER:-}" ]] && confirm "Keep the Infuse account '$CB_WEBDAV_USER'?" y; then
+	step "Account for streaming"
+	if [[ -s "$HTPASSWD" ]] && [[ -n "${CB_WEBDAV_USER:-}" ]] && confirm "Keep the streaming account '$CB_WEBDAV_USER'?" y; then
 		return
 	fi
-	ask CB_WEBDAV_USER "User name for Infuse" "${CB_WEBDAV_USER:-infuse}"
+	ask CB_WEBDAV_USER "User name for streaming" "${CB_WEBDAV_USER:-stream}"
 	[[ "$CB_WEBDAV_USER" =~ ^[A-Za-z0-9._-]+$ ]] || die "Use letters, digits, dot, dash or underscore only."
 	local pw again
 	while true; do
-		ask_secret pw "Password for Infuse (at least 12 characters)"
+		ask_secret pw "Password for streaming (at least 12 characters)"
 		((${#pw} >= 12)) || {
 			warn "Too short."
 			continue
@@ -596,7 +596,7 @@ choose_webdav_account() {
 	# bcrypt with cost 10, password passed on stdin (not in the process list).
 	# rclone checks the password on EVERY request; with cost 14 (Caddy's
 	# fixed default) each request took 1.1-1.7 s (measured), which makes
-	# seeking and browsing in Infuse sluggish. Cost 10 is ~16 times faster
+	# seeking and browsing in the player sluggish. Cost 10 is ~16 times faster
 	# and, with a long password and fail2ban, still far out of reach.
 	local line
 	line="$(printf '%s\n' "$pw" | htpasswd -niBC "$BCRYPT_COST" "$CB_WEBDAV_USER" 2>/dev/null)" || die "Could not hash the password."
@@ -604,7 +604,7 @@ choose_webdav_account() {
 	install -m 0640 -o root -g "$CB_GROUP" /dev/null "$HTPASSWD"
 	printf '%s\n' "$line" >"$HTPASSWD"
 	WEBDAV_PASSWORD_FOR_TEST="$pw"
-	ok "Infuse account '$CB_WEBDAV_USER' saved"
+	ok "Streaming account '$CB_WEBDAV_USER' saved"
 }
 
 public_ipv4() {
@@ -623,8 +623,8 @@ public_dns_ipv4() {
 }
 
 choose_address() {
-	step "Address for Infuse"
-	info "Infuse reaches this server over HTTPS. A free certificate is fetched automatically;"
+	step "Address of this server"
+	info "Video players reach this server over HTTPS. A free certificate is fetched automatically;"
 	info "that needs a name that points to this server: your own domain, or a free name"
 	info "from duckdns.org (e.g. myvault.duckdns.org — set its IP to this server's IP)."
 	info "Host names of your provider (…supersrv.de, …contaboserver.net) often do NOT work:"
@@ -678,7 +678,10 @@ User=$CB_USER
 Group=$CB_GROUP
 # A crash leaves a dead mount behind ("Transport endpoint is not connected"); clear it first.
 ExecStartPre=/bin/sh -c 'if findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null; then /usr/bin/fusermount3 -uz "$CB_MOUNT_DIR"; fi'
+# The check file stays in the vault for the key check, but neither the folder
+# nor WebDAV (which serves the folder) shows it: people took it for clutter.
 ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: $CB_MOUNT_DIR \\
+  --exclude /$CHECK_FILE \\
   --config $RCLONE_CONF \\
   --cache-dir $CACHE_DIR \\
   --vfs-cache-mode $CACHE_MODE \\
@@ -707,7 +710,7 @@ EOF
 	cat >"$WEBDAV_UNIT" <<EOF
 $MARKER
 [Unit]
-Description=CryptBridge: WebDAV for Infuse (read-only)
+Description=CryptBridge: WebDAV for video players (read-only)
 Documentation=https://github.com/burnersen/CryptBridge
 # Never serve the empty mount point: stop together with the mount.
 BindsTo=rclone-mount.service
@@ -833,7 +836,7 @@ explain_certificate_problem() {
 	else
 		warn "Check that ports 80 and 443 are open (also in the provider's firewall). Details: journalctl -u caddy"
 	fi
-	info "Caddy keeps trying by itself; once it gets a certificate, Infuse works without running the setup again."
+	info "Caddy keeps trying by itself; once it gets a certificate, your video player works without running the setup again."
 }
 
 check_https() {
@@ -855,7 +858,7 @@ check_https() {
 	ok "https://$CB_ADDRESS answers and asks for the password"
 	if [[ -n "${WEBDAV_PASSWORD_FOR_TEST:-}" ]]; then
 		code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -u "$CB_WEBDAV_USER:$WEBDAV_PASSWORD_FOR_TEST" -X PROPFIND -H 'Depth: 1' "https://$CB_ADDRESS/")"
-		[[ "$code" == "207" ]] && ok "Login with the Infuse account works" || warn "Login test answered $code"
+		[[ "$code" == "207" ]] && ok "Login with the streaming account works" || warn "Login test answered $code"
 	fi
 }
 
@@ -885,22 +888,31 @@ setup_firewall() {
 	local ports port status
 	mapfile -t ports < <(admin_ports)
 	status="$(ufw status 2>/dev/null | head -n1 || true)"
-	info "Ports that will be opened: 80 and 443 (HTTPS for Infuse)."
-	if [[ "$status" != *"active"* || "$status" == *"inactive"* ]]; then
-		info "ufw is not active yet. Before switching it on, these ports for your own access stay open:"
-		if ((${#ports[@]} == 0)); then
-			warn "No SSH or remote desktop port found. Switching on the firewall could lock you out."
-			confirm "Skip the firewall (recommended in this case)?" y && return
-		fi
-		for port in "${ports[@]}"; do info "  $port/tcp"; done
-		confirm "Switch on the firewall with these rules?" y || {
-			warn "Firewall left off."
-			return
-		}
-		for port in "${ports[@]}"; do ufw allow "$port/tcp" comment "admin access (CryptBridge setup)" >>"$LOG_FILE"; done
-	fi
+	info "Ports that will be opened: 80 and 443 (HTTPS for your video player)."
+	# Allowed first, whatever happens below: ufw keeps rules while it is off
+	# and applies them once it is switched on, also later by hand. Allowing
+	# them only after switching it on left them closed when the firewall was
+	# left off here and switched on afterwards.
 	ufw allow 80/tcp comment "CryptBridge HTTPS certificate" >>"$LOG_FILE"
-	ufw allow 443/tcp comment "CryptBridge WebDAV for Infuse" >>"$LOG_FILE"
+	ufw allow 443/tcp comment "CryptBridge WebDAV for video players" >>"$LOG_FILE"
+	if [[ "$status" == *"active"* && "$status" != *"inactive"* ]]; then
+		ok "Firewall active"
+		return
+	fi
+	info "ufw is not active yet. Before switching it on, these ports for your own access stay open:"
+	if ((${#ports[@]} == 0)); then
+		warn "No SSH or remote desktop port found. Switching on the firewall could lock you out."
+		if confirm "Skip the firewall (recommended in this case)?" y; then
+			info "Firewall left off. Ports 80 and 443 are allowed already for when it is switched on."
+			return
+		fi
+	fi
+	for port in "${ports[@]}"; do info "  $port/tcp"; done
+	confirm "Switch on the firewall with these rules?" y || {
+		warn "Firewall left off. Ports 80 and 443 are allowed already for when it is switched on."
+		return
+	}
+	for port in "${ports[@]}"; do ufw allow "$port/tcp" comment "admin access (CryptBridge setup)" >>"$LOG_FILE"; done
 	ufw --force enable >>"$LOG_FILE"
 	ok "Firewall active"
 }
@@ -912,7 +924,7 @@ setup_fail2ban() {
 # Counts failed logins at the WebDAV server in Caddy's access log (systemd
 # journal): answer 401 although the client DID send a password. Requests
 # without a password (the usual first request of a WebDAV client) do not
-# count, so Infuse never bans itself.
+# count, so a video player never bans itself.
 [Definition]
 failregex = ^.*"remote_ip":"<HOST>".*"Authorization":\[.*"status":401\b
 journalmatch = _SYSTEMD_UNIT=caddy.service
@@ -950,7 +962,7 @@ setup_desktop() {
 	write_launcher "$desktop/cryptbridge-vault.desktop" "CryptBridge Vault" \
 		"Your encrypted pCloud vault" "xdg-open $CB_MOUNT_DIR" "drive-harddisk-encrypted" false
 	write_launcher "$desktop/cryptbridge.desktop" "CryptBridge" \
-		"Status, Infuse settings and restart of CryptBridge" "$SELF_INSTALLED menu" "security-high" true
+		"Status, streaming settings and restart of CryptBridge" "$SELF_INSTALLED menu" "security-high" true
 
 	# XFCE runs a desktop launcher without asking only if it is marked as
 	# trusted with the SHA-256 of its content (XFCE 4.18 and later).
@@ -1024,16 +1036,17 @@ install_self() {
 # Summary, status, menu, uninstall
 # ==========================================================================
 
-show_infuse_settings() {
+show_streaming_settings() {
 	load_settings
-	printf '\n%sInfuse settings%s (Apple TV / iPhone: Settings -> Shares -> Add share -> WebDAV)\n' "$BOLD" "$RESET"
+	printf '\n%sStreaming settings%s (for any video player that opens WebDAV shares)\n' "$BOLD" "$RESET"
 	printf '    Protocol:  WebDAV (HTTPS)\n'
 	printf '    Address:   %s\n' "${CB_ADDRESS:-?}"
 	printf '    Port:      443\n'
 	printf '    Path:      /\n'
 	printf '    User:      %s\n' "${CB_WEBDAV_USER:-?}"
-	printf '    Password:  the Infuse password you chose during setup\n'
-	printf '    Tip: Infuse -> Settings -> Playback/Streaming -> Buffer: "Generous".\n'
+	printf '    Password:  the streaming password you chose during setup\n'
+	printf '    Infuse (Apple TV / iPhone): Settings -> Shares -> Add share -> WebDAV.\n'
+	printf '    Tip for Infuse: Settings -> Playback/Streaming -> Buffer: "Generous".\n'
 }
 
 show_status() {
@@ -1062,7 +1075,7 @@ menu() {
 	while true; do
 		show_status
 		printf '\n'
-		info "1) Infuse settings"
+		info "1) Streaming settings"
 		info "2) Restart CryptBridge"
 		info "3) Recent log of the vault"
 		info "4) Run the setup again (change keys or settings)"
@@ -1070,7 +1083,7 @@ menu() {
 		info "0) Close"
 		ask choice "Choice" "0"
 		case "$choice" in
-		1) show_infuse_settings ;;
+		1) show_streaming_settings ;;
 		2) sudo "$SELF_INSTALLED" restart ;;
 		3) journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager || sudo journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager ;;
 		4) sudo "$SELF_INSTALLED" setup ;;
@@ -1120,7 +1133,7 @@ summary() {
 	printf '\n%s%s CryptBridge is ready %s\n' "$BOLD" "$GREEN" "$RESET"
 	info "Vault folder on this server: $CB_MOUNT_DIR (also on the desktop: 'CryptBridge Vault')"
 	info "Check code: $CB_FINGERPRINT — must be the same in the Windows program."
-	show_infuse_settings
+	show_streaming_settings
 	printf '\n'
 	info "Later: run 'cryptbridge' (or the 'CryptBridge' icon) for status, restart and settings."
 	info "Moving to a new server: run this setup there, then point your host name to the new server."
@@ -1164,14 +1177,14 @@ main() {
 	setup) setup ;;
 	menu) menu ;;
 	status) show_status ;;
-	infuse) show_infuse_settings ;;
+	streaming | infuse) show_streaming_settings ;; # "infuse": its name up to CryptBridge 0.5
 	restart)
 		require_root restart
 		restart_services
 		;;
 	uninstall) uninstall ;;
 	version) echo "$CRYPTBRIDGE_VERSION" ;;
-	*) die "Unknown command '$1'. Use: setup, menu, status, infuse, restart, uninstall, version" ;;
+	*) die "Unknown command '$1'. Use: setup, menu, status, streaming, restart, uninstall, version" ;;
 	esac
 }
 

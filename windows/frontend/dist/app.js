@@ -255,17 +255,17 @@ function renderNotices(s) {
 }
 
 // renderLANNotice tells on the Status page that the drives are open to the
-// home network, or why they are not although they should be.
+// home network, or why an access does not work although it is on.
 function renderLANNotice(s) {
-  const lan = s.lan;
   const notice = $("lan-notice");
-  if (s.locked || !lan.enabled) {
-    show(notice, false);
-  } else if (lan.running) {
-    const where = lan.addresses.length > 0 ? " — " + lan.addresses[0] : "";
-    setNotice(notice, "info", `Shared in your home network: ${lan.folders.join(", ")}${where}`);
-  } else if (lan.problem) {
-    setNotice(notice, "warn", "LAN access: " + lan.problem);
+  const on = s.locked ? [] : LAN_ROLES.filter((role) => s.lan[role].enabled);
+  const failing = on.filter((role) => !s.lan[role].running && s.lan[role].problem);
+  const running = on.filter((role) => s.lan[role].running);
+  if (failing.length > 0) {
+    setNotice(notice, "warn", failing.map((role) => `${LAN_NAMES[role]}: ${s.lan[role].problem}`).join(" "));
+  } else if (running.length > 0) {
+    const where = running.map((role) => `${LAN_NAMES[role].toLowerCase()} ${s.lan[role].addresses[0] || ""}`.trim());
+    setNotice(notice, "info", `Shared in your home network: ${s.lan[running[0]].folders.join(", ")} (${where.join(", ")})`);
   } else {
     show(notice, false);
   }
@@ -1260,7 +1260,8 @@ function renderLock(s) {
 let cancelPasswordDialog = null;
 function wipePage() {
   for (const id of ["add-password", "add-salt", "transfer-block", "app-client-secret", "lock-new", "lock-repeat",
-    "lock-change-old", "lock-change-new", "lock-change-repeat", "lock-off-password", "remove-confirm", "lan-password"]) {
+    "lock-change-old", "lock-change-new", "lock-change-repeat", "lock-off-password", "remove-confirm",
+    "lan-streaming-password", "lan-full-password"]) {
     $(id).value = "";
   }
   $("transfer-code").textContent = "";
@@ -1362,28 +1363,40 @@ $("btn-decline-lock").addEventListener("click", () => run($("status-message"), (
 
 // ---------- LAN access ----------
 
-// renderLAN shows what the server does. The form fields are filled only by
+// The two accesses, by the name the settings and the snapshot give them; the
+// form fields of each are called lan-<role>-….
+const LAN_ROLES = ["streaming", "full"];
+const LAN_NAMES = { streaming: "Streaming access", full: "Full access" };
+
+// anyLANAccessOn reports whether at least one access is on, in the snapshot
+// or in the settings about to be saved.
+function anyLANAccessOn(lan) {
+  return LAN_ROLES.some((role) => lan[role].enabled);
+}
+
+// renderLAN shows what the servers do. The form fields are filled only by
 // loadLANFields, so that typing is never overwritten.
 function renderLAN(s) {
-  const lan = s.lan;
-  let state = "Off";
-  if (lan.enabled && lan.running) {
-    const drives = lan.folders.length === 1 ? "1 drive" : `${lan.folders.length} drives`;
-    state = `On — ${drives} shared: ${lan.folders.join(", ")} (${lan.allowChanges ? "changes allowed" : "read only"}).`;
-  } else if (lan.enabled && lan.problem) {
-    state = "On, but not working: " + lan.problem;
-  } else if (lan.enabled) {
-    state = "On — waiting for a connected drive.";
+  for (const role of LAN_ROLES) {
+    const access = s.lan[role];
+    let state = "Off";
+    if (access.enabled && access.running) {
+      const drives = access.folders.length === 1 ? "1 drive" : `${access.folders.length} drives`;
+      state = `On: ${drives} shared (${access.folders.join(", ")}).`;
+    } else if (access.enabled && access.problem) {
+      state = "On, but not working: " + access.problem;
+    } else if (access.enabled) {
+      state = "On, waiting for a connected drive.";
+    }
+    $(`lan-${role}-state`).textContent = state;
+    show($(`lan-${role}-address-block`), access.enabled);
+    renderLANAddresses($(`lan-${role}-addresses`), access.addresses);
   }
-  $("lan-state").textContent = state;
-  show($("lan-address-block"), lan.enabled);
-  renderLANAddresses(lan.addresses);
 }
 
 // renderLANAddresses lists the addresses with a Copy button each; the list
 // is rebuilt only when it changes, so that a button keeps its "Copied".
-function renderLANAddresses(addresses) {
-  const list = $("lan-addresses");
+function renderLANAddresses(list, addresses) {
   const shown = addresses.join(" ");
   if (list.dataset.shown === shown && list.childElementCount > 0) return;
   list.dataset.shown = shown;
@@ -1405,15 +1418,34 @@ async function loadLANFields() {
   show($("lan-result"), false);
   try {
     const cfg = await api.LANSettings();
-    $("lan-enabled").checked = cfg.enabled;
-    $("lan-user").value = cfg.user;
-    $("lan-port").value = cfg.port;
-    $("lan-password").type = "password";
-    $("lan-password").value = cfg.password || await api.NewLANPassword(); // ready for turning it on
-    $("lan-allow-changes").checked = cfg.allowChanges;
+    for (const role of LAN_ROLES) {
+      const access = cfg[role];
+      $(`lan-${role}-enabled`).checked = access.enabled;
+      $(`lan-${role}-user`).value = access.user;
+      $(`lan-${role}-port`).value = access.port;
+      $(`lan-${role}-password`).type = "password";
+      // A new password makes an access ready for turning it on; each access gets its own.
+      $(`lan-${role}-password`).value = access.password || await api.NewLANPassword();
+    }
   } catch (err) {
     setNotice($("lan-result"), "error", errorText(err));
   }
+}
+
+// lanAccessFields reads the form of one access.
+function lanAccessFields(role) {
+  return {
+    enabled: $(`lan-${role}-enabled`).checked,
+    port: Number($(`lan-${role}-port`).value),
+    user: $(`lan-${role}-user`).value.trim(),
+    password: $(`lan-${role}-password`).value,
+  };
+}
+
+// lanPortsText names the ports of the accesses that are on, e.g. "ports 8080 and 8081".
+function lanPortsText(lan) {
+  const ports = LAN_ROLES.filter((role) => lan[role].enabled).map((role) => lan[role].port);
+  return (ports.length === 1 ? "port " : "ports ") + ports.join(" and ");
 }
 
 // The last look at the Windows firewall; looking takes a few seconds, so an
@@ -1439,6 +1471,7 @@ async function checkFirewall() {
 
 function renderFirewall(failure) {
   const lan = snapshot.lan;
+  const enabled = anyLANAccessOn(lan);
   const fw = firewall;
   const notes = $("lan-firewall-notes");
   notes.replaceChildren();
@@ -1448,32 +1481,33 @@ function renderFirewall(failure) {
   let text;
   if (!fw) {
     text = "Could not be checked: " + failure;
-  } else if (!lan.enabled) {
+  } else if (!enabled) {
     text = fw.ruleFound ? "CryptBridge's rule is still there although the LAN access is off." :
       "Nothing is allowed — the LAN access is off.";
     remove = fw.ruleFound;
   } else if (fw.privateOff) {
     text = "The firewall is off for home networks, so nothing needs to be allowed.";
   } else if (fw.ruleFits) {
-    text = `Allowed: devices of your home network may connect on port ${lan.port}.`;
+    text = `Allowed: devices of your home network may connect on ${lanPortsText(lan)}.`;
   } else {
-    text = fw.ruleFound ? `CryptBridge's rule does not fit the current settings (it is for port ${fw.rulePort || "?"}).` :
+    const rulePorts = (fw.rulePort.includes(",") ? "ports " : "port ") + (fw.rulePort || "?");
+    text = fw.ruleFound ? `CryptBridge's rule does not fit the current settings (it is for ${rulePorts}).` :
       "CryptBridge's rule is not there yet — without it, the devices of your home network cannot connect.";
     allow = true;
   }
-  if (fw && lan.enabled && fw.blocking.length > 0) {
+  if (fw && enabled && fw.blocking.length > 0) {
     notes.append(el("div", "notice warn", `Windows also has rules that block rclone.exe: ${fw.blocking.join(", ")}. ` +
       "They win over any rule that allows. Delete them in Windows Security → Firewall & network protection → " +
       "Advanced settings → Inbound Rules."));
   }
-  const others = fw && lan.enabled ? uniqueRules(fw.others) : [];
+  const others = fw && enabled ? uniqueRules(fw.others) : [];
   if (others.length > 0) {
     notes.append(el("div", "notice warn", `Windows has other rules that let rclone.exe in: ${others.map(ruleText).join(", ")}. ` +
       "Windows creates such rules when rclone is allowed once. With them, devices may reach the LAN access beyond " +
       "your home network, too. Unless you need them for something else, remove them (Windows asks for permission; " +
       "should rclone need such a rule again some day, Windows asks again)."));
   }
-  const publicNetworks = fw && lan.enabled ? fw.networks.filter((n) => n.category === "Public") : [];
+  const publicNetworks = fw && enabled ? fw.networks.filter((n) => n.category === "Public") : [];
   if (publicNetworks.length > 0) {
     network = true;
     const names = publicNetworks.map((n) => `"${n.name}" (${n.adapter})`).join(", ");
@@ -1514,15 +1548,10 @@ function ruleText(rule) {
 // the home network in, turning it off removes the rule again. Windows asks
 // for permission each time.
 $("btn-save-lan").addEventListener("click", () => run($("lan-result"), async () => {
-  const wasEnabled = snapshot.lan.enabled;
-  const enabled = $("lan-enabled").checked;
-  await api.UpdateLAN({
-    enabled,
-    port: Number($("lan-port").value),
-    user: $("lan-user").value.trim(),
-    password: $("lan-password").value,
-    allowChanges: $("lan-allow-changes").checked,
-  });
+  const wasEnabled = anyLANAccessOn(snapshot.lan);
+  const change = { streaming: lanAccessFields("streaming"), full: lanAccessFields("full") };
+  const enabled = anyLANAccessOn(change);
+  await api.UpdateLAN(change);
   render(await api.GetSnapshot());
   const fw = await checkFirewall();
   if (enabled && fw && !fw.ruleFits && !fw.privateOff) {
@@ -1551,11 +1580,13 @@ $("btn-lan-remove-others").addEventListener("click", () => run($("lan-result"), 
 }));
 $("btn-lan-network").addEventListener("click", () => run($("lan-result"), () => api.OpenNetworkSettings()));
 $("btn-lan-recheck").addEventListener("click", () => checkFirewall());
-$("btn-lan-new-password").addEventListener("click", async () => {
-  $("lan-password").value = await api.NewLANPassword();
-  $("lan-password").type = "text"; // it has to be typed on the devices
-});
-$("btn-lan-copy-password").addEventListener("click", (event) => copyWithFeedback(event.currentTarget, $("lan-password").value));
+document.querySelectorAll("[data-new-password]").forEach((button) => button.addEventListener("click", async () => {
+  const field = $(button.dataset.newPassword);
+  field.value = await api.NewLANPassword();
+  field.type = "text"; // it has to be typed on the devices
+}));
+document.querySelectorAll("[data-copy-password]").forEach((button) => button.addEventListener("click", () =>
+  copyWithFeedback(button, $(button.dataset.copyPassword).value)));
 
 // ---------- start ----------
 

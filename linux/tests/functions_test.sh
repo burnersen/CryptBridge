@@ -69,6 +69,33 @@ if [[ -n "${SSH_CONNECTION:-}" ]]; then
 	check "admin_ports finds SSH port $ssh_port without being told" found "$r"
 fi
 
+# --- setup_firewall: ports 80 and 443 are allowed even if ufw stays off ----
+# ufw keeps rules while it is off; without them, switching ufw on later
+# (by hand) shut out the certificate and the video players.
+ufw() { # stand-in: records the calls, reports $ufw_state
+	ufw_calls+="$*;"
+	[[ "$1" == "status" ]] && printf 'Status: %s\n' "$ufw_state"
+	return 0
+}
+admin_ports() { echo 22; }
+LOG_FILE="$CB_TEST_ROOT/setup.log"
+for ufw_state in inactive active; do
+	for answer in no yes; do
+		ufw_calls="" asked=no
+		confirm() { asked=yes; [[ "$answer" == yes ]]; }
+		setup_firewall >/dev/null
+		name="firewall $ufw_state, answer $answer"
+		[[ "$ufw_calls" == *"allow 80/tcp"* && "$ufw_calls" == *"allow 443/tcp"* ]] && r=allowed || r="not allowed: $ufw_calls"
+		check "$name: 80 and 443 allowed" allowed "$r"
+		want=off
+		[[ "$ufw_state" == inactive && "$answer" == yes ]] && want=on
+		[[ "$ufw_calls" == *"--force enable"* ]] && r=on || r=off
+		check "$name: switched on only when asked and wanted" "$want" "$r"
+		[[ "$ufw_state" == active ]] && check "$name: no question when ufw is on" no "$asked"
+	done
+done
+unset -f ufw admin_ports confirm
+
 # --- live part: same check code and key check as the Windows program -------
 if [[ -n "${CB_TEST_CONF:-}" ]]; then
 	rc() { "$CB_TEST_RCLONE" --config "$CB_TEST_CONF" "$@"; }

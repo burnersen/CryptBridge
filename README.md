@@ -22,10 +22,11 @@ makes them easy to use everywhere:
   own letter: vaults in pCloud, and [vaults in a folder of your PC or on a USB drive](#vaults-on-this-pc-or-a-usb-drive)
   that are encrypted and decrypted only on your PC, with no cloud and no sign-in needed.
 - **Home network (optional):** the Windows program can also share the connected drives with the other
-  devices of your home network over WebDAV: video players such as Infuse or Kodi on a TV, phones,
-  tablets, a Mac. With a VPN into your home network (for example the WireGuard VPN of your router) your
-  PC at home serves them [away from home, too](#away-from-home-vpn-into-your-home-network), without
-  renting a server. See [LAN access](#lan-access-optional).
+  devices of your home network over WebDAV: a read-only **streaming access** for video players such as
+  Infuse or Kodi on a TV, and a separate **full access** for file apps on phones, tablets or a Mac. With a
+  VPN into your home network (for example the WireGuard VPN of your router) your PC at home serves them
+  [away from home, too](#away-from-home-vpn-into-your-home-network), without renting a server. See
+  [LAN access](#lan-access-optional).
 - **Linux server:** one setup script mounts the same vault on the server and offers it over HTTPS
   (WebDAV) to video players, for example **Infuse** on Apple TV, iPhone and iPad.
 
@@ -76,6 +77,10 @@ Every vault holds a small file named `.cryptbridge-vault`. It is not clutter but
 its encrypted name can only be produced with the right keys, so finding it proves with certainty that
 the keys fit when you add the vault to CryptBridge or set it up on the server. It contains only two
 lines of text that say what it is for.
+
+Since version 0.6 you do not see it: the drives, the LAN access and the server's vault folder hide it
+(on the server after running the setup again), while it stays in the vault. You may still meet it
+where the vault is opened another way, for example with plain rclone.
 
 **Please keep it.** Deleting it does not harm your files, but until it is back the check is weaker:
 CryptBridge then decrypts a few existing file names instead. The Windows program writes the file again
@@ -146,6 +151,12 @@ holds encrypted files: you can copy it to another disk as a backup, and it stays
   system disk, as for pCloud vaults.
 - Not possible on a Windows disk: vaults with *base64* file names, because Windows does not tell upper
   from lower case (two encrypted names could land on one file).
+
+### Updating from version 0.5
+
+The LAN access keeps working unchanged: with *Allow changes from the network* off it becomes the
+streaming access, with it on the full access, each with the same port, user name and password as
+before. The other access starts off. Should you ever go back to 0.5, set its LAN access up again.
 
 ### Updating from version 0.3
 
@@ -233,28 +244,38 @@ sign-in.
 ### LAN access (optional)
 
 CryptBridge can share the connected drives with the other devices of your home network: a TV or Apple TV
-with a video player such as Infuse or Kodi, a phone, a tablet, a Mac. Turn it on at
-**Settings > LAN access**: every connected drive then appears there as a folder, under an address such as
-`http://192.168.1.20:8080/` (WebDAV, with user name and password; CryptBridge suggests a password that is
-easy to type with a TV remote).
+with a video player such as Infuse or Kodi, a phone, a tablet, a Mac. Every connected drive appears there
+as a folder (WebDAV, with user name and password). There are **two accesses**, each with a port, user
+name and password of its own, turned on separately at **Settings > LAN access**:
+
+| Access | Suggested port and user | What the devices may do | For |
+|---|---|---|---|
+| **Streaming access** | `8080`, `stream` | open, play and copy files; nothing can be changed or deleted | TVs and video players |
+| **Full access** | `8081`, `full` | also upload, rename and delete | file apps on devices you trust |
+
+Ports and user names can be changed freely, for example if another program already uses a port. The
+address then looks like `http://192.168.1.20:8080/`. CryptBridge suggests passwords that are easy to type
+with a TV remote, and refuses the same password for both accesses: the streaming password is typed on
+TVs, where others may see it, and must not open the full access.
 
 - **It follows the drives.** A drive that connects appears in the network; a drive leaves the network
   *before* it disconnects. **Locking CryptBridge ends the LAN access at once**, even while drives still
   finish their uploads. The PC has to be on and awake.
-- **Read only by default.** The devices can open, play and copy files, but cannot change or delete
-  anything. *Allow changes from the network* lets them upload, rename and delete; such files go into the
-  drive's upload queue like files copied in Explorer.
+- **Changes from the network** (full access only) go into the drive's upload queue like files copied in
+  Explorer.
 - **Only your home network.** When you turn it on, CryptBridge asks Windows (with the usual
-  administrator prompt) for one firewall rule: inbound connections to the chosen port, for rclone only,
-  from devices of the same network, and only on networks Windows counts as **private**. Turning the LAN
-  access off removes the rule again (Windows asks once more). If Windows counts your home network as
+  administrator prompt) for one firewall rule: inbound connections to the ports of the accesses that are
+  on, for rclone only, from devices of the same network, and only on networks Windows counts as
+  **private**. Turning both accesses off removes the rule again (Windows asks once more); turning the
+  second one on or changing a port updates it. If Windows counts your home network as
   *public*, CryptBridge says so. Set it to private in Windows Settings > Network & internet > your
   connection > *Network profile type*.
 - **Mind what it means:** in your home network the files travel **decrypted** and unencrypted (plain
   HTTP), protected by the password only. Do not turn it on in networks you do not trust.
-- **In your player** (Infuse, Kodi, or a file app on a phone): add a WebDAV share with the address, port,
-  user name and password from the Settings page (protocol `http`, path `/`). On a Mac: Finder > Go >
-  Connect to Server.
+- **On your devices:** in a video player (Infuse, Kodi) add a WebDAV share with the address, port, user
+  name and password of the **streaming access** from the Settings page (protocol `http`, path `/`). A file
+  app on a phone or tablet gets the **full access** the same way. On a Mac: Finder > Go > Connect to
+  Server.
 - **Other Windows PCs** refuse password-protected `http://` WebDAV addresses unless their registry is
   changed. Install CryptBridge there instead.
 
@@ -312,12 +333,12 @@ The setup asks a few questions and then does everything else:
 | Check | keys checked against your vault; the **check code** must equal the one in the Windows program |
 | Vault | mounted at `~/CryptBridge` for your desktop user (`rclone-mount.service`) |
 | Streaming | WebDAV for your video player, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, both services come back by themselves |
-| Firewall | opens 80/443, and keeps your SSH and remote-desktop ports open before switching ufw on |
+| Firewall | allows 80/443 in ufw (also when ufw stays off, so they are open once it is switched on later), and keeps your SSH and remote-desktop ports open before switching ufw on |
 | Desktop | icons *CryptBridge Vault* and *CryptBridge*, a file-manager bookmark, no film thumbnails |
 
 Afterwards, `cryptbridge` (or the *CryptBridge* desktop icon) shows the status and the settings for your
-player, restarts the services or runs the setup again. `sudo cryptbridge uninstall` removes everything
-except your files in pCloud.
+player, restarts the services or runs the setup again; `cryptbridge streaming` shows the settings for your
+player directly. `sudo cryptbridge uninstall` removes everything except your files in pCloud.
 
 ### Video players
 
@@ -397,7 +418,7 @@ Vaults on the PC do not need any of the streaming values: they use `--vfs-cache-
 | Remove refuses: files still wait | Connect the vault and let the uploads finish; removing it now would lose those files. |
 | The video player cannot reach the server | `cryptbridge` on the server shows which service is not running; check ports 80/443 at your provider. |
 | A device in the home network cannot reach the LAN access | *Settings > LAN access* shows the firewall state: allow it there if needed, and set your network to *private* in Windows if CryptBridge says it is public. Use the address shown there; the PC must be awake. |
-| LAN access: "port … is used by another program" | Choose another port (1024–65535) and save; the firewall rule is updated with it. |
+| LAN access: "port … is used by another program" | Choose another port (1024–65535) for that access and save; the firewall rule is updated with it. The two accesses need different ports. |
 | No HTTPS certificate, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep the keys and the account). |
 
 Logs: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server `journalctl -u rclone-mount -u rclone-webdav -u caddy`

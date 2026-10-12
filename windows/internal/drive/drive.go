@@ -42,8 +42,34 @@ type Settings struct {
 	Letter            string // drive letter without colon, e.g. "Z"
 	VolumeName        string // name shown in Explorer
 	CacheMaxSize      string // e.g. "20G"; a soft limit, files in use stay
-	CacheMinFreeSpace string // emergency brake: keep this much disk space free
-	Local             bool   // the vault is a folder of this PC, not in pCloud
+	CacheMinFreeSpace string   // emergency brake: keep this much disk space free
+	Local             bool     // the vault is a folder of this PC, not in pCloud
+	Hide              []string // names in the top folder that the drive does not show
+}
+
+// hideFilter returns rclone's filter that hides the names of Hide in the top
+// folder of the drive only; files of the same name in subfolders stay. The
+// filter applies to this drive alone: other calls to the same rclone still
+// see the files (measured with rclone 1.75.1).
+func (s Settings) hideFilter() map[string]any {
+	rules := make([]string, len(s.Hide))
+	for i, name := range s.Hide {
+		rules[i] = "/" + escapeFilterName(name)
+	}
+	return map[string]any{"ExcludeRule": rules}
+}
+
+// escapeFilterName makes rclone take every character of a name literally,
+// not as a pattern.
+func escapeFilterName(name string) string {
+	var escaped strings.Builder
+	for _, r := range name {
+		if strings.ContainsRune(`\*?[]{}`, r) {
+			escaped.WriteRune('\\')
+		}
+		escaped.WriteRune(r)
+	}
+	return escaped.String()
 }
 
 // vfsOptions returns rclone's file system options for the drive.
@@ -90,6 +116,9 @@ func Mount(ctx context.Context, client *rcd.Client, s Settings) error {
 			"VolumeName":  s.VolumeName,
 			"NetworkMode": true,
 		},
+	}
+	if len(s.Hide) > 0 {
+		request["_filter"] = s.hideFilter()
 	}
 	if err := client.Call(ctx, "mount/mount", request, nil); err != nil {
 		return fmt.Errorf("connect drive %s: %w", letter, err)

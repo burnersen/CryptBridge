@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -93,9 +94,10 @@ type firewallAnswer struct {
 }
 
 // ReadFirewall looks at CryptBridge's rule, at the other rules about rclone
-// and at how Windows classifies the networks. It needs no administrator
+// and at how Windows classifies the networks. The rule fits if it lets the
+// home network in on exactly the given ports. It needs no administrator
 // rights.
-func ReadFirewall(ctx context.Context, port int, program string) (Firewall, error) {
+func ReadFirewall(ctx context.Context, ports []int, program string) (Firewall, error) {
 	ctx, cancel := context.WithTimeout(ctx, firewallTimeout)
 	defer cancel()
 	script := `$ErrorActionPreference = 'Stop'
@@ -152,10 +154,37 @@ $out | ConvertTo-Json -Compress -Depth 4`
 		state.RuleFound = true
 		state.RulePort = rule.Port
 		state.RuleFits = rule.Enabled && rule.Action == "Allow" && rule.Direction == "Inbound" &&
-			rule.Profile == "Private" && rule.Protocol == "TCP" && rule.Port == strconv.Itoa(port) &&
+			rule.Profile == "Private" && rule.Protocol == "TCP" && samePorts(rule.Port, ports) &&
 			strings.EqualFold(filepath.Clean(rule.Program), filepath.Clean(program)) && rule.Remote == "LocalSubnet"
 	}
 	return state, nil
+}
+
+// portList writes ports the way the rule holds them, e.g. "8080,8081":
+// sorted, each once.
+func portList(ports []int) string {
+	sorted := slices.Clone(ports)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	texts := make([]string, len(sorted))
+	for i, port := range sorted {
+		texts[i] = strconv.Itoa(port)
+	}
+	return strings.Join(texts, ",")
+}
+
+// samePorts reports whether the ports of a rule, as Windows lists them, are
+// exactly the wanted ports, in any order.
+func samePorts(listed string, ports []int) bool {
+	var found []int
+	for _, text := range strings.Split(listed, ",") {
+		port, err := strconv.Atoi(strings.TrimSpace(text))
+		if err != nil {
+			return false // "Any", a range or nothing: not the rule CryptBridge makes
+		}
+		found = append(found, port)
+	}
+	return len(ports) > 0 && portList(found) == portList(ports)
 }
 
 func nonNil(list []string) []string {
@@ -165,12 +194,17 @@ func nonNil(list []string) []string {
 	return list
 }
 
-// AllowThroughFirewall creates CryptBridge's rule for the port and the
-// given rclone.exe, replacing an older one. Windows asks the user for
-// permission first; ErrDeclined means the user said no.
-func AllowThroughFirewall(port int, program string) error {
-	if err := CheckPort(port); err != nil {
-		return err
+// AllowThroughFirewall creates CryptBridge's rule for the ports of the LAN
+// accesses and the given rclone.exe, replacing an older one. Windows asks
+// the user for permission first; ErrDeclined means the user said no.
+func AllowThroughFirewall(ports []int, program string) error {
+	if len(ports) == 0 {
+		return errors.New("no LAN access is on, so there is no port to allow")
+	}
+	for _, port := range ports {
+		if err := CheckPort(port); err != nil {
+			return err
+		}
 	}
 	if !filepath.IsAbs(program) {
 		return fmt.Errorf("rclone's path %q is not complete", program)
@@ -178,7 +212,7 @@ func AllowThroughFirewall(port int, program string) error {
 	return runElevated(`Remove-NetFirewallRule -Name ` + psQuote(ruleName) + ` -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name ` + psQuote(ruleName) + ` -DisplayName ` + psQuote(ruleDisplayName) +
 		` -Description ` + psQuote(ruleDescription) + ` -Direction Inbound -Action Allow -Protocol TCP -LocalPort ` +
-		strconv.Itoa(port) + ` -Profile Private -RemoteAddress LocalSubnet -Program ` + psQuote(program) + ` | Out-Null`)
+		portList(ports) + ` -Profile Private -RemoteAddress LocalSubnet -Program ` + psQuote(program) + ` | Out-Null`)
 }
 
 // RemoveFirewallRule removes CryptBridge's rule. Windows asks the user for

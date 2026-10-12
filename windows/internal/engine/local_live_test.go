@@ -71,6 +71,20 @@ func countFiles(t *testing.T, dir string) int {
 	return n
 }
 
+// checkFileInVault reports whether the vault holds its check file. It asks
+// rclone, as the drive does not show the file.
+func checkFileInVault(t *testing.T, e *Engine, id string) bool {
+	t.Helper()
+	var answer struct {
+		Item *struct{ Name string } `json:"item"`
+	}
+	request := map[string]any{"fs": remoteName(id) + ":", "remote": vault.CheckFileName}
+	if err := clientOf(e).Call(t.Context(), "operations/stat", request, &answer); err != nil {
+		t.Fatalf("look for the check file: %v", err)
+	}
+	return answer.Item != nil
+}
+
 // TestLocalVaultSafety plays everything that must never damage a vault:
 // adding twice, nesting, wrong keys, another folder under the vault's name,
 // and removing — and checks that nothing was written where it must not be.
@@ -333,11 +347,22 @@ func TestLocalVaultDrives(t *testing.T) {
 		t.Fatalf("file after plugging in again: %q %v", content, err)
 	}
 
-	// The check file was deleted on the drive: the next connect, which finds
-	// the keys right by the other names, puts it back.
-	checkFile := letters[0] + `:\` + vault.CheckFileName
-	if err := os.Remove(checkFile); err != nil {
+	// The check file is in the vault, but the drive does not show it. Once it
+	// is deleted from the vault (through rclone, as the drive cannot reach
+	// it), the next connect, which finds the keys right by the other names,
+	// puts it back.
+	if !checkFileInVault(t, e, a.VaultID) {
+		t.Fatal("the vault has no check file")
+	}
+	if _, err := os.Stat(letters[0] + `:\` + vault.CheckFileName); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the drive shows the check file: %v", err)
+	}
+	checkFile := map[string]any{"fs": remoteName(a.VaultID) + ":", "remote": vault.CheckFileName}
+	if err := clientOf(e).Call(ctx, "operations/deletefile", checkFile, nil); err != nil {
 		t.Fatalf("delete the check file: %v", err)
+	}
+	if checkFileInVault(t, e, a.VaultID) {
+		t.Fatal("the check file is still there after deleting it")
 	}
 	waitUploadsDone(t, e, a.VaultID, time.Minute)
 	if err := e.Disconnect(ctx, a.VaultID, false); err != nil {
@@ -346,8 +371,8 @@ func TestLocalVaultDrives(t *testing.T) {
 	if err := e.Connect(ctx, a.VaultID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(checkFile); err != nil {
-		t.Fatalf("check file not restored by connecting: %v", err)
+	if !checkFileInVault(t, e, a.VaultID) {
+		t.Fatal("check file not restored by connecting")
 	}
 
 	// The folder is replaced while connected: the drive closes and does not

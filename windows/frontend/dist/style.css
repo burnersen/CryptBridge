@@ -131,6 +131,11 @@ h2 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .small { font-size: 12px; }
 .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 
+/* One of the two LAN accesses: a section of its own inside the LAN card. */
+.lan-access { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 12px; }
+.lan-access h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.lan-save { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 14px; } /* saves both accesses */
+
 .bar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; margin: 6px 0; }
 .bar-fill { height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .4s; }
 .bar-fill.full { background: var(--warn); }

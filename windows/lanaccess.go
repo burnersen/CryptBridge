@@ -22,7 +22,7 @@ func (a *App) LANSettings() (settings.LAN, error) {
 }
 
 // UpdateLAN stores the LAN settings and starts, changes or stops the
-// server.
+// servers.
 func (a *App) UpdateLAN(change settings.LAN) error {
 	return a.core.UpdateLAN(a.coreCtx, change)
 }
@@ -33,24 +33,24 @@ func (a *App) NewLANPassword() (string, error) {
 	return lan.NewPassword()
 }
 
-// LANFirewall tells what the Windows firewall does about the LAN access on
-// the saved port.
+// LANFirewall tells what the Windows firewall does about the LAN accesses on
+// the saved ports of the accesses that are on.
 func (a *App) LANFirewall() (lan.Firewall, error) {
 	program, err := a.rcloneProgram()
 	if err != nil {
 		return lan.Firewall{}, err
 	}
-	return lan.ReadFirewall(a.coreCtx, a.core.Snapshot().LAN.Port, program)
+	return lan.ReadFirewall(a.coreCtx, a.core.Snapshot().LAN.Ports(), program)
 }
 
-// AllowLANFirewall creates the firewall rule for the saved port. Windows
+// AllowLANFirewall creates the firewall rule for the saved ports. Windows
 // asks the user for permission first.
 func (a *App) AllowLANFirewall() error {
 	program, err := a.rcloneProgram()
 	if err != nil {
 		return err
 	}
-	return explainDeclined(lan.AllowThroughFirewall(a.core.Snapshot().LAN.Port, program))
+	return explainDeclined(lan.AllowThroughFirewall(a.core.Snapshot().LAN.Ports(), program))
 }
 
 // RemoveLANFirewall removes the firewall rule. Windows asks the user for
@@ -67,7 +67,7 @@ func (a *App) RemoveOtherLANRules() error {
 	if err != nil {
 		return err
 	}
-	state, err := lan.ReadFirewall(a.coreCtx, a.core.Snapshot().LAN.Port, program)
+	state, err := lan.ReadFirewall(a.coreCtx, a.core.Snapshot().LAN.Ports(), program)
 	if err != nil {
 		return err
 	}

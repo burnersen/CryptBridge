@@ -46,10 +46,13 @@ const (
 	DefaultDriveLetter       = "Z"
 )
 
-// Defaults of the LAN access.
+// Defaults of the two LAN accesses: ports next to each other, and user names
+// that tell which access is which and are easy to type with a TV remote.
 const (
-	DefaultLANPort = 8080
-	DefaultLANUser = "cryptbridge"
+	DefaultStreamingPort = 8080
+	DefaultStreamingUser = "stream"
+	DefaultFullPort      = 8081
+	DefaultFullUser      = "full"
 )
 
 // Where a vault lives.
@@ -115,14 +118,83 @@ func (v Vault) HasKeys() bool {
 	return v.Config.Password != "" && v.Config.NormalisedPath() != ""
 }
 
-// LAN holds the settings of the LAN access: a WebDAV server through which
-// the other devices of the home network open the connected drives.
+// LANAccess is one way for the other devices of the home network into the
+// connected drives: a WebDAV server on a port of its own, with its own user
+// name and password.
+type LANAccess struct {
+	Enabled  bool   `json:"enabled"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"` // protected by the app lock
+}
+
+// LAN holds the two accesses of the home network. They are separate so that
+// the password typed on TVs cannot change or delete anything.
 type LAN struct {
+	Streaming LANAccess `json:"streaming"` // read only: for video players and TVs
+	Full      LANAccess `json:"full"`      // read, write and delete: for file apps
+}
+
+// defaultLAN returns both accesses switched off, on their default ports.
+func defaultLAN() LAN {
+	return LAN{
+		Streaming: LANAccess{Port: DefaultStreamingPort, User: DefaultStreamingUser},
+		Full:      LANAccess{Port: DefaultFullPort, User: DefaultFullUser},
+	}
+}
+
+// lanVersion1 is the LAN access of CryptBridge 0.5: one server, whose rights
+// depended on a switch.
+type lanVersion1 struct {
 	Enabled      bool   `json:"enabled"`
 	Port         int    `json:"port"`
 	User         string `json:"user"`
-	Password     string `json:"password"`     // protected by the app lock
-	AllowChanges bool   `json:"allowChanges"` // false: the devices can only read
+	Password     string `json:"password"`
+	AllowChanges bool   `json:"allowChanges"`
+}
+
+// lanVersion1Of finds the LAN settings of CryptBridge 0.5 in the content of a
+// settings file. They are recognised by a port directly in the LAN settings,
+// where newer settings hold the two accesses.
+func lanVersion1Of(plain []byte) (lanVersion1, bool) {
+	var file struct {
+		LAN json.RawMessage `json:"lan"`
+	}
+	if json.Unmarshal(plain, &file) != nil || len(file.LAN) == 0 {
+		return lanVersion1{}, false
+	}
+	var probe struct {
+		Port *int `json:"port"`
+	}
+	if json.Unmarshal(file.LAN, &probe) != nil || probe.Port == nil {
+		return lanVersion1{}, false
+	}
+	var old lanVersion1
+	if json.Unmarshal(file.LAN, &old) != nil {
+		return lanVersion1{}, false
+	}
+	return old, true
+}
+
+// convert turns the one access of CryptBridge 0.5 into the access with the
+// same rights, unchanged, so that the devices that use it keep working. The
+// other access stays off; if its default port is the one taken over, it gets
+// the other default port.
+func (old lanVersion1) convert() LAN {
+	converted := defaultLAN()
+	kept := LANAccess{Enabled: old.Enabled, Port: old.Port, User: old.User, Password: old.Password}
+	if old.AllowChanges {
+		converted.Full = kept
+		if converted.Streaming.Port == kept.Port {
+			converted.Streaming.Port = DefaultFullPort
+		}
+	} else {
+		converted.Streaming = kept
+		if converted.Full.Port == kept.Port {
+			converted.Full.Port = DefaultStreamingPort
+		}
+	}
+	return converted
 }
 
 // Settings is everything CryptBridge remembers.
@@ -175,7 +247,24 @@ type secrets struct {
 	SignInAppID string                  `json:"signInAppId"`
 	VaultKeys   map[string]vault.Config `json:"vaultKeys"`       // by vault ID
 	Vault       *vault.Config           `json:"vault,omitempty"` // only in version 1 files
-	LANPassword string                  `json:"lanPassword"`     // it opens the drives from the network
+	// The passwords of the LAN accesses: they open the drives from the network.
+	LANStreamingPassword string `json:"lanStreamingPassword"`
+	LANFullPassword      string `json:"lanFullPassword"`
+	LANPassword          string `json:"lanPassword,omitempty"` // only from CryptBridge 0.5: its one access
+}
+
+// upgradeLAN gives the password of CryptBridge 0.5's one access to the access
+// that took its place (see lanVersion1.convert).
+func (sec *secrets) upgradeLAN(wasFull bool) {
+	if sec.LANPassword == "" {
+		return
+	}
+	if wasFull {
+		sec.LANFullPassword = sec.LANPassword
+	} else {
+		sec.LANStreamingPassword = sec.LANPassword
+	}
+	sec.LANPassword = ""
 }
 
 // fileFormat is what is stored inside the DPAPI layer: the settings, and
@@ -183,6 +272,10 @@ type secrets struct {
 type fileFormat struct {
 	Settings
 	Sealed *passlock.Sealed `json:"sealed,omitempty"`
+
+	// lanVersion1Full: the file came from CryptBridge 0.5, and its one LAN
+	// access allowed changes. Its sealed password belongs to the full access.
+	lanVersion1Full bool
 }
 
 // ErrNeedsKey: settings with the app lock on can only be saved with the key
@@ -190,7 +283,7 @@ type fileFormat struct {
 var ErrNeedsKey = errors.New("the settings are locked with the app password")
 
 // WithoutSecrets returns the settings with sign-in, vault locations, vault
-// keys and the LAN password removed: what a locked CryptBridge knows.
+// keys and the LAN passwords removed: what a locked CryptBridge knows.
 func (s Settings) WithoutSecrets() Settings {
 	s = s.Clone()
 	s.PCloud = pcloud.Account{}
@@ -199,7 +292,8 @@ func (s Settings) WithoutSecrets() Settings {
 	for i := range s.Vaults {
 		s.Vaults[i].Config = vault.Config{}
 	}
-	s.LAN.Password = ""
+	s.LAN.Streaming.Password = ""
+	s.LAN.Full.Password = ""
 	return s
 }
 
@@ -208,7 +302,14 @@ func (s Settings) secrets() secrets {
 	for _, v := range s.Vaults {
 		keys[v.ID] = v.Config
 	}
-	return secrets{PCloud: s.PCloud, PCloudApp: s.PCloudApp, SignInAppID: s.SignInAppID, VaultKeys: keys, LANPassword: s.LAN.Password}
+	return secrets{
+		PCloud:               s.PCloud,
+		PCloudApp:            s.PCloudApp,
+		SignInAppID:          s.SignInAppID,
+		VaultKeys:            keys,
+		LANStreamingPassword: s.LAN.Streaming.Password,
+		LANFullPassword:      s.LAN.Full.Password,
+	}
 }
 
 // withSecrets puts the secrets back. A vault whose keys are not among them
@@ -220,7 +321,8 @@ func (s Settings) withSecrets(sec secrets) Settings {
 	s.PCloud = sec.PCloud
 	s.PCloudApp = sec.PCloudApp
 	s.SignInAppID = sec.SignInAppID
-	s.LAN.Password = sec.LANPassword
+	s.LAN.Streaming.Password = sec.LANStreamingPassword
+	s.LAN.Full.Password = sec.LANFullPassword
 	kept := s.Vaults[:0]
 	for _, v := range s.Vaults {
 		keys, found := sec.VaultKeys[v.ID]
@@ -249,7 +351,7 @@ func Defaults(cacheDir string) Settings {
 		},
 		AutoReconnect: true,
 		Theme:         ThemeAuto,
-		LAN:           LAN{Port: DefaultLANPort, User: DefaultLANUser},
+		LAN:           defaultLAN(),
 	}
 }
 
@@ -295,6 +397,7 @@ func Unlock(path, defaultCacheDir, password string) (Settings, *passlock.Key, er
 		key.Wipe()
 		return Settings{}, nil, fmt.Errorf("read locked settings: %w", err)
 	}
+	sec.upgradeLAN(stored.lanVersion1Full)
 	return stored.Settings.withSecrets(sec), key, nil
 }
 
@@ -372,6 +475,10 @@ func readFile(path, defaultCacheDir string) (fileFormat, error) {
 	}
 	if err := json.Unmarshal(plain, &stored); err != nil {
 		return fileFormat{Settings: Defaults(defaultCacheDir)}, fmt.Errorf("read settings: %w", err)
+	}
+	if old, found := lanVersion1Of(plain); found {
+		stored.LAN = old.convert()
+		stored.lanVersion1Full = old.AllowChanges
 	}
 	return stored, nil
 }

@@ -6,6 +6,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -16,34 +18,83 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 )
 
-// The LAN access: a WebDAV server in rclone shows the connected drives to the
-// other devices of the home network (see package lan). It follows the
-// drives: a drive that connects appears in the network, and a drive leaves
-// the network before it disconnects — once its letter is free, another disk
+// The LAN access: WebDAV servers in rclone show the connected drives to the
+// other devices of the home network (see package lan). There are two
+// accesses, each a server on a port of its own: the streaming access only
+// reads, the full access may also change and delete. Both follow the drives:
+// a drive that connects appears in the network, and a drive leaves the
+// network before it disconnects — once its letter is free, another disk
 // could get the letter and would be shown in its place. Locking the app ends
-// the server at once, even while drives still finish their uploads.
+// the servers at once, even while drives still finish their uploads.
 
 // lanRetryAfter: a server that failed to start is tried again after this
 // pause, or at once when the settings or the connected drives change.
 const lanRetryAfter = 30 * time.Second
 
-// LANStatus is what the window shows about the LAN access. The password is
-// not part of it; the Settings page asks for it separately.
-type LANStatus struct {
-	Enabled      bool     `json:"enabled"`
-	Port         int      `json:"port"`
-	User         string   `json:"user"`
-	AllowChanges bool     `json:"allowChanges"`
-	Running      bool     `json:"running"`
-	Folders      []string `json:"folders"`   // what the devices see, one folder per connected drive
-	Addresses    []string `json:"addresses"` // e.g. http://192.168.1.20:8080/
-	Problem      string   `json:"problem"`   // why the server does not run although it should
+// lanRole names one of the two LAN accesses.
+type lanRole int
+
+const (
+	roleStreaming lanRole = iota // read only: for video players and TVs
+	roleFull                     // read, write and delete: for file apps
+	roleCount
+)
+
+// name is how messages call the access.
+func (r lanRole) name() string {
+	if r == roleFull {
+		return "full access"
+	}
+	return "streaming access"
 }
 
-// lanRuntime is what the engine knows about the server, guarded by mu.
+// in returns where the settings of this access are kept.
+func (r lanRole) in(cfg *settings.LAN) *settings.LANAccess {
+	if r == roleFull {
+		return &cfg.Full
+	}
+	return &cfg.Streaming
+}
+
+// LANAccessStatus is what the window shows about one LAN access. The
+// password is not part of it; the Settings page asks for it separately.
+type LANAccessStatus struct {
+	Enabled   bool     `json:"enabled"`
+	Port      int      `json:"port"`
+	User      string   `json:"user"`
+	Running   bool     `json:"running"`
+	Folders   []string `json:"folders"`   // what the devices see, one folder per connected drive
+	Addresses []string `json:"addresses"` // e.g. http://192.168.1.20:8080/
+	Problem   string   `json:"problem"`   // why the server does not run although it should
+}
+
+// LANStatus is what the window shows about the two LAN accesses.
+type LANStatus struct {
+	Streaming LANAccessStatus `json:"streaming"`
+	Full      LANAccessStatus `json:"full"`
+}
+
+// Ports returns the ports of the accesses that are on: the ones the
+// firewall has to let in.
+func (s LANStatus) Ports() []int {
+	var ports []int
+	for _, access := range []LANAccessStatus{s.Streaming, s.Full} {
+		if access.Enabled {
+			ports = append(ports, access.Port)
+		}
+	}
+	return ports
+}
+
+// lanRuntime is what the engine knows about the servers, guarded by mu.
 type lanRuntime struct {
+	pid      int // the rclone process looked at last; 0: look again
+	accesses [roleCount]accessRuntime
+}
+
+// accessRuntime is what the engine knows about the server of one access.
+type accessRuntime struct {
 	server    *lan.Server // nil: no server runs
-	pid       int         // the rclone process looked at last; 0: look again
 	problem   string
 	failed    string    // key of the plan that failed to start
 	failure   string    // why it failed
@@ -51,74 +102,111 @@ type lanRuntime struct {
 	addresses []string
 }
 
-// lanStatusLocked describes the LAN access; the caller holds mu.
+// lanStatusLocked describes the LAN accesses; the caller holds mu.
 func (e *Engine) lanStatusLocked() LANStatus {
-	cfg := e.settings.LAN
-	status := LANStatus{
-		Enabled:      cfg.Enabled,
-		Port:         cfg.Port,
-		User:         cfg.User,
-		AllowChanges: cfg.AllowChanges,
-		Folders:      []string{},
-		Addresses:    []string{},
-		Problem:      e.lan.problem,
+	return LANStatus{
+		Streaming: e.accessStatusLocked(roleStreaming),
+		Full:      e.accessStatusLocked(roleFull),
 	}
-	if e.lan.server != nil {
+}
+
+// accessStatusLocked describes one LAN access; the caller holds mu.
+func (e *Engine) accessStatusLocked(role lanRole) LANAccessStatus {
+	cfg := *role.in(&e.settings.LAN)
+	state := e.lan.accesses[role]
+	status := LANAccessStatus{
+		Enabled:   cfg.Enabled,
+		Port:      cfg.Port,
+		User:      cfg.User,
+		Folders:   []string{},
+		Addresses: []string{},
+		Problem:   state.problem,
+	}
+	if state.server != nil {
 		status.Running = true
-		status.Folders = slices.Clone(e.lan.server.Folders)
+		status.Folders = slices.Clone(state.server.Folders)
 	}
-	if cfg.Enabled && e.lan.addresses != nil {
-		status.Addresses = slices.Clone(e.lan.addresses)
+	if cfg.Enabled && state.addresses != nil {
+		status.Addresses = slices.Clone(state.addresses)
 	}
 	return status
 }
 
-// lanPlanLocked returns the server that should run now, sharing every
-// connected drive except the one with the ID except. want is false when no
-// server should run; problem says why, if the user can do something about
-// it. The caller holds mu.
-func (e *Engine) lanPlanLocked(except string) (plan lan.Plan, want bool, problem string) {
-	cfg := e.settings.LAN
-	switch {
-	case !cfg.Enabled || e.locked:
-		return lan.Plan{}, false, ""
-	case cfg.Password == "":
-		return lan.Plan{}, false, "Set a password for the LAN access (Settings → LAN access)."
+// lanWish is the server one access should have now.
+type lanWish struct {
+	plan    lan.Plan
+	want    bool   // false: no server should run
+	problem string // why not, if the user can do something about it
+}
+
+// key identifies the wanted server; "" if none is wanted.
+func (w lanWish) key() string {
+	if !w.want {
+		return ""
 	}
+	return w.plan.Key()
+}
+
+// lanWishesLocked returns the servers that should run now, sharing every
+// connected drive except the one with the ID except. The caller holds mu.
+func (e *Engine) lanWishesLocked(except string) [roleCount]lanWish {
+	var shares []lan.Share
 	for _, v := range e.settings.Vaults {
 		if v.ID == except || !v.HasKeys() || !e.runtimeLocked(v.ID).status.Mounted {
 			continue
 		}
-		plan.Shares = append(plan.Shares, lan.Share{Name: v.Name, Root: v.Letter + ":/"})
+		shares = append(shares, lan.Share{Name: v.Name, Root: v.Letter + ":/"})
 	}
-	plan.Config = lan.Config{Port: cfg.Port, User: cfg.User, Password: cfg.Password, AllowChanges: cfg.AllowChanges}
-	return plan, len(plan.Shares) > 0, ""
+	var wishes [roleCount]lanWish
+	for role := range roleCount {
+		cfg := *role.in(&e.settings.LAN)
+		switch {
+		case !cfg.Enabled || e.locked:
+			continue
+		case cfg.Password == "":
+			wishes[role].problem = "Set a password for the " + role.name() + " (Settings, LAN access)."
+			continue
+		}
+		wishes[role] = lanWish{
+			plan: lan.Plan{
+				Config: lan.Config{Port: cfg.Port, User: cfg.User, Password: cfg.Password, AllowChanges: role == roleFull},
+				Shares: shares,
+			},
+			want: len(shares) > 0,
+		}
+	}
+	return wishes
 }
 
-// syncLANLocked starts, changes or stops the server so that it shows the
+// syncLANLocked starts, changes or stops the servers so that they show the
 // connected drives — all but the one with the ID except, which is about to
-// disconnect. It returns false if the server could not be brought into that
+// disconnect. It returns false if a server could not be brought into that
 // state. The caller holds actionMu.
 func (e *Engine) syncLANLocked(ctx context.Context, except string) bool {
 	e.mu.Lock()
 	client := e.client
-	plan, want, problem := e.lanPlanLocked(except)
+	wishes := e.lanWishesLocked(except)
 	cfg := e.settings.LAN
 	state := e.lan
 	before := e.lanStatusLocked()
 	e.mu.Unlock()
 
-	state.addresses = nil
-	if cfg.Enabled {
-		state.addresses = lan.Addresses(cfg.Port)
+	for role := range roleCount {
+		access := &state.accesses[role]
+		access.addresses = nil
+		if wanted := role.in(&cfg); wanted.Enabled {
+			access.addresses = lan.Addresses(wanted.Port)
+		}
+		access.problem = wishes[role].problem
 	}
-	state.problem = problem
 	ok := true
 	if client == nil {
-		state.server = nil // rclone is gone, and its server with it
+		for role := range roleCount {
+			state.accesses[role].server = nil // rclone is gone, and its servers with it
+		}
 		state.pid = 0
 	} else {
-		ok = reconcileLAN(ctx, client, &state, plan, want)
+		ok = reconcileLAN(ctx, client, &state, wishes)
 	}
 
 	e.mu.Lock()
@@ -131,65 +219,83 @@ func (e *Engine) syncLANLocked(ctx context.Context, except string) bool {
 	return ok
 }
 
-// reconcileLAN brings the server in rclone in line with the plan and
-// records the outcome in state. It returns false on failure.
-func reconcileLAN(ctx context.Context, client *rcd.Client, state *lanRuntime, plan lan.Plan, want bool) bool {
-	if state.pid != client.PID() && !adoptLAN(ctx, client, state, plan, want) {
+// reconcileLAN brings the servers in rclone in line with the wishes and
+// records the outcome in state. It returns false on any failure. Servers
+// that are no longer wanted stop before new ones start, so that the two
+// accesses can swap their ports.
+func reconcileLAN(ctx context.Context, client *rcd.Client, state *lanRuntime, wishes [roleCount]lanWish) bool {
+	if state.pid != client.PID() && !adoptLAN(ctx, client, state, wishes) {
 		return false
 	}
-	key := ""
-	if want {
-		key = plan.Key()
-	}
-	if state.server != nil && state.server.Key == key {
-		return true
-	}
-	if state.server != nil {
-		if err := lan.Stop(ctx, client, state.server.ID); err != nil {
-			state.problem = err.Error()
-			state.pid = 0 // look at what runs again next time
-			return false
+	ok := true
+	for role := range roleCount {
+		access := &state.accesses[role]
+		if access.server == nil || access.server.Key == wishes[role].key() {
+			continue
 		}
-		state.server = nil
+		if err := lan.Stop(ctx, client, access.server.ID); err != nil {
+			access.problem = err.Error()
+			state.pid = 0 // look at what runs again next time
+			ok = false
+			continue
+		}
+		access.server = nil
 	}
-	if !want {
+	for role := range roleCount {
+		if !startLAN(ctx, client, &state.accesses[role], wishes[role]) {
+			ok = false
+		}
+	}
+	return ok
+}
+
+// startLAN starts the wanted server of one access unless it runs already.
+// It returns false on failure, also for a server that could not be stopped.
+func startLAN(ctx context.Context, client *rcd.Client, access *accessRuntime, wish lanWish) bool {
+	if access.server != nil {
+		return access.server.Key == wish.key()
+	}
+	if !wish.want {
 		return true
 	}
-	if key == state.failed && time.Now().Before(state.retryAt) {
-		state.problem = state.failure
+	key := wish.key()
+	if key == access.failed && time.Now().Before(access.retryAt) {
+		access.problem = access.failure
 		return false
 	}
-	server, err := lan.Start(ctx, client, plan)
+	server, err := lan.Start(ctx, client, wish.plan)
 	if err != nil {
-		state.failed, state.failure, state.retryAt = key, err.Error(), time.Now().Add(lanRetryAfter)
-		state.problem = state.failure
+		access.failed, access.failure, access.retryAt = key, err.Error(), time.Now().Add(lanRetryAfter)
+		access.problem = access.failure
 		return false
 	}
-	state.failed = ""
-	state.server = &server
+	access.failed = ""
+	access.server = &server
 	return true
 }
 
 // adoptLAN looks at the servers of a newly found rclone — one that kept
-// running while the window was gone may still run the wanted server, which
-// is then taken over without interrupting the devices. Every other server
+// running while the window was gone may still run the wanted servers, which
+// are then taken over without interrupting the devices. Every other server
 // is stopped. It returns false if rclone could not be asked.
-func adoptLAN(ctx context.Context, client *rcd.Client, state *lanRuntime, plan lan.Plan, want bool) bool {
+func adoptLAN(ctx context.Context, client *rcd.Client, state *lanRuntime, wishes [roleCount]lanWish) bool {
 	running, err := lan.Running(ctx, client)
 	if err != nil {
-		state.problem = err.Error()
+		state.setProblem(err.Error())
 		return false
 	}
-	state.server = nil
-	state.failed = ""
+	for role := range roleCount {
+		state.accesses[role].server = nil
+		state.accesses[role].failed = ""
+	}
 	for _, found := range running {
-		if want && state.server == nil && found.Key == plan.Key() {
-			adopted := plan.Server(found.ID)
-			state.server = &adopted
+		if role, wanted := state.waitingFor(wishes, found.Key); wanted {
+			adopted := wishes[role].plan.Server(found.ID)
+			state.accesses[role].server = &adopted
 			continue
 		}
 		if err := lan.Stop(ctx, client, found.ID); err != nil {
-			state.problem = err.Error()
+			state.setProblem(err.Error())
 			return false
 		}
 	}
@@ -197,15 +303,38 @@ func adoptLAN(ctx context.Context, client *rcd.Client, state *lanRuntime, plan l
 	return true
 }
 
-// withdrawFromLANLocked takes a drive out of the server before the drive is
-// disconnected. If the server cannot be changed, it is stopped: a server
+// waitingFor returns the access that wants the server with this key and has
+// none yet.
+func (state *lanRuntime) waitingFor(wishes [roleCount]lanWish, key string) (lanRole, bool) {
+	for role := range roleCount {
+		if wishes[role].want && state.accesses[role].server == nil && wishes[role].key() == key {
+			return role, true
+		}
+	}
+	return 0, false
+}
+
+// setProblem records a problem that concerns both accesses.
+func (state *lanRuntime) setProblem(problem string) {
+	for role := range roleCount {
+		state.accesses[role].problem = problem
+	}
+}
+
+// withdrawFromLANLocked takes a drive out of the servers before the drive is
+// disconnected. If a server cannot be changed, all are stopped: a server
 // that might show another disk under the freed letter must not run. The
 // caller holds actionMu.
 func (e *Engine) withdrawFromLANLocked(ctx context.Context, v settings.Vault) {
 	e.mu.Lock()
-	server := e.lan.server
+	shown := false
+	for _, access := range e.lan.accesses {
+		if access.server != nil && slices.Contains(access.server.Roots, v.Letter+":/") {
+			shown = true
+		}
+	}
 	e.mu.Unlock()
-	if server == nil || !slices.Contains(server.Roots, v.Letter+":/") {
+	if !shown {
 		return
 	}
 	if !e.syncLANLocked(ctx, v.ID) {
@@ -213,8 +342,8 @@ func (e *Engine) withdrawFromLANLocked(ctx context.Context, v settings.Vault) {
 	}
 }
 
-// stopLANLocked ends the server at once: when locking, when quitting, and
-// when it cannot be changed. The caller holds actionMu.
+// stopLANLocked ends the servers at once: when locking, when quitting, and
+// when they cannot be changed. The caller holds actionMu.
 func (e *Engine) stopLANLocked(ctx context.Context) {
 	e.mu.Lock()
 	client := e.client
@@ -226,14 +355,16 @@ func (e *Engine) stopLANLocked(ctx context.Context) {
 		}
 	}
 	e.mu.Lock()
-	e.lan.server = nil
+	for role := range roleCount {
+		e.lan.accesses[role].server = nil
+	}
 	e.lan.pid = 0 // look at what runs before the next start
-	e.lan.problem = problem
+	e.lan.setProblem(problem)
 	e.mu.Unlock()
 	e.publish()
 }
 
-// LANSettings returns the LAN settings with the password, for the Settings
+// LANSettings returns the LAN settings with the passwords, for the Settings
 // page.
 func (e *Engine) LANSettings() (settings.LAN, error) {
 	e.mu.Lock()
@@ -245,7 +376,7 @@ func (e *Engine) LANSettings() (settings.LAN, error) {
 }
 
 // UpdateLAN checks and stores the LAN settings and starts, changes or stops
-// the server accordingly. A server that cannot start shows its problem in
+// the servers accordingly. A server that cannot start shows its problem in
 // the snapshot; that is no error of saving.
 func (e *Engine) UpdateLAN(ctx context.Context, change settings.LAN) error {
 	e.actionMu.Lock()
@@ -253,17 +384,8 @@ func (e *Engine) UpdateLAN(ctx context.Context, change settings.LAN) error {
 	if e.isLocked() {
 		return errLocked
 	}
-	change.User = strings.TrimSpace(change.User)
-	if err := lan.CheckPort(change.Port); err != nil {
+	if err := checkLANSettings(&change); err != nil {
 		return err
-	}
-	if err := lan.CheckUser(change.User); err != nil {
-		return err
-	}
-	if change.Enabled || change.Password != "" {
-		if err := lan.CheckPassword(change.Password); err != nil {
-			return err
-		}
 	}
 	updated := e.currentSettings()
 	updated.LAN = change
@@ -272,9 +394,41 @@ func (e *Engine) UpdateLAN(ctx context.Context, change settings.LAN) error {
 	}
 	e.mu.Lock()
 	e.settings = updated
-	e.lan.failed = "" // new settings deserve a new try at once
+	for role := range roleCount {
+		e.lan.accesses[role].failed = "" // new settings deserve a new try at once
+	}
 	e.mu.Unlock()
 	e.syncLANLocked(ctx, "")
 	e.publish()
+	return nil
+}
+
+// checkLANSettings checks both accesses before they are stored, trimming
+// the user names. The accesses need ports of their own, and a password of
+// their own: the streaming password is typed on TVs, where others may see
+// it, and must not open the full access.
+func checkLANSettings(change *settings.LAN) error {
+	for role := range roleCount {
+		access := role.in(change)
+		access.User = strings.TrimSpace(access.User)
+		if err := lan.CheckPort(access.Port); err != nil {
+			return fmt.Errorf("%s: %w", role.name(), err)
+		}
+		if err := lan.CheckUser(access.User); err != nil {
+			return fmt.Errorf("%s: %w", role.name(), err)
+		}
+		if access.Enabled || access.Password != "" {
+			if err := lan.CheckPassword(access.Password); err != nil {
+				return fmt.Errorf("%s: %w", role.name(), err)
+			}
+		}
+	}
+	if change.Streaming.Port == change.Full.Port {
+		return errors.New("the streaming access and the full access need different ports")
+	}
+	if change.Streaming.Password != "" && change.Streaming.Password == change.Full.Password {
+		return errors.New("give the full access a password of its own: the streaming password is typed on TVs, " +
+			"and whoever sees it could otherwise change and delete files, too")
+	}
 	return nil
 }

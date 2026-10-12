@@ -20,12 +20,13 @@ import (
 
 	"github.com/burnersen/CryptBridge/windows/internal/lan"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
-// TestLANFollowsDrives runs the LAN access with real drives of this PC: the
-// server shows what is connected, loses a drive before the drive goes,
-// survives a restart of the window, ends at once when the app locks and
-// comes back after unlocking.
+// TestLANFollowsDrives runs both LAN accesses with real drives of this PC:
+// the servers show what is connected, only the full access may write, a
+// drive leaves the network before it goes, the servers survive a restart of
+// the window, end at once when the app locks and come back after unlocking.
 func TestLANFollowsDrives(t *testing.T) {
 	e, ctx, letters := localEngine(t)
 	root := t.TempDir()
@@ -48,55 +49,91 @@ func TestLANFollowsDrives(t *testing.T) {
 	}
 	waitUploadsDone(t, e, a.VaultID, time.Minute)
 
-	port := freeTestPort(t)
-	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	cfg := settings.LAN{Enabled: true, Port: port, User: "tv", Password: "short"}
+	// The check file stays in the vault, but the drive does not show it.
+	if _, err := os.Stat(letters[0] + `:\` + vault.CheckFileName); !os.IsNotExist(err) {
+		t.Fatalf("the drive shows the check file: %v", err)
+	}
+
+	streamingPort, fullPort := freeTestPort(t), freeTestPort(t)
+	for fullPort == streamingPort { // Windows may hand out a port just freed again
+		fullPort = freeTestPort(t)
+	}
+	cfg := settings.LAN{
+		Streaming: settings.LANAccess{Enabled: true, Port: streamingPort, User: "tv", Password: "short"},
+		Full:      settings.LANAccess{Port: fullPort, User: "phone"},
+	}
 	if err := e.UpdateLAN(ctx, cfg); err == nil {
 		t.Fatal("a short password must be refused")
 	}
-	cfg.Password = "a long LAN password"
+	cfg.Streaming.Password = "a long LAN password"
 	if err := e.UpdateLAN(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if status := e.Snapshot().LAN; !status.Running || !slices.Equal(status.Folders, []string{"Private", "Work-Docs"}) {
-		t.Fatalf("LAN after turning it on: %+v", status)
+	streaming := baseOf(cfg.Streaming)
+	if status := e.Snapshot().LAN; !status.Streaming.Running || !slices.Equal(status.Streaming.Folders, []string{"Private", "Work-Docs"}) ||
+		status.Full.Running {
+		t.Fatalf("LAN after turning the streaming access on: %+v", status)
 	}
-	if got := lanListing(t, base, cfg); !slices.Equal(got, []string{"Private", "Work-Docs"}) {
+	if got := lanListing(t, streaming, cfg.Streaming); !slices.Equal(got, []string{"Private", "Work-Docs"}) {
 		t.Fatalf("the network sees %q", got)
 	}
-	if status, body := lanRequest(t, "GET", base+"Private/film.txt", cfg, nil); status != http.StatusOK || body != "a film" {
+	if got := lanListing(t, streaming+"Private/", cfg.Streaming); !slices.Equal(got, []string{"Private/film.txt"}) {
+		t.Fatalf("in Private the network sees %q; want the film only, no check file", got)
+	}
+	if status, body := lanRequest(t, "GET", streaming+"Private/film.txt", cfg.Streaming, nil); status != http.StatusOK || body != "a film" {
 		t.Fatalf("GET: %d %q", status, body)
 	}
-	if status, _ := lanRequest(t, "PUT", base+"Private/new.txt", cfg, strings.NewReader("x")); status < 400 {
-		t.Fatalf("read only: PUT answered %d", status)
+	if status, _ := lanRequest(t, "PUT", streaming+"Private/new.txt", cfg.Streaming, strings.NewReader("x")); status < 400 {
+		t.Fatalf("streaming access: PUT answered %d", status)
 	}
 
-	// Disconnecting takes the drive out of the network first.
-	if err := e.Disconnect(ctx, b.VaultID, false); err != nil {
-		t.Fatal(err)
+	// The full access needs a port and a password of its own.
+	cfg.Full.Enabled = true
+	cfg.Full.Password = cfg.Streaming.Password
+	if err := e.UpdateLAN(ctx, cfg); err == nil || !strings.Contains(err.Error(), "password of its own") {
+		t.Fatalf("the same password for both accesses: %v; want it refused", err)
 	}
-	if got := lanListing(t, base, cfg); !slices.Equal(got, []string{"Private"}) {
-		t.Fatalf("after disconnecting Work=Docs the network sees %q", got)
+	cfg.Full.Password = "another long password"
+	samePort := cfg
+	samePort.Full.Port = cfg.Streaming.Port
+	if err := e.UpdateLAN(ctx, samePort); err == nil || !strings.Contains(err.Error(), "different ports") {
+		t.Fatalf("the same port for both accesses: %v; want it refused", err)
 	}
-
-	// With changes allowed, a file from the network goes through the drive
-	// into the vault.
-	cfg.AllowChanges = true
 	if err := e.UpdateLAN(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if status, _ := lanRequest(t, "PUT", base+"Private/from-tv.txt", cfg, strings.NewReader("from the TV")); status != http.StatusCreated {
-		t.Fatalf("PUT: status %d, want 201", status)
+	full := baseOf(cfg.Full)
+
+	// Through the full access, a file from the network goes through the drive
+	// into the vault; the streaming access still refuses to write.
+	if status, _ := lanRequest(t, "PUT", full+"Private/from-phone.txt", cfg.Full, strings.NewReader("from the phone")); status != http.StatusCreated {
+		t.Fatalf("full access: PUT status %d, want 201", status)
 	}
-	if data, err := os.ReadFile(letters[0] + `:\from-tv.txt`); err != nil || string(data) != "from the TV" {
+	if data, err := os.ReadFile(letters[0] + `:\from-phone.txt`); err != nil || string(data) != "from the phone" {
 		t.Fatalf("on the drive: %q, %v", data, err)
+	}
+	if status, _ := lanRequest(t, "PUT", streaming+"Private/new.txt", cfg.Streaming, strings.NewReader("x")); status < 400 {
+		t.Fatalf("streaming access next to the full access: PUT answered %d", status)
+	}
+	if status, _ := lanRequest(t, "GET", full+"Private/film.txt", cfg.Streaming, nil); status != http.StatusUnauthorized {
+		t.Fatalf("the full access with the streaming password: status %d, want 401", status)
 	}
 	waitUploadsDone(t, e, a.VaultID, time.Minute)
 	if n := countFiles(t, folderA); n != 3 {
 		t.Fatalf("%d file(s) in the vault folder, want check file, film and the file from the network", n)
 	}
 
-	// A restarted window takes the running server over instead of
+	// Disconnecting takes the drive out of both servers first.
+	if err := e.Disconnect(ctx, b.VaultID, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, access := range []settings.LANAccess{cfg.Streaming, cfg.Full} {
+		if got := lanListing(t, baseOf(access), access); !slices.Equal(got, []string{"Private"}) {
+			t.Fatalf("after disconnecting Work=Docs, port %d shows %q", access.Port, got)
+		}
+	}
+
+	// A restarted window takes the running servers over instead of
 	// interrupting the devices.
 	running := serverIDs(t, e)
 	e.actionMu.Lock()
@@ -105,12 +142,13 @@ func TestLANFollowsDrives(t *testing.T) {
 	e.mu.Unlock()
 	e.syncLANLocked(ctx, "")
 	e.actionMu.Unlock()
-	if after := serverIDs(t, e); len(running) != 1 || !slices.Equal(after, running) {
-		t.Fatalf("servers before %q, after taking over %q; want the same one", running, after)
+	if after := serverIDs(t, e); len(running) != 2 || !slices.Equal(after, running) {
+		t.Fatalf("servers before %q, after taking over %q; want the same two", running, after)
 	}
 
-	// Locking ends the server at once — even while the drive stays to finish
-	// an upload, so rclone keeps running — and unlocking brings it back.
+	// Locking ends both servers at once — even while the drive stays to
+	// finish an upload, so rclone keeps running — and unlocking brings them
+	// back.
 	if err := e.EnableLock("app password for the test"); err != nil {
 		t.Fatal(err)
 	}
@@ -127,45 +165,65 @@ func TestLANFollowsDrives(t *testing.T) {
 	if left, err := lan.Running(ctx, client); err != nil || len(left) != 0 {
 		t.Fatalf("servers after locking: %+v, %v; want none", left, err)
 	}
-	if e.Snapshot().LAN.Running {
-		t.Fatal("snapshot: LAN still running after locking")
+	if status := e.Snapshot().LAN; status.Streaming.Running || status.Full.Running {
+		t.Fatalf("snapshot after locking: %+v; want nothing running", status)
 	}
 	waitFor(t, "the lock to close the drives", time.Minute, func() bool { return clientOf(e) == nil })
 	if err := e.Unlock(ctx, "app password for the test"); err != nil {
 		t.Fatal(err)
 	}
 	waitState(t, e, a.VaultID, StateConnected, 30*time.Second)
-	if got := lanListing(t, base, cfg); !slices.Equal(got, []string{"Private"}) {
-		t.Fatalf("after unlocking the network sees %q", got)
+	for _, access := range []settings.LANAccess{cfg.Streaming, cfg.Full} {
+		if got := lanListing(t, baseOf(access), access); !slices.Equal(got, []string{"Private"}) {
+			t.Fatalf("after unlocking, port %d shows %q", access.Port, got)
+		}
 	}
 
-	// A taken port is reported, not hidden.
+	// A taken port is reported for its access only; the other one keeps
+	// running.
 	busy, err := net.Listen("tcp", fmt.Sprintf(":%d", freeTestPort(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Port = busy.Addr().(*net.TCPAddr).Port
+	cfg.Full.Port = busy.Addr().(*net.TCPAddr).Port
 	if err := e.UpdateLAN(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if status := e.Snapshot().LAN; status.Running || !strings.Contains(status.Problem, "port") {
-		t.Fatalf("LAN on a taken port: %+v", status)
+	if status := e.Snapshot().LAN; status.Full.Running || !strings.Contains(status.Full.Problem, "port") ||
+		!status.Streaming.Running || status.Streaming.Problem != "" {
+		t.Fatalf("full access on a taken port: %+v", status)
 	}
 	busy.Close()
 	if err := e.UpdateLAN(ctx, cfg); err != nil { // saving again tries at once
 		t.Fatal(err)
 	}
-	if status := e.Snapshot().LAN; !status.Running || status.Problem != "" {
-		t.Fatalf("LAN after the port became free: %+v", status)
+	if status := e.Snapshot().LAN; !status.Full.Running || status.Full.Problem != "" {
+		t.Fatalf("full access after the port became free: %+v", status)
 	}
 
-	// Turning it off stops it.
-	cfg.Enabled = false
+	// The two accesses can swap their ports in one go: the old servers stop
+	// before the new ones start.
+	cfg.Streaming.Port, cfg.Full.Port = cfg.Full.Port, cfg.Streaming.Port
 	if err := e.UpdateLAN(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if ids := serverIDs(t, e); len(ids) != 0 || e.Snapshot().LAN.Running {
-		t.Fatalf("servers after turning the LAN access off: %q", ids)
+	if status := e.Snapshot().LAN; !status.Streaming.Running || !status.Full.Running {
+		t.Fatalf("after swapping the ports: %+v", status)
+	}
+	if status, _ := lanRequest(t, "PUT", baseOf(cfg.Full)+"Private/after-swap.txt", cfg.Full, strings.NewReader("x")); status != http.StatusCreated {
+		t.Fatalf("full access on its new port: PUT status %d, want 201", status)
+	}
+	if status, _ := lanRequest(t, "PUT", baseOf(cfg.Streaming)+"Private/after-swap-2.txt", cfg.Streaming, strings.NewReader("x")); status < 400 {
+		t.Fatalf("streaming access on its new port: PUT answered %d", status)
+	}
+
+	// Turning both off stops them.
+	cfg.Streaming.Enabled, cfg.Full.Enabled = false, false
+	if err := e.UpdateLAN(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if status := e.Snapshot().LAN; len(serverIDs(t, e)) != 0 || status.Streaming.Running || status.Full.Running {
+		t.Fatalf("servers after turning the LAN access off: %q, %+v", serverIDs(t, e), status)
 	}
 }
 
@@ -179,7 +237,12 @@ func freeTestPort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-// serverIDs lists the IDs of the LAN servers rclone runs.
+// baseOf returns the address of an access on this PC.
+func baseOf(access settings.LANAccess) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/", access.Port)
+}
+
+// serverIDs lists the IDs of the LAN servers rclone runs, sorted.
 func serverIDs(t *testing.T, e *Engine) []string {
 	t.Helper()
 	running, err := lan.Running(t.Context(), clientOf(e))
@@ -190,16 +253,17 @@ func serverIDs(t *testing.T, e *Engine) []string {
 	for _, server := range running {
 		ids = append(ids, server.ID)
 	}
+	slices.Sort(ids)
 	return ids
 }
 
-func lanRequest(t *testing.T, method, address string, cfg settings.LAN, body io.Reader) (int, string) {
+func lanRequest(t *testing.T, method, address string, access settings.LANAccess, body io.Reader) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest(method, address, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.SetBasicAuth(cfg.User, cfg.Password)
+	req.SetBasicAuth(access.User, access.Password)
 	if method == "PROPFIND" {
 		req.Header.Set("Depth", "1")
 	}
@@ -217,20 +281,26 @@ func lanRequest(t *testing.T, method, address string, cfg settings.LAN, body io.
 
 var lanHref = regexp.MustCompile(`<D:href>([^<]*)</D:href>`)
 
-// lanListing returns the folders at the root of the server.
-func lanListing(t *testing.T, base string, cfg settings.LAN) []string {
+// lanListing returns what a folder of the server holds, as paths from the
+// server's root, without the folder itself.
+func lanListing(t *testing.T, address string, access settings.LANAccess) []string {
 	t.Helper()
-	status, body := lanRequest(t, "PROPFIND", base, cfg, nil)
+	status, body := lanRequest(t, "PROPFIND", address, access, nil)
 	if status != http.StatusMultiStatus {
-		t.Fatalf("PROPFIND: status %d", status)
+		t.Fatalf("PROPFIND %s: status %d", address, status)
 	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := strings.Trim(parsed.Path, "/")
 	var names []string
 	for _, match := range lanHref.FindAllStringSubmatch(body, -1) {
 		name, err := url.PathUnescape(strings.Trim(match[1], "/"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if name != "" {
+		if name != self {
 			names = append(names, name)
 		}
 	}

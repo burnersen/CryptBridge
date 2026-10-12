@@ -58,6 +58,17 @@ func TestVfsOptions(t *testing.T) {
 	}
 }
 
+// Hidden names apply to the top folder only and are taken literally, even
+// if they contain characters that rclone's filters read as patterns.
+func TestHideFilter(t *testing.T) {
+	got := Settings{Hide: []string{".cryptbridge-vault", "a*b?[c]{d}"}}.hideFilter()["ExcludeRule"]
+	want := []string{"/.cryptbridge-vault", `/a\*b\?\[c\]\{d\}`}
+	rules, ok := got.([]string)
+	if !ok || len(rules) != len(want) || rules[0] != want[0] || rules[1] != want[1] {
+		t.Fatalf("ExcludeRule = %#v; want %#v", got, want)
+	}
+}
+
 func TestLetterInUseSystemDrive(t *testing.T) {
 	// C: exists on every Windows machine this program runs on.
 	inUse, err := letterInUse("C")

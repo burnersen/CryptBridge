@@ -542,44 +542,83 @@
 
       <div class="card">
         <h2>LAN access <span class="muted">— optional</span></h2>
-        <p class="muted">Lets the other devices of your home network open the connected drives — a TV or Apple TV with
-          Infuse, VLC or Kodi, a phone, a tablet, a Mac. Every connected drive appears there as a folder. The files travel
-          through your home network decrypted, protected by user name and password; devices outside your home network
-          cannot reach them. Locking CryptBridge ends the LAN access at once.</p>
-        <label class="check"><input id="lan-enabled" type="checkbox"> Share the connected drives in my home network (WebDAV)</label>
-        <div class="grid2">
-          <div class="field">
-            <label for="lan-user">User name</label>
-            <input id="lan-user" type="text" spellcheck="false" autocomplete="off">
-          </div>
-          <div class="field">
-            <label for="lan-port">Port</label>
-            <input id="lan-port" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
-          </div>
-          <div class="field">
-            <label for="lan-password">Password (at least 12 characters)</label>
-            <div class="row">
-              <input id="lan-password" type="password" spellcheck="false" autocomplete="new-password">
-              <button class="icon-btn" data-reveal="lan-password" title="Show or hide">👁</button>
-              <button id="btn-lan-copy-password">Copy</button>
-              <button id="btn-lan-new-password">New</button>
+        <p class="muted">Lets the other devices of your home network open the connected drives over WebDAV: a TV or
+          Apple TV with a video player such as Infuse or Kodi, a phone, a tablet, a Mac. Every connected drive appears
+          there as a folder. The files travel through your home network decrypted, protected by user name and password;
+          devices outside your home network cannot reach them. Locking CryptBridge ends the LAN access at once.</p>
+        <p class="hint">There are two accesses, each with a port, user name and password of its own. Give TVs and video
+          players the streaming access, and use the full access only on devices you trust.</p>
+
+        <div class="lan-access">
+          <h3>Streaming access <span class="muted">(read only)</span></h3>
+          <p class="hint">For TVs and video players: they can open, play and copy files, but cannot change or delete
+            anything.</p>
+          <label class="check"><input id="lan-streaming-enabled" type="checkbox"> Turn on the streaming access</label>
+          <div class="grid2">
+            <div class="field">
+              <label for="lan-streaming-user">User name</label>
+              <input id="lan-streaming-user" type="text" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="lan-streaming-port">Port (recommended: 8080)</label>
+              <input id="lan-streaming-port" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="lan-streaming-password">Password (at least 12 characters)</label>
+              <div class="row">
+                <input id="lan-streaming-password" type="password" spellcheck="false" autocomplete="new-password">
+                <button class="icon-btn" data-reveal="lan-streaming-password" title="Show or hide">👁</button>
+                <button data-copy-password="lan-streaming-password">Copy</button>
+                <button data-new-password="lan-streaming-password">New</button>
+              </div>
             </div>
           </div>
+          <div class="label">State</div>
+          <div class="value" id="lan-streaming-state">Off</div>
+          <div id="lan-streaming-address-block" class="hidden">
+            <div class="label">Address for your devices</div>
+            <div id="lan-streaming-addresses"></div>
+          </div>
         </div>
-        <label class="check"><input id="lan-allow-changes" type="checkbox"> Allow changes from the network (upload, rename, delete)</label>
-        <p class="hint">Off, the devices can open, play and copy files, but no device in your network can change or delete
-          anything by mistake.</p>
-        <div class="row">
+
+        <div class="lan-access">
+          <h3>Full access <span class="muted">(read and write)</span></h3>
+          <p class="hint">For file apps on a phone, a tablet or a Mac: they can also upload, rename and delete. Such
+            files go into the drive's upload queue like files copied in Explorer. Its password must differ from the
+            streaming password.</p>
+          <label class="check"><input id="lan-full-enabled" type="checkbox"> Turn on the full access</label>
+          <div class="grid2">
+            <div class="field">
+              <label for="lan-full-user">User name</label>
+              <input id="lan-full-user" type="text" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="lan-full-port">Port (recommended: 8081)</label>
+              <input id="lan-full-port" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="lan-full-password">Password (at least 12 characters)</label>
+              <div class="row">
+                <input id="lan-full-password" type="password" spellcheck="false" autocomplete="new-password">
+                <button class="icon-btn" data-reveal="lan-full-password" title="Show or hide">👁</button>
+                <button data-copy-password="lan-full-password">Copy</button>
+                <button data-new-password="lan-full-password">New</button>
+              </div>
+            </div>
+          </div>
+          <div class="label">State</div>
+          <div class="value" id="lan-full-state">Off</div>
+          <div id="lan-full-address-block" class="hidden">
+            <div class="label">Address for your devices</div>
+            <div id="lan-full-addresses"></div>
+          </div>
+        </div>
+
+        <div class="row lan-save">
           <button class="primary" id="btn-save-lan">Save LAN access</button>
         </div>
         <div id="lan-result" class="notice hidden"></div>
 
-        <div class="label">State</div>
-        <div class="value" id="lan-state">Off</div>
-        <div id="lan-address-block" class="hidden">
-          <div class="label">Address for your devices</div>
-          <div id="lan-addresses"></div>
-        </div>
         <div class="label">Windows firewall</div>
         <div class="value" id="lan-firewall">—</div>
         <div id="lan-firewall-notes"></div>
@@ -594,8 +633,8 @@
         <details>
           <summary>Tips for your devices</summary>
           <ul class="steps">
-            <li><strong>Infuse, VLC, Kodi, file apps:</strong> add a WebDAV share with the address above (protocol
-              <code>http</code>, the port above, path <code>/</code>), the user name and the password.</li>
+            <li><strong>Video players (Infuse, Kodi) and file apps:</strong> add a WebDAV share with the address of the
+              access (protocol <code>http</code>, its port, path <code>/</code>), its user name and its password.</li>
             <li><strong>Mac:</strong> Finder → Go → Connect to Server, enter the address.</li>
             <li><strong>Other Windows PCs</strong> refuse a password-protected <code>http://</code> WebDAV address
               unless their registry is changed — install CryptBridge there instead.</li>

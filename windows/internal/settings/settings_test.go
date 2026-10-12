@@ -27,8 +27,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 		s.SignedIn() || len(s.Vaults) != 0 {
 		t.Fatalf("unexpected defaults: %+v", s)
 	}
-	if s.LAN != (LAN{Port: DefaultLANPort, User: DefaultLANUser}) {
-		t.Fatalf("LAN defaults: %+v; want off, port %d, user %q", s.LAN, DefaultLANPort, DefaultLANUser)
+	want := LAN{Streaming: LANAccess{Port: 8080, User: "stream"}, Full: LANAccess{Port: 8081, User: "full"}}
+	if s.LAN != want {
+		t.Fatalf("LAN defaults: %+v; want %+v (both off)", s.LAN, want)
 	}
 }
 
@@ -49,12 +50,16 @@ func twoVaults() Settings {
 		{ID: "v1a2b3c4d", Name: "Private", Kind: KindLocal, Letter: "Y",
 			LastSize: &SizeRecord{Bytes: 42, Files: 1, At: "2026-10-11T12:00:00Z"}, Config: local},
 	}
-	s.LAN = LAN{Enabled: true, Port: 8090, User: "tv", Password: "VERY-SECRET-LAN-PASSWORD", AllowChanges: true}
+	s.LAN = LAN{
+		Streaming: LANAccess{Enabled: true, Port: 8090, User: "tv", Password: "VERY-SECRET-LAN-PASSWORD"},
+		Full:      LANAccess{Enabled: true, Port: 8091, User: "phone", Password: "VERY-SECRET-FULL-LAN-PASSWORD"},
+	}
 	return s
 }
 
 var secretsInTwoVaults = []string{"VERY-SECRET-TOKEN", "VERY-SECRET-CLIENT-SECRET", "VERY-SECRET-PASSWORD",
-	"VERY-SECRET-SALT", "VERY-SECRET-LOCAL-PASSWORD", "SecretCloudFolder", "SecretLocalFolder", "VERY-SECRET-LAN-PASSWORD"}
+	"VERY-SECRET-SALT", "VERY-SECRET-LOCAL-PASSWORD", "SecretCloudFolder", "SecretLocalFolder", "VERY-SECRET-LAN-PASSWORD",
+	"VERY-SECRET-FULL-LAN-PASSWORD"}
 
 func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.dat")
@@ -134,8 +139,10 @@ func TestAppLockSealsSecrets(t *testing.T) {
 	if locked.Vaults[1].Name != "Private" || locked.Vaults[1].Letter != "Y" {
 		t.Fatalf("locked load lost name or letter: %+v", locked.Vaults[1])
 	}
-	if wantLAN := (LAN{Enabled: true, Port: 8090, User: "tv", AllowChanges: true}); locked.LAN != wantLAN {
-		t.Fatalf("locked load: LAN %+v; want %+v (everything but the password)", locked.LAN, wantLAN)
+	wantLAN := want.LAN
+	wantLAN.Streaming.Password, wantLAN.Full.Password = "", ""
+	if locked.LAN != wantLAN {
+		t.Fatalf("locked load: LAN %+v; want %+v (everything but the passwords)", locked.LAN, wantLAN)
 	}
 
 	if _, _, err := Unlock(path, `C:\other`, "wrong password!"); !errors.Is(err, passlock.ErrWrongPassword) {
@@ -357,10 +364,119 @@ func TestLoadFileWithoutLANSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.LAN != (LAN{Port: DefaultLANPort, User: DefaultLANUser}) {
+	if got.LAN != defaultLAN() {
 		t.Fatalf("LAN %+v; want the defaults", got.LAN)
 	}
 	if len(got.Vaults) != 1 || got.Cache.MaxSize != "30G" || got.AutoReconnect || got.Theme != ThemeDark {
 		t.Fatalf("the other settings changed: %+v", got)
+	}
+}
+
+// writeVersion2 writes a settings file in the current format, with any
+// content: here, the LAN settings of CryptBridge 0.5.
+func writeVersion2(t *testing.T, path string, content any) {
+	t.Helper()
+	plain, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected, err := protect(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte{}, fileHeader...), protected...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The one LAN access of CryptBridge 0.5 becomes the access with the same
+// rights, unchanged, so that the devices keep working; the other access
+// stays off on a port of its own.
+func TestConvertLANOfVersion05(t *testing.T) {
+	tests := []struct {
+		name string
+		old  lanVersion1
+		want LAN
+	}{
+		{"read only on 8080", lanVersion1{Enabled: true, Port: 8080, User: "tv", Password: "old-password-1"},
+			LAN{Streaming: LANAccess{Enabled: true, Port: 8080, User: "tv", Password: "old-password-1"},
+				Full: LANAccess{Port: 8081, User: "full"}}},
+		{"read only on 8081", lanVersion1{Port: 8081, User: "cryptbridge"},
+			LAN{Streaming: LANAccess{Port: 8081, User: "cryptbridge"}, Full: LANAccess{Port: 8080, User: "full"}}},
+		{"changes allowed on 8080", lanVersion1{Enabled: true, Port: 8080, User: "cryptbridge", Password: "old-password-2", AllowChanges: true},
+			LAN{Streaming: LANAccess{Port: 8081, User: "stream"},
+				Full: LANAccess{Enabled: true, Port: 8080, User: "cryptbridge", Password: "old-password-2"}}},
+		{"changes allowed on 9000", lanVersion1{Enabled: true, Port: 9000, User: "me", Password: "old-password-3", AllowChanges: true},
+			LAN{Streaming: LANAccess{Port: 8080, User: "stream"},
+				Full: LANAccess{Enabled: true, Port: 9000, User: "me", Password: "old-password-3"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.dat")
+			writeVersion2(t, path, map[string]any{"theme": ThemeDark, "lan": tt.old})
+
+			got, err := Load(path, `C:\cache`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.LAN != tt.want || got.Theme != ThemeDark {
+				t.Fatalf("LAN %+v; want %+v", got.LAN, tt.want)
+			}
+			// Saved again, the file has the new form and reads the same.
+			if err := Save(path, got, nil); err != nil {
+				t.Fatal(err)
+			}
+			again, err := Load(path, `C:\cache`)
+			if err != nil || again.LAN != tt.want {
+				t.Fatalf("after saving: LAN %+v, %v; want %+v", again.LAN, err, tt.want)
+			}
+		})
+	}
+}
+
+// With the app lock on, the password of CryptBridge 0.5's one access is
+// sealed apart from its other settings; unlocking must give it to the access
+// that took the old one's place.
+func TestConvertLockedLANOfVersion05(t *testing.T) {
+	for _, allowChanges := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "settings.dat")
+		key, err := passlock.NewKey("app password for the test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealedPart, err := json.Marshal(map[string]any{"lanPassword": "old-sealed-password", "vaultKeys": map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed, err := key.Seal(sealedPart)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeVersion2(t, path, map[string]any{
+			"appLock": true,
+			"sealed":  sealed,
+			"lan":     lanVersion1{Enabled: true, Port: 8080, User: "tv", AllowChanges: allowChanges},
+		})
+
+		got, gotKey, err := Unlock(path, `C:\cache`, "app password for the test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept, other := got.LAN.Streaming, got.LAN.Full
+		if allowChanges {
+			kept, other = got.LAN.Full, got.LAN.Streaming
+		}
+		if kept != (LANAccess{Enabled: true, Port: 8080, User: "tv", Password: "old-sealed-password"}) || other.Password != "" {
+			t.Fatalf("allow changes %v: LAN %+v; want the old access with its sealed password", allowChanges, got.LAN)
+		}
+
+		// Saved again, the password is sealed under the new name.
+		if err := Save(path, got, gotKey); err != nil {
+			t.Fatal(err)
+		}
+		again, _, err := Unlock(path, `C:\cache`, "app password for the test")
+		if err != nil || again.LAN != got.LAN {
+			t.Fatalf("allow changes %v: after saving: LAN %+v, %v; want %+v", allowChanges, again.LAN, err, got.LAN)
+		}
 	}
 }

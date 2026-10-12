@@ -177,7 +177,7 @@ func TestReadFirewall(t *testing.T) {
 			program = real
 		}
 	}
-	state, err := ReadFirewall(context.Background(), 8080, program)
+	state, err := ReadFirewall(context.Background(), []int{8080, 8081}, program)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +190,36 @@ func TestReadFirewall(t *testing.T) {
 		}
 	}
 	t.Logf("firewall for %s: %+v", program, state)
+}
+
+// The rule fits only for exactly the ports of the accesses that are on, in
+// whatever order Windows lists them.
+func TestSamePorts(t *testing.T) {
+	tests := []struct {
+		listed string
+		ports  []int
+		want   bool
+	}{
+		{"8080", []int{8080}, true},
+		{"8080,8081", []int{8080, 8081}, true},
+		{"8081,8080", []int{8080, 8081}, true},
+		{"8080, 8081", []int{8081, 8080}, true},
+		{"8080", []int{8080, 8081}, false},  // the full access was turned on later
+		{"8080,8081", []int{8080}, false},  // one more port than needed stays open
+		{"8080,8081", []int{8080, 8082}, false},
+		{"Any", []int{8080}, false},
+		{"8080-8090", []int{8080}, false},
+		{"", []int{8080}, false},
+		{"", nil, false}, // no access on: nothing fits
+	}
+	for _, tt := range tests {
+		if got := samePorts(tt.listed, tt.ports); got != tt.want {
+			t.Errorf("samePorts(%q, %v) = %v, want %v", tt.listed, tt.ports, got, tt.want)
+		}
+	}
+	if got := portList([]int{8081, 8080, 8081}); got != "8080,8081" {
+		t.Errorf("portList = %q, want 8080,8081", got)
+	}
 }
 
 func TestRemoveRulesScript(t *testing.T) {
