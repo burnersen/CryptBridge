@@ -89,6 +89,14 @@ func TestOpenWrongCode(t *testing.T) {
 	}
 }
 
+// Copying a code can bring invisible characters along; they must not count.
+func TestNormaliseCodeDropsInvisible(t *testing.T) {
+	copied := "\xc2\xa0k7q2m-ABCDE\xe2\x80\x8b fghjk\tLMNPQ-rstuv\r\n"
+	if got, want := NormaliseCode(copied), "K7Q2MABCDEFGHJKLMNPQRSTUV"; got != want {
+		t.Fatalf("NormaliseCode(%q) = %q, want %q", copied, got, want)
+	}
+}
+
 func TestOpenDamaged(t *testing.T) {
 	code, _ := NewCode()
 	if _, err := Open("hello", code); err == nil {

@@ -103,11 +103,19 @@ func NewCode() (string, error) {
 	return strings.Join(groups, "-"), nil
 }
 
-// NormaliseCode removes spaces and dashes and makes the code upper case, so
-// that "k7q2m-abcde" typed by hand works too. The Linux setup does the same.
+// NormaliseCode keeps only the characters a code is made of, upper case, so
+// that "k7q2m-abcde" typed by hand works too, and so does a code with
+// invisible characters picked up by copying. The Linux setup does the same.
 func NormaliseCode(code string) string {
-	code = strings.ToUpper(code)
-	return strings.NewReplacer("-", "", " ", "", "\t", "").Replace(code)
+	return strings.Map(func(r rune) rune {
+		if 'a' <= r && r <= 'z' {
+			r -= 'a' - 'A'
+		}
+		if strings.ContainsRune(codeAlphabet, r) {
+			return r
+		}
+		return -1
+	}, code)
 }
 
 // Seal encrypts the bundle with the code and returns the text block.

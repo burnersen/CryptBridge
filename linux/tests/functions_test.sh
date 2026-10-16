@@ -200,6 +200,9 @@ if command -v jq >/dev/null; then
 	check "a service name with odd characters is refused" refused "$(refused '{"service":"drive]","settings":{"token":"T"}}')"
 	unset -f block2 taken refused
 
+	check "a copied code loses case, dashes and invisible characters" K7Q2MABCDEFGHJKLMNPQRSTUV \
+		"$(normalise_code $'\xc2\xa0k7q2m-ABCDE\xe2\x80\x8b fghjk\tLMNPQ-rstuv\r')"
+
 	# A block of the Windows program, opened with the real openssl.
 	if [[ -n "${CB_TEST_TRANSFER_SAMPLE:-}" ]]; then
 		body="$(transfer_body "$(<"$CB_TEST_TRANSFER_SAMPLE/sample.cbtransfer")")"
@@ -207,6 +210,8 @@ if command -v jq >/dev/null; then
 		r="$( (take_transfer "$(open_transfer_block "$body" "$(tr 'A-Z' 'a-z' <<<"$code")")" &&
 			printf '%s|%s|%s' "$CB_SERVICE" "$VAULT_PASSWORD" "$CB_VAULT_PATH") 2>&1)"
 		check "Windows block: opened with the code in lower case" 'drive|pässwörd with spaces & "quotes"|CryptBridge' "$r"
+		r="$(open_transfer_block "$body" $'\xc2\xa0'"$code"$' \r' | jq -r '.vault.path')"
+		check "Windows block: opened with a copied code (invisible characters)" CryptBridge "$r"
 		r="$( (take_transfer "$(open_transfer_block "$body" "$code")" && printf '%s' "$CLOUD_SETTINGS") 2>&1)"
 		check "Windows block: every setting of the account arrives" $'client_id = 123-abc.apps.googleusercontent.com\nclient_secret = GOCSPX-secret\nscope = drive\nteam_drive = \ntoken = {"access_token":"T","token_type":"Bearer","refresh_token":"R","expiry":"2026-10-10T23:00:00Z"}' "$r"
 		# openssl takes a wrong code in about 1 of 256 cases and returns
@@ -214,6 +219,9 @@ if command -v jq >/dev/null; then
 		r="$( (take_transfer "$(open_transfer_block "$body" "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE")") 2>&1)"
 		[[ "$r" == *"Wrong transfer code"* ]] && r=wrong
 		check "Windows block: a wrong code is refused" wrong "$r"
+		r=opened
+		open_transfer_block "$body" "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE" >/dev/null || r=failed
+		check "Windows block: a wrong code fails without ending the setup" failed "$r"
 	fi
 else
 	printf 'skip  transfer blocks (jq not installed)\n'

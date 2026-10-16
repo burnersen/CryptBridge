@@ -219,9 +219,7 @@ function renderCrumbs() {
 // the transfer block holds keys.
 function leaveVaultPage() {
   filledVault = "";
-  $("transfer-block").value = "";
-  $("transfer-code").textContent = "";
-  show($("transfer-area"), false);
+  hideTransfer();
   show($("v-result"), false);
   $("v-save-result").textContent = "";
 }
@@ -1441,6 +1439,21 @@ $("btn-download-rclone").addEventListener("click", () => run($("status-message")
 
 // ---------- transfer to the Linux server ----------
 
+// The button says when a click replaces the block on screen: block and code
+// belong together, and mixing two of them was a real stumbling block.
+const TRANSFER_LABEL_FIRST = "Create transfer block";
+const TRANSFER_LABEL_AGAIN = "Create a new block";
+
+// hideTransfer removes the block and its code from the screen; both hand
+// the keys on.
+function hideTransfer() {
+  $("transfer-block").value = "";
+  $("transfer-code").textContent = "";
+  $("transfer-result").textContent = "";
+  $("btn-transfer").textContent = TRANSFER_LABEL_FIRST;
+  show($("transfer-area"), false);
+}
+
 $("btn-transfer").addEventListener("click", () => run($("v-result"), async () => {
   const id = currentPage;
   const password = await askAppPassword("The transfer block hands your keys on. Please confirm with your app password.");
@@ -1450,8 +1463,11 @@ $("btn-transfer").addEventListener("click", () => run($("v-result"), async () =>
   $("transfer-code").textContent = t.code;
   $("transfer-block").value = t.block;
   $("transfer-result").textContent = "";
+  $("btn-transfer").textContent = TRANSFER_LABEL_AGAIN;
   show($("transfer-area"), true);
 }));
+$("btn-copy-code").addEventListener("click", (e) =>
+  copyWithFeedback(e.currentTarget, $("transfer-code").textContent));
 $("btn-copy-block").addEventListener("click", async () => {
   await api.CopyText($("transfer-block").value);
   $("transfer-result").textContent = "Copied. Paste it into the setup on the server.";
@@ -1631,8 +1647,7 @@ function wipePage() {
     "lan-streaming-password", "lan-full-password"]) {
     $(id).value = "";
   }
-  $("transfer-code").textContent = "";
-  show($("transfer-area"), false);
+  hideTransfer();
   for (const id of ["add-result", "v-result", "vaults-notice", "account-result"]) show($(id), false);
   closeSheet();
   closeBrowser();

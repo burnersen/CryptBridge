@@ -373,14 +373,20 @@
             <div class="card" id="v-linux">
               <h2>Linux server</h2>
               <p class="muted">Bring the sign-in to your cloud account and the keys of this vault to your server without typing them:
-                create a transfer block, then run <code>sudo bash setup.sh</code> on the server and choose
-                "Paste the transfer block".</p>
+                create a transfer block, then run this command on the server and choose "Paste the transfer block".</p>
+              <div class="command-line">
+                <code class="copy-text" id="linux-command">curl -fsSLO https://raw.githubusercontent.com/burnersen/CryptBridge/main/linux/setup.sh &amp;&amp; sudo bash setup.sh</code>
+                <button class="link" data-copy="linux-command">Copy</button>
+              </div>
               <div class="row">
                 <button class="primary" id="btn-transfer">Create transfer block</button>
               </div>
               <div id="transfer-area" class="hidden">
                 <div class="label">Transfer code (type it on the server when asked)</div>
-                <div class="code big" id="transfer-code"></div>
+                <div class="row">
+                  <div class="code big" id="transfer-code"></div>
+                  <button id="btn-copy-code">Copy code</button>
+                </div>
                 <div class="label">Transfer block</div>
                 <textarea id="transfer-block" readonly spellcheck="false"></textarea>
                 <div class="row">
@@ -389,7 +395,8 @@
                   <span class="muted" id="transfer-result"></span>
                 </div>
                 <p class="hint">The block contains your keys, protected by the code. Never send block and code
-                  the same way (for example, not both in one e-mail). Each click makes a new code.</p>
+                  the same way (for example, not both in one e-mail). Block and code belong together: a new block
+                  gets a new code.</p>
               </div>
             </div>
 

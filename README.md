@@ -460,9 +460,13 @@ curl -fsSLO https://raw.githubusercontent.com/burnersen/CryptBridge/main/linux/s
 sudo bash setup.sh
 ```
 
+The same command is on the vault's page in the Windows program (*Linux server*), with a **Copy** button.
+
 The setup asks a few questions and does everything else. When it asks for the keys, paste the
-**transfer block** and type its code. At the end it shows a **check code** (for example `7F3A-91C2`): it
-must be the same as on the vault's page in the Windows program. If the codes match, the keys match.
+**transfer block** and type its code (or use **Copy code** and paste it). A mistyped code can be typed
+again; the block stays. Block and code belong together: each new block gets a new code. At the end the
+setup shows a **check code** (for example `7F3A-91C2`): it must be the same as on the vault's page in the
+Windows program. If the codes match, the keys match.
 
 **Server set up with CryptBridge 0.7 or older?** Download `setup.sh` again (the two lines above) before
 you paste a transfer block of CryptBridge 0.8 or newer: the old setup only knows the old blocks and would

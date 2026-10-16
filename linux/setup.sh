@@ -22,7 +22,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.8.0"
+readonly CRYPTBRIDGE_VERSION="0.8.1"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -95,6 +95,10 @@ readonly TRANSFER_FORMAT_PREFIX="cryptbridge-transfer-"
 readonly TRANSFER_FORMAT_PCLOUD="${TRANSFER_FORMAT_PREFIX}1"
 readonly TRANSFER_FORMAT_CLOUD="${TRANSFER_FORMAT_PREFIX}2"
 readonly TRANSFER_ITERATIONS=600000
+# The characters of a transfer code (as in the Windows program: no 0/O, 1/I).
+readonly TRANSFER_CODE_ALPHABET="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+# A mistyped code should not mean pasting the block again.
+readonly TRANSFER_CODE_TRIES=3
 
 readonly SUPPORTED_SYSTEMS="ubuntu 24.04, ubuntu 26.04, debian 12, debian 13"
 
@@ -433,10 +437,22 @@ read_transfer_block() {
 	body="$(transfer_body "$text")"
 	[[ -n "$body" ]] || die "No transfer block found."
 
-	ask_secret code "Transfer code (shown in the Windows program)"
-	json="$(open_transfer_block "$body" "$code")" || exit 1 # it said why
-	take_transfer "$json"
-	ok "Transfer block opened: vault '$CB_VAULT_PATH' in $(service_title), check code $EXPECTED_FINGERPRINT"
+	local try left tries_word
+	for ((try = 1; try <= TRANSFER_CODE_TRIES; try++)); do
+		ask_secret code "Transfer code (shown in the Windows program)"
+		if json="$(open_transfer_block "$body" "$code")"; then
+			take_transfer "$json"
+			ok "Transfer block opened: vault '$CB_VAULT_PATH' in $(service_title), check code $EXPECTED_FINGERPRINT"
+			return
+		fi
+		left=$((TRANSFER_CODE_TRIES - try))
+		if ((left > 0)); then
+			tries_word="tries"
+			if ((left == 1)); then tries_word="try"; fi
+			warn "Wrong transfer code (or the block is incomplete). Please type it again ($left $tries_word left)."
+		fi
+	done
+	die "Wrong transfer code (or the block is incomplete). Block and code belong together: use the code shown next to the block you pasted."
 }
 
 # transfer_body TEXT — prints the lines between the markers of the block in
@@ -446,14 +462,23 @@ transfer_body() {
 }
 
 # open_transfer_block BODY CODE — prints the content of the block, whose
-# lines between the markers are BODY. The code may be typed in lower case,
-# with spaces or dashes, as in the Windows program.
+# lines between the markers are BODY; fails if CODE does not open it.
 open_transfer_block() {
-	local code
-	code="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]' | tr -d ' \t-')"
-	printf '%s\n' "$1" | CB_CODE="$code" openssl enc -d -aes-256-cbc -pbkdf2 \
-		-iter "$TRANSFER_ITERATIONS" -md sha256 -a -pass env:CB_CODE 2>/dev/null ||
-		die "Wrong transfer code (or the block is incomplete)."
+	local json
+	json="$(printf '%s\n' "$1" | CB_CODE="$(normalise_code "$2")" openssl enc -d -aes-256-cbc -pbkdf2 \
+		-iter "$TRANSFER_ITERATIONS" -md sha256 -a -pass env:CB_CODE 2>/dev/null | tr -d '\0')" || return 1
+	# openssl takes a wrong code in about 1 of 256 cases and returns garbage.
+	jq -e --arg prefix "$TRANSFER_FORMAT_PREFIX" '.format | strings | startswith($prefix)' \
+		<<<"$json" >/dev/null 2>&1 || return 1
+	printf '%s\n' "$json"
+}
+
+# normalise_code CODE — keeps only the characters a transfer code is made of,
+# upper case. So lower case, spaces, dashes and the invisible characters that
+# copying can bring along (a carriage return, a non-breaking space) do not
+# matter. The Windows program does the same.
+normalise_code() {
+	printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z' | LC_ALL=C tr -cd "$TRANSFER_CODE_ALPHABET"
 }
 
 # take_transfer JSON — takes the cloud sign-in and the vault keys from an

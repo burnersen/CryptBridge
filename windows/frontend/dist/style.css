@@ -351,6 +351,15 @@ table.form-guide th, table.form-guide td {
 }
 table.form-guide th { width: 30%; color: var(--muted); font-weight: normal; }
 .copy-text { user-select: text; }
+.command-line { display: flex; align-items: center; gap: 8px; margin: 6px 0 10px; }
+.command-line code {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  word-break: break-all;
+}
 
 code, .mono { font-family: Consolas, monospace; }
 .code.big { font-size: 22px; letter-spacing: 2px; margin: 4px 0 10px; user-select: text; }
