@@ -22,7 +22,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.8.1"
+readonly CRYPTBRIDGE_VERSION="0.8.2"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -845,6 +845,69 @@ choose_webdav_account() {
 	ok "Streaming account '$CB_WEBDAV_USER' saved"
 }
 
+# Filled by check_web_ports and choose_address, read by the later steps.
+HTTPS_POSSIBLE=1 # 0: another program uses port 80 or 443, so no Caddy
+ADDRESS_IS_IP=0  # 1: the user kept an IP address, which gets no trusted certificate
+
+# How long check_https waits for the certificate; the step title says so.
+readonly HTTPS_WAIT_SECONDS=180
+readonly HTTPS_WAIT_TEXT="up to 3 minutes"
+# With an IP address Caddy serves its own certificate at once; no waiting.
+readonly HTTPS_WAIT_SECONDS_IP=20
+
+# web_port_users — the programs besides Caddy that listen on port 80 or 443,
+# one line each: "PROGRAM UNIT PORTS", e.g. "nginx nginx.service 80 and 443".
+# Caddy is left out: on a repeated setup it holds the ports itself.
+web_port_users() {
+	command -v ss >/dev/null || return 0
+	ss -Htlnp '( sport = :80 or sport = :443 )' 2>/dev/null |
+		while read -r _ _ _ local_address _ process; do
+			local port="${local_address##*:}" pid program unit
+			for pid in $(grep -o 'pid=[0-9]*' <<<"$process" | cut -d= -f2 || true); do
+				program="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+				unit="$(ps -o unit= -p "$pid" 2>/dev/null || true)"
+				# "-" keeps the three fields apart when ps knows no name or unit.
+				printf '%s %s %s\n' "$port" "${program:--}" "${unit:--}"
+			done
+		done |
+		awk '$2 != "caddy"' | sort -u | sort -n |
+		awk '{ key = $2 " " $3; ports[key] = (key in ports) ? ports[key] " and " $1 : $1 }
+			END { for (key in ports) print key, ports[key] }'
+}
+
+# check_web_ports — HTTPS needs ports 80 and 443 for Caddy. Another web
+# server there (an old website, say) used to stop the setup halfway, before
+# the command and the desktop icons; now it is named at the start and the
+# user decides. Without the ports, everything else is still set up.
+check_web_ports() {
+	step "Ports for HTTPS"
+	local users program unit ports
+	users="$(web_port_users)"
+	if [[ -z "$users" ]]; then
+		ok "Ports 80 and 443 are free for HTTPS"
+		return
+	fi
+	while read -r program unit ports; do
+		if [[ "$ports" == *" and "* ]]; then
+			warn "Ports $ports are used by $program."
+		else
+			warn "Port $ports is used by $program."
+		fi
+		if [[ "$unit" == *.service ]] &&
+			confirm "Stop and disable $program ($unit)? Only if you do not need it any more, e.g. an old website." n; then
+			systemctl disable --now "$unit" >>"$LOG_FILE" 2>&1 || die "Could not stop $unit. See: journalctl -u $unit"
+			ok "$program stopped and disabled"
+		fi
+	done <<<"$users"
+	if [[ -n "$(web_port_users)" ]]; then
+		HTTPS_POSSIBLE=0
+		warn "The setup goes on without HTTPS: the vault folder, the 'cryptbridge' command and the desktop work,"
+		warn "video players cannot connect yet. Free the ports later, then run:  sudo cryptbridge setup"
+	else
+		ok "Ports 80 and 443 are free for HTTPS"
+	fi
+}
+
 public_ipv4() {
 	ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}'
 }
@@ -860,6 +923,11 @@ public_dns_ipv4() {
 	jq -r '.Answer[]? | select(.type == 1) | .data' <<<"$json"
 }
 
+# is_ipv4_address TEXT — true for an address such as 157.173.96.238.
+is_ipv4_address() {
+	[[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+}
+
 choose_address() {
 	step "Address of this server"
 	info "Video players reach this server over HTTPS. A free certificate is fetched automatically;"
@@ -867,13 +935,24 @@ choose_address() {
 	info "from duckdns.org (e.g. myvault.duckdns.org — set its IP to this server's IP)."
 	info "Host names of your provider (…supersrv.de, …contaboserver.net) often do NOT work:"
 	info "all customers share one Let's Encrypt limit of 50 certificates per week."
-	ask CB_ADDRESS "Domain or host name of this server" "${CB_ADDRESS:-}"
-	CB_ADDRESS="${CB_ADDRESS,,}"
-	[[ "$CB_ADDRESS" =~ ^[a-z0-9.-]+$ && "$CB_ADDRESS" == *.* ]] || die "Please enter a host name such as myvault.duckdns.org."
 	local resolved mine
+	mine="$(public_ipv4 || true)"
+	while true; do
+		ask CB_ADDRESS "Domain or host name of this server" "${CB_ADDRESS:-}"
+		CB_ADDRESS="${CB_ADDRESS,,}"
+		is_ipv4_address "$CB_ADDRESS" || break
+		warn "An IP address gets no trusted certificate, so video players refuse the connection."
+		info "Please enter a name instead, e.g. a free one from duckdns.org pointing to ${mine:-this server}."
+		if confirm "Continue with the IP address anyway?" n; then
+			ADDRESS_IS_IP=1
+			info "Caddy serves HTTPS with a certificate of its own, which only players that ignore certificates accept."
+			return
+		fi
+		CB_ADDRESS="" # no IP as the suggestion of the next question
+	done
+	[[ "$CB_ADDRESS" =~ ^[a-z0-9.-]+$ && "$CB_ADDRESS" == *.* ]] || die "Please enter a host name such as myvault.duckdns.org."
 	# "|| true": an unanswered query is handled below, not by set -e.
 	resolved="$(public_dns_ipv4 "$CB_ADDRESS" || true)"
-	mine="$(public_ipv4 || true)"
 	if [[ -z "$resolved" ]]; then
 		info "Could not look up '$CB_ADDRESS' in the public DNS; the HTTPS check at the end shows whether it works."
 	elif [[ -n "$mine" && $'\n'"$resolved"$'\n' != *$'\n'"$mine"$'\n'* ]]; then
@@ -1021,9 +1100,19 @@ start_services() {
 	wait_for "vault mounted at $CB_MOUNT_DIR" 60 is_mounted
 	systemctl restart rclone-webdav.service >>"$LOG_FILE" 2>&1 || die "WebDAV did not start. See: journalctl -u rclone-webdav"
 	wait_for "WebDAV answering" 30 webdav_answers
+	if ((HTTPS_POSSIBLE == 0)); then
+		info "HTTPS (Caddy) skipped: port 80 or 443 is in use by another program (see the start of the setup)."
+		return
+	fi
 	write_caddyfile
 	systemctl enable caddy >>"$LOG_FILE" 2>&1
-	systemctl reload-or-restart caddy >>"$LOG_FILE" 2>&1 || die "Caddy did not start. See: journalctl -u caddy"
+	if ! systemctl reload-or-restart caddy >>"$LOG_FILE" 2>&1; then
+		# Not fatal: the vault works without HTTPS, and the steps after this
+		# one (command, desktop) must still run.
+		HTTPS_POSSIBLE=0
+		warn "Caddy did not start, so there is no HTTPS for now. See: journalctl -u caddy"
+		return
+	fi
 	ok "Caddy configured for https://$CB_ADDRESS"
 }
 
@@ -1078,11 +1167,25 @@ explain_certificate_problem() {
 }
 
 check_https() {
-	step "Checking HTTPS (the certificate can take a minute)"
-	local i code=""
+	if ((HTTPS_POSSIBLE == 0)); then
+		step "Checking HTTPS"
+		warn "Skipped: there is no HTTPS yet. Once ports 80 and 443 are free, run:  sudo cryptbridge setup"
+		return
+	fi
+	local wait_seconds="$HTTPS_WAIT_SECONDS" curl_options=()
+	if ((ADDRESS_IS_IP)); then
+		step "Checking HTTPS"
+		# Nobody trusts Caddy's own certificate, curl neither; it is there at
+		# once, so a long wait would only look like a hang.
+		wait_seconds="$HTTPS_WAIT_SECONDS_IP"
+		curl_options=(--insecure)
+	else
+		step "Checking HTTPS ($HTTPS_WAIT_TEXT: the certificate is fetched now)"
+	fi
+	local deadline=$((SECONDS + wait_seconds)) code=""
 	printf '    '
-	for ((i = 0; i < 90; i++)); do
-		code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://$CB_ADDRESS/" || true)"
+	while ((SECONDS < deadline)); do
+		code="$(curl -s "${curl_options[@]}" -o /dev/null -w '%{http_code}' --max-time 5 "https://$CB_ADDRESS/" || true)"
 		[[ "$code" == "401" ]] && break
 		printf '.'
 		sleep 2
@@ -1090,12 +1193,20 @@ check_https() {
 	printf '\n'
 	if [[ "$code" != "401" ]]; then
 		warn "https://$CB_ADDRESS does not answer yet (last answer: ${code:-none})."
-		explain_certificate_problem
+		if ((ADDRESS_IS_IP)); then
+			warn "Details: journalctl -u caddy"
+		else
+			explain_certificate_problem
+		fi
 		return
 	fi
-	ok "https://$CB_ADDRESS answers and asks for the password"
+	if ((ADDRESS_IS_IP)); then
+		ok "https://$CB_ADDRESS answers (with Caddy's own certificate) and asks for the password"
+	else
+		ok "https://$CB_ADDRESS answers and asks for the password"
+	fi
 	if [[ -n "${WEBDAV_PASSWORD_FOR_TEST:-}" ]]; then
-		code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -u "$CB_WEBDAV_USER:$WEBDAV_PASSWORD_FOR_TEST" -X PROPFIND -H 'Depth: 1' "https://$CB_ADDRESS/")"
+		code="$(curl -s "${curl_options[@]}" -o /dev/null -w '%{http_code}' --max-time 10 -u "$CB_WEBDAV_USER:$WEBDAV_PASSWORD_FOR_TEST" -X PROPFIND -H 'Depth: 1' "https://$CB_ADDRESS/")"
 		[[ "$code" == "207" ]] && ok "Login with the streaming account works" || warn "Login test answered $code"
 	fi
 }
@@ -1372,6 +1483,15 @@ summary() {
 	info "Vault folder on this server: $CB_MOUNT_DIR (also on the desktop: 'CryptBridge Vault')"
 	info "Check code: $CB_FINGERPRINT — must be the same in the Windows program."
 	show_streaming_settings
+	if ((HTTPS_POSSIBLE == 0)); then
+		printf '\n'
+		warn "No HTTPS yet: port 80 or 443 is in use by another program, so these settings do not work yet."
+		warn "Free the ports, then run:  sudo cryptbridge setup"
+	elif ((ADDRESS_IS_IP)); then
+		printf '\n'
+		warn "With an IP address, only players that ignore certificates connect. A name from duckdns.org fixes that:"
+		warn "point it to this server, then run:  sudo cryptbridge setup"
+	fi
 	printf '\n'
 	info "Later: run 'cryptbridge' (or the 'CryptBridge' icon) for status, restart and settings."
 	info "Moving to a new server: run this setup there, then point your host name to the new server."
@@ -1389,6 +1509,7 @@ setup() {
 	info "Log file: $LOG_FILE"
 	load_settings
 	check_system
+	check_web_ports
 	choose_user
 	install_packages
 	install_rclone

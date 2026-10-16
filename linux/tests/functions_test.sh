@@ -101,6 +101,72 @@ for ufw_state in inactive active; do
 done
 unset -f ufw admin_ports confirm
 
+# --- check_web_ports: another web server on 80/443 is named, Caddy is not ---
+# Without this check, nginx on port 80 stopped the setup at Caddy, before the
+# command and the desktop icons were set up (seen on the test server).
+ss() { # stand-in for "ss -Htlnp": what listens, by $listening
+	[[ "$listening" == none ]] || cat <<'EOF'
+LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=11,fd=5),("nginx",pid=12,fd=5))
+LISTEN 0 511 [::]:80 [::]:* users:(("nginx",pid=11,fd=6))
+LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=11,fd=7))
+EOF
+	[[ "$listening" == all ]] && echo 'LISTEN 0 5 0.0.0.0:80 0.0.0.0:* users:(("python3",pid=30,fd=3))'
+	echo 'LISTEN 0 4096 *:443 *:* users:(("caddy",pid=20,fd=4))'
+}
+ps() { # stand-in for "ps -o comm=|unit= -p PID"
+	case "$2:$4" in
+	comm=:11 | comm=:12) echo nginx ;;
+	unit=:11 | unit=:12) echo nginx.service ;;
+	comm=:20) echo caddy ;;
+	unit=:20) echo caddy.service ;;
+	comm=:30) echo python3 ;;
+	unit=:30) echo session-3.scope ;;
+	esac
+}
+systemctl() { # stand-in: stopping nginx frees its ports
+	systemctl_calls+="$*;"
+	[[ "$*" == "disable --now nginx.service" && "$listening" == nginx ]] && listening=none
+	return 0
+}
+confirm() { asked+="$1|"; [[ "$answer" == yes ]]; }
+
+listening=all
+check "web_port_users: each program once with its ports, Caddy left out" \
+	$'nginx nginx.service 80 and 443\npython3 session-3.scope 80' "$(web_port_users | sort)"
+for case in "nginx no 0 asked" "nginx yes 1 asked" "none yes 1 not-asked" "all yes 0 asked"; do
+	read -r users answer want_https want_asked <<<"$case"
+	listening="$users" HTTPS_POSSIBLE=1 asked="" systemctl_calls=""
+	check_web_ports >/dev/null 2>&1 # may change $listening, as stopping would
+	name="ports used by $users, answer $answer"
+	check "$name: HTTPS possible" "$want_https" "$HTTPS_POSSIBLE"
+	[[ -n "$asked" ]] && r=asked || r=not-asked
+	check "$name: asked before stopping" "$want_asked" "$r"
+	[[ "$asked" == *python3* ]] && check "$name: no offer to stop a program without a service" none "$asked"
+	want=kept
+	[[ "$answer" == yes && "$users" != none ]] && want=stopped
+	[[ "$systemctl_calls" == *"disable --now nginx.service"* ]] && r=stopped || r=kept
+	check "$name: nginx stopped only when the user said yes" "$want" "$r"
+done
+unset -f ss ps systemctl confirm
+HTTPS_POSSIBLE=1
+
+# --- choose_address: an IP address is explained and asked again ------------
+check "157.173.96.238 is an IP address" yes "$(is_ipv4_address 157.173.96.238 && echo yes || echo no)"
+check "myvault.duckdns.org is no IP address" no "$(is_ipv4_address myvault.duckdns.org && echo yes || echo no)"
+check "1.2.3 is no IP address" no "$(is_ipv4_address 1.2.3 && echo yes || echo no)"
+ask() { printf -v "$1" '%s' "${typed[0]}"; typed=("${typed[@]:1}"); }
+confirm() { [[ "$answer" == yes ]]; }
+public_ipv4() { echo 157.173.96.238; }
+public_dns_ipv4() { echo 157.173.96.238; }
+typed=(157.173.96.238 myvault.duckdns.org) answer=no ADDRESS_IS_IP=0 CB_ADDRESS=""
+choose_address >/dev/null 2>&1
+check "IP refused: the name typed next is taken" "myvault.duckdns.org 0" "$CB_ADDRESS $ADDRESS_IS_IP"
+typed=(157.173.96.238) answer=yes ADDRESS_IS_IP=0 CB_ADDRESS=""
+choose_address >/dev/null 2>&1
+check "IP kept when the user insists" "157.173.96.238 1" "$CB_ADDRESS $ADDRESS_IS_IP"
+unset -f ask confirm public_ipv4 public_dns_ipv4
+ADDRESS_IS_IP=0 CB_ADDRESS=""
+
 # --- service_title -----------------------------------------------------------
 check "title of drive" "Google Drive" "$(CB_SERVICE=drive service_title)"
 check "title when no service is known" "the cloud" "$(CB_SERVICE="" service_title)"

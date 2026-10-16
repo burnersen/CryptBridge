@@ -449,7 +449,12 @@ tested there yet), with or without a desktop.
   > ⚠️ Host names of your provider (netcup's `…supersrv.de`, Contabo's `…contaboserver.net`) often do
   > **not** work: all customers share one limit of 50 certificates per week at Let's Encrypt, and it is
   > usually used up. DuckDNS names have a limit of their own.
-- **Ports 80 and 443** must be reachable, also in your provider's firewall if it has one.
+
+  An IP address alone gets no trusted certificate, so video players refuse it. The setup explains this
+  and asks for a name again.
+- **Ports 80 and 443** must be reachable, also in your provider's firewall if it has one, and free: no
+  other web server (such as nginx or Apache for a website) may use them. The setup checks this at the
+  start, names the program and offers to stop it. If you keep it, everything else is set up without HTTPS.
 - A **transfer block** of your vault from the Windows program (*Vaults tab > the page of the vault >
   Linux server*), or its keys at hand.
 
