@@ -43,14 +43,14 @@ them, the files are useless to anyone: to your cloud provider, to a thief, and t
   your home network, for example for video players such as Infuse or Kodi. See
   [LAN access](#lan-access-optional).
 - **Your own streaming server (optional, for advanced users).** A setup script turns a rented Linux
-  server into a streaming server for your pCloud vault, reachable from anywhere over a secure connection.
+  server into a streaming server for your vault, reachable from anywhere over a secure connection.
   See [Linux server](#linux-server).
 - **Free and open source:** no ads, no tracking, no CryptBridge account.
 
 ```mermaid
 flowchart TB
     PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("Your cloud<br/>pCloud, Google Drive,<br/>OneDrive, Dropbox")]
-    Cloud <-->|locked| Server["Your Linux server<br/>(optional, pCloud)"]
+    Cloud <-->|locked| Server["Your Linux server<br/>(optional)"]
     Server -->|secure connection| Player["Video player<br/>anywhere"]
     PC -->|"home network (optional)"| TV["TV, phone, tablet<br/>at home"]
 ```
@@ -109,7 +109,7 @@ CryptBridge running; **Quit** is in the tray menu.
 Every vault has its own page on the **Vaults tab**. There you find its details and its check code, can
 change its name, drive letter and *connect on start*, print its **emergency sheet** (one page with
 everything needed to open the vault again, even without CryptBridge), bring it to a
-[Linux server](#linux-server) (pCloud vaults), or *Remove from CryptBridge*. Removing asks for the
+[Linux server](#linux-server) (vaults in the cloud), or *Remove from CryptBridge*. Removing asks for the
 vault's name to be sure, and never touches the files in the vault.
 
 On the **Settings tab**: light or dark look (or *automatic*, like Windows), *start with Windows*,
@@ -250,8 +250,8 @@ Good to know:
   Choose a normal folder.
 - **Dropbox:** CryptBridge uploads files to Dropbox one by one. Dropbox may slow this down a little when
   you copy very many small files at once; rclone then waits and carries on by itself.
-- **Linux server:** the [server setup](#linux-server) works with vaults in pCloud for now. Vaults in the
-  other clouds follow in a later version.
+- **Linux server:** the [server setup](#linux-server) works with vaults in all four clouds (since
+  CryptBridge 0.8).
 - **Updating from CryptBridge 0.6 or older:** your pCloud account and your vaults are taken over by
   themselves when CryptBridge 0.7 starts (with the app lock: when you unlock it). The old settings stay
   next to the new ones as `settings.dat.v2-backup`. Older versions of CryptBridge cannot read the new
@@ -349,9 +349,9 @@ Request the app **now, while everything works**: pCloud has to approve it, which
    new sign-in. Connected pCloud drives are disconnected for the sign-in and connected again afterwards.
    The page then says *… through your own app*.
 5. **Linux server** (not urgent: its sign-in keeps working until pCloud blocks rclone's shared access
-   again): create a new transfer block on the page of the vault, run `sudo cryptbridge setup` on the
-   server, answer **n** to *Keep the pCloud sign-in and vault keys from the last setup?* and paste the
-   block.
+   again): create a new transfer block on the page of the vault, run the setup on the server again (with
+   the current `setup.sh`, see [Setup](#setup)), answer **n** to *Keep the cloud sign-in and vault keys
+   from the last setup?* and paste the block.
 
 Client ID and secret are stored encrypted with your Windows account like the rest of the settings. They
 are used only for signing in and are not part of the transfer block: the server needs only the sign-in.
@@ -432,14 +432,13 @@ The VPN has to give your devices an address of your home network:
 ## Linux server
 
 *Optional, for advanced users.* Want to watch your films anywhere, without your PC at home running? Rent
-a small Linux server (a VPS) and let one setup script turn it into a streaming server for your pCloud
-vault. Your video player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from
-it over a secure connection (HTTPS). On the server itself, the vault is the folder `~/CryptBridge`. The
-server setup works with vaults in pCloud for now; vaults in Google Drive, OneDrive or Dropbox follow in a
-later version.
+a small Linux server (a VPS) and let one setup script turn it into a streaming server for your vault in
+pCloud, Google Drive, OneDrive or Dropbox. Your video player, for example **Infuse** on Apple TV, iPhone
+or iPad, then plays straight from it over a secure connection (HTTPS). On the server itself, the vault is
+the folder `~/CryptBridge`.
 
 Tested on **Ubuntu 26.04 with an XFCE desktop**, on a server that already had its own firewall rules,
-fail2ban jails and third-party package sources. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
+fail2ban jails and third-party package sources, with vaults in all four clouds. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
 tested there yet), with or without a desktop.
 
 ### Before you start
@@ -465,10 +464,14 @@ The setup asks a few questions and does everything else. When it asks for the ke
 **transfer block** and type its code. At the end it shows a **check code** (for example `7F3A-91C2`): it
 must be the same as on the vault's page in the Windows program. If the codes match, the keys match.
 
+**Server set up with CryptBridge 0.7 or older?** Download `setup.sh` again (the two lines above) before
+you paste a transfer block of CryptBridge 0.8 or newer: the old setup only knows the old blocks and would
+report a wrong code. The new setup takes over everything of the old one.
+
 Afterwards, the command `cryptbridge` (or the *CryptBridge* desktop icon) shows the status and the
 settings for your player, restarts the services or runs the setup again. `cryptbridge streaming` shows
 the settings for your player directly. `sudo cryptbridge uninstall` removes everything except your files
-in pCloud.
+in the cloud.
 
 <details>
 <summary><b>Technical details: what the setup does</b></summary>
@@ -476,7 +479,7 @@ in pCloud.
 | Step | What happens |
 |---|---|
 | Packages | rclone (checksum verified), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
-| Keys | paste the transfer block and type its code (pCloud vaults only), or enter everything by hand |
+| Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour) |
 | Check | keys tested against your vault; the check code must equal the one in the Windows program |
 | Vault | mounted at `~/CryptBridge` for your desktop user (`rclone-mount.service`) |
 | Streaming | WebDAV for your video player, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, both services come back by themselves |
@@ -512,7 +515,7 @@ Tested with **Infuse** on Apple TV, iPhone and iPad: *Settings > Shares > Add sh
    a provider host name, enter the new name in the player once.
 4. Uninstall on the old server: `sudo cryptbridge uninstall`.
 
-Your files stay in pCloud the whole time; the servers only pass them through.
+Your files stay in the cloud the whole time; the servers only pass them through.
 
 ---
 

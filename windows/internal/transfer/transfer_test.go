@@ -5,25 +5,49 @@
 package transfer
 
 import (
+	"maps"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
+// sampleBundle is a Google Drive vault signed in through an own app, so that
+// every kind of setting travels: the token (JSON with quotes), the app's
+// codes, and the answer CryptBridge gave to rclone's question.
 func sampleBundle() Bundle {
 	v := vault.NewDefault("CryptBridge")
 	v.Password = "pässwörd with spaces & \"quotes\""
 	v.Password2 = "salt"
 	return Bundle{
-		CreatedAt:   time.Date(2026, 10, 10, 22, 0, 0, 0, time.UTC),
-		PCloud:      pcloud.Account{Hostname: pcloud.HostEU, Token: `{"access_token":"T","token_type":"bearer"}`},
+		CreatedAt: time.Date(2026, 10, 10, 22, 0, 0, 0, time.UTC),
+		Cloud: NewCloud("drive", map[string]string{
+			"type":          "drive",
+			"client_id":     "123-abc.apps.googleusercontent.com",
+			"client_secret": "GOCSPX-secret",
+			"scope":         "drive",
+			"team_drive":    "",
+			"token":         `{"access_token":"T","token_type":"Bearer","refresh_token":"R","expiry":"2026-10-10T23:00:00Z"}`,
+		}),
 		Vault:       v,
 		Fingerprint: "27CA-E698",
+	}
+}
+
+func TestNewCloud(t *testing.T) {
+	remote := map[string]string{"type": "dropbox", "token": "T", "batch_mode": "off"}
+	before := maps.Clone(remote)
+	c := NewCloud("dropbox", remote)
+	want := Cloud{Service: "dropbox", Settings: map[string]string{"token": "T", "batch_mode": "off"}}
+	if !reflect.DeepEqual(c, want) {
+		t.Fatalf("got %+v, want %+v", c, want)
+	}
+	if !maps.Equal(remote, before) {
+		t.Fatalf("NewCloud changed the account's settings: %v", remote)
 	}
 }
 
@@ -51,7 +75,7 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	}
 	want := sampleBundle()
 	want.Format = Format
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip changed the bundle:\n got %+v\nwant %+v", got, want)
 	}
 }
@@ -98,7 +122,7 @@ func TestWriteLiveTransfer(t *testing.T) {
 	code, _ := NewCode()
 	text, err := Seal(Bundle{
 		CreatedAt:   time.Now().UTC(),
-		PCloud:      account,
+		Cloud:       NewCloud("pcloud", map[string]string{"hostname": account.Hostname, "token": account.Token}),
 		Vault:       v,
 		Fingerprint: os.Getenv("CRYPTBRIDGE_LIVE_FINGERPRINT"),
 	}, code)

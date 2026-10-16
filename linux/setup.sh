@@ -6,23 +6,23 @@
 # CryptBridge Linux setup.
 #
 # Turns a fresh Ubuntu/Debian server into a streaming server for an
-# rclone-crypt encrypted pCloud vault:
+# rclone-crypt encrypted vault in pCloud, Google Drive, OneDrive or Dropbox:
 #
-#   pCloud <-> rclone mount (rclone-mount.service) -> ~/CryptBridge (read/write in the desktop)
-#                  \-> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
+#   cloud <-> rclone mount (rclone-mount.service) -> ~/CryptBridge (read/write in the desktop)
+#                 \-> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
 #
 # Run it again at any time to repair or change the setup. After the first run
 # it is also installed as the command "cryptbridge" (status, restart, ...).
 #
 #   sudo bash setup.sh            set up or change CryptBridge
 #   cryptbridge                   menu: status, streaming settings, restart, ...
-#   sudo cryptbridge uninstall    remove CryptBridge (keeps your files in pCloud)
+#   sudo cryptbridge uninstall    remove CryptBridge (keeps your files in the cloud)
 
 set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.7.0"
+readonly CRYPTBRIDGE_VERSION="0.8.0"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -30,7 +30,14 @@ readonly MIN_RCLONE="1.75.0"
 # set it. In real use it is empty.
 readonly ROOT="${CB_TEST_ROOT:-}"
 readonly CONF_DIR="$ROOT/etc/cryptbridge"
-readonly RCLONE_CONF="$CONF_DIR/rclone.conf"
+# Google Drive, OneDrive and Dropbox renew the sign-in about every hour, and
+# rclone writes the new token back into its configuration through a new
+# file next to it. So the configuration has a folder of its own that the
+# desktop user (who runs rclone) may write to. CONF_DIR itself stays root's:
+# root reads the settings file in there as commands.
+readonly RCLONE_DIR="$CONF_DIR/rclone"
+readonly RCLONE_CONF="$RCLONE_DIR/rclone.conf"
+readonly OLD_RCLONE_CONF="$CONF_DIR/rclone.conf" # up to CryptBridge 0.7
 readonly HTPASSWD="$CONF_DIR/htpasswd"
 readonly SETTINGS_FILE="$CONF_DIR/settings"
 readonly CACHE_DIR="$ROOT/var/cache/cryptbridge"
@@ -44,8 +51,12 @@ readonly RCLONE_BIN="$ROOT/usr/local/bin/rclone"
 readonly MARKER="# Managed by CryptBridge"
 
 # --- rclone --------------------------------------------------------------
-readonly PCLOUD_REMOTE="cbpcloud"
+readonly CLOUD_REMOTE="cbcloud"
+readonly OLD_CLOUD_REMOTE="cbpcloud" # up to CryptBridge 0.7
 readonly VAULT_REMOTE="cbvault"
+# The cloud services the setup can sign in to, by rclone's backend names, and
+# their titles; the same as in the Windows program.
+readonly -A SERVICE_TITLES=([pcloud]="pCloud" [drive]="Google Drive" [onedrive]="OneDrive" [dropbox]="Dropbox")
 readonly WEBDAV_ADDR="127.0.0.1:8080"
 readonly CHECK_FILE=".cryptbridge-vault"
 # Key check, the same rules as the Windows program: a wrong key passes one
@@ -62,7 +73,7 @@ readonly HOST_US="api.pcloud.com"
 
 # Streaming defaults for stutter-free 4K playback; the same values as in the
 # Windows program. The mount carries them because it is the part that talks
-# to pCloud; the WebDAV server only reads from the mount.
+# to the cloud; the WebDAV server only reads from the mount.
 readonly BUFFER_SIZE="128M"
 readonly CHUNK_SIZE="64M"
 readonly CHUNK_SIZE_LIMIT="1G"
@@ -78,7 +89,11 @@ readonly BCRYPT_COST=10
 # --- Transfer block from the Windows program -----------------------------
 readonly TRANSFER_BEGIN="-----BEGIN CRYPTBRIDGE TRANSFER-----"
 readonly TRANSFER_END="-----END CRYPTBRIDGE TRANSFER-----"
-readonly TRANSFER_FORMAT="cryptbridge-transfer-1"
+# Format 1 (up to CryptBridge 0.7) carries a pCloud sign-in, format 2 the
+# settings of any cloud account.
+readonly TRANSFER_FORMAT_PREFIX="cryptbridge-transfer-"
+readonly TRANSFER_FORMAT_PCLOUD="${TRANSFER_FORMAT_PREFIX}1"
+readonly TRANSFER_FORMAT_CLOUD="${TRANSFER_FORMAT_PREFIX}2"
 readonly TRANSFER_ITERATIONS=600000
 
 readonly SUPPORTED_SYSTEMS="ubuntu 24.04, ubuntu 26.04, debian 12, debian 13"
@@ -317,9 +332,14 @@ install_rclone() {
 	ok "rclone $latest installed (checksum verified)"
 }
 
+# as_user runs a command as the desktop user, who runs rclone.
+as_user() {
+	runuser -u "$CB_USER" -- "$@"
+}
+
 # rc runs rclone as the desktop user with CryptBridge's configuration.
 rc() {
-	runuser -u "$CB_USER" -- "$RCLONE_BIN" --config "$RCLONE_CONF" "$@"
+	as_user "$RCLONE_BIN" --config "$RCLONE_CONF" "$@"
 }
 
 # obscure turns a password into rclone's obscured form, reading it from
@@ -329,11 +349,14 @@ obscure() {
 }
 
 # ==========================================================================
-# pCloud sign-in and vault keys
+# Cloud sign-in and vault keys
 # ==========================================================================
 
-# Values filled by one of the ways in get_keys.
-PCLOUD_HOST=""
+# Values filled by one of the ways in get_keys. CLOUD_SETTINGS are rclone's
+# settings of the cloud account, one "key = value" per line, without the type
+# (that is CB_SERVICE).
+CB_SERVICE=""
+CLOUD_SETTINGS=""
 PCLOUD_TOKEN=""
 CB_VAULT_PATH="${CB_VAULT_PATH:-}"
 VAULT_ENCRYPTION="standard"
@@ -344,9 +367,32 @@ VAULT_PASSWORD=""
 VAULT_SALT=""
 EXPECTED_FINGERPRINT=""
 
+# A valid cloud sign-in in a transfer block: a service name, and settings
+# that can only become "key = value" lines of the rclone configuration —
+# a line break in a value could add settings or remotes of its own.
+# shellcheck disable=SC2016 # jq's code, not the shell's
+readonly VALID_CLOUD_SIGN_IN='
+	(.service | type == "string" and test("^[a-z0-9]+$"))
+	and (.settings | type == "object")
+	and (.settings.token | type == "string" and length > 0)
+	and (.settings | to_entries | all(
+		(.key | test("^[a-z0-9_]+$")) and .key != "type"
+		and (.value | type == "string" and (test("[\r\n]") | not))))'
+
+# service_title — the title of CB_SERVICE, e.g. "Google Drive"
+service_title() {
+	local service="${CB_SERVICE:-}"
+	if [[ -n "$service" && -n "${SERVICE_TITLES[$service]:-}" ]]; then
+		printf '%s' "${SERVICE_TITLES[$service]}"
+	else
+		printf 'the cloud'
+	fi
+}
+
 get_keys() {
-	step "pCloud sign-in and vault keys"
-	if [[ -s "$RCLONE_CONF" ]] && confirm "Keep the pCloud sign-in and vault keys from the last setup?" y; then
+	step "Cloud sign-in and vault keys"
+	copy_old_rclone_conf
+	if [[ -s "$RCLONE_CONF" ]] && confirm "Keep the cloud sign-in and vault keys from the last setup?" y; then
 		KEEP_KEYS=1
 		ok "Keeping the existing keys"
 		return
@@ -355,7 +401,7 @@ get_keys() {
 	info "How do you want to bring the keys to this server?"
 	info "  1) Paste the transfer block from the CryptBridge Windows program (recommended)"
 	info "  2) Read the transfer block from a file"
-	info "  3) Type everything by hand"
+	info "  3) Type everything by hand (pCloud only)"
 	local choice
 	ask choice "Your choice" "1"
 	case "$choice" in
@@ -384,19 +430,45 @@ read_transfer_block() {
 		text="$(<"$file")"
 	fi
 	local body
-	body="$(sed -n "/$TRANSFER_BEGIN/,/$TRANSFER_END/p" <<<"$text" | sed '1d;$d' | tr -d '\r')"
+	body="$(transfer_body "$text")"
 	[[ -n "$body" ]] || die "No transfer block found."
 
 	ask_secret code "Transfer code (shown in the Windows program)"
-	code="$(printf '%s' "$code" | tr '[:lower:]' '[:upper:]' | tr -d ' \t-')"
-	if ! json="$(printf '%s\n' "$body" | CB_CODE="$code" openssl enc -d -aes-256-cbc -pbkdf2 \
-		-iter "$TRANSFER_ITERATIONS" -md sha256 -a -pass env:CB_CODE 2>/dev/null)"; then
-		die "Wrong transfer code (or the block is incomplete)."
-	fi
-	[[ "$(jq -r '.format' <<<"$json")" == "$TRANSFER_FORMAT" ]] || die "Wrong transfer code (or the block is incomplete)."
+	json="$(open_transfer_block "$body" "$code")" || exit 1 # it said why
+	take_transfer "$json"
+	ok "Transfer block opened: vault '$CB_VAULT_PATH' in $(service_title), check code $EXPECTED_FINGERPRINT"
+}
 
-	PCLOUD_HOST="$(jq -r '.pcloud.hostname' <<<"$json")"
-	PCLOUD_TOKEN="$(jq -r '.pcloud.token' <<<"$json")"
+# transfer_body TEXT — prints the lines between the markers of the block in
+# TEXT (copied text may carry Windows line ends).
+transfer_body() {
+	sed -n "/$TRANSFER_BEGIN/,/$TRANSFER_END/p" <<<"$1" | sed '1d;$d' | tr -d '\r'
+}
+
+# open_transfer_block BODY CODE — prints the content of the block, whose
+# lines between the markers are BODY. The code may be typed in lower case,
+# with spaces or dashes, as in the Windows program.
+open_transfer_block() {
+	local code
+	code="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]' | tr -d ' \t-')"
+	printf '%s\n' "$1" | CB_CODE="$code" openssl enc -d -aes-256-cbc -pbkdf2 \
+		-iter "$TRANSFER_ITERATIONS" -md sha256 -a -pass env:CB_CODE 2>/dev/null ||
+		die "Wrong transfer code (or the block is incomplete)."
+}
+
+# take_transfer JSON — takes the cloud sign-in and the vault keys from an
+# opened transfer block.
+take_transfer() {
+	local json="$1" format cloud
+	format="$(jq -r '.format' <<<"$json" 2>/dev/null)" || format=""
+	case "$format" in
+	"$TRANSFER_FORMAT_CLOUD") cloud="$(jq -c '.cloud' <<<"$json")" ;;
+	"$TRANSFER_FORMAT_PCLOUD") cloud="$(jq -c '{service: "pcloud", settings: {hostname: .pcloud.hostname, token: .pcloud.token}}' <<<"$json")" ;;
+	"$TRANSFER_FORMAT_PREFIX"*) die "This transfer block comes from a newer CryptBridge. Download the current setup.sh (see the README) and run it." ;;
+	*) die "Wrong transfer code (or the block is incomplete)." ;;
+	esac
+	take_cloud_sign_in "$cloud"
+
 	CB_VAULT_PATH="$(jq -r '.vault.path' <<<"$json")"
 	VAULT_ENCRYPTION="$(jq -r '.vault.filenameEncryption' <<<"$json")"
 	VAULT_DIRNAMES="$(jq -r '.vault.directoryNameEncryption' <<<"$json")"
@@ -405,15 +477,28 @@ read_transfer_block() {
 	VAULT_PASSWORD="$(jq -r '.vault.password' <<<"$json")"
 	VAULT_SALT="$(jq -r '.vault.password2' <<<"$json")"
 	EXPECTED_FINGERPRINT="$(jq -r '.fingerprint' <<<"$json")"
-	ok "Transfer block opened: vault '$CB_VAULT_PATH', check code $EXPECTED_FINGERPRINT"
+}
+
+# take_cloud_sign_in JSON — {"service": ..., "settings": {...}} into
+# CB_SERVICE and CLOUD_SETTINGS.
+take_cloud_sign_in() {
+	local cloud="$1"
+	jq -e "$VALID_CLOUD_SIGN_IN" <<<"$cloud" >/dev/null 2>&1 ||
+		die "The transfer block holds no valid cloud sign-in. Create a new block in the Windows program."
+	CB_SERVICE="$(jq -r '.service' <<<"$cloud")"
+	[[ -n "${SERVICE_TITLES[$CB_SERVICE]:-}" ]] ||
+		die "This setup cannot sign in to '$CB_SERVICE'. Download the current setup.sh (see the README) and run it."
+	CLOUD_SETTINGS="$(jq -r '.settings | to_entries[] | "\(.key) = \(.value)"' <<<"$cloud")"
 }
 
 read_keys_by_hand() {
 	info "pCloud sign-in: on a PC with a browser run   rclone authorize \"pcloud\"   ,"
 	info "sign in, and paste the line that starts with {\"access_token\" here."
+	info "(Google Drive, OneDrive and Dropbox: please use the transfer block.)"
 	ask_secret PCLOUD_TOKEN "pCloud token"
 	[[ "$PCLOUD_TOKEN" == '{"access_token"'* ]] || die "That does not look like an rclone pCloud token."
-	PCLOUD_HOST=""
+	CB_SERVICE="pcloud"
+	CLOUD_SETTINGS="" # configure_remotes finds the pCloud server
 	ask CB_VAULT_PATH "Folder of the vault in pCloud" "${CB_VAULT_PATH:-CryptBridge}"
 	ask_secret VAULT_PASSWORD "Encryption password"
 	local again
@@ -428,31 +513,63 @@ read_keys_by_hand() {
 	fi
 }
 
-# write_rclone_conf HOST — writes both remotes for the given pCloud server
+# write_rclone_conf — writes the cloud remote (CB_SERVICE with
+# CLOUD_SETTINGS) and the vault remote on top of it.
 write_rclone_conf() {
-	local host="$1" pw1 pw2=""
+	local pw1 pw2=""
 	pw1="$(obscure "$VAULT_PASSWORD")"
 	[[ -n "$VAULT_SALT" ]] && pw2="$(obscure "$VAULT_SALT")"
-	install -d -m 0750 -o root -g "$CB_GROUP" "$CONF_DIR"
-	# Create the file empty and private BEFORE any secret is written into it.
-	install -m 0600 -o "$CB_USER" -g "$CB_GROUP" /dev/null "$RCLONE_CONF"
+	prepare_rclone_dir
 	{
-		echo "$MARKER — contains your pCloud sign-in and vault keys. Keep it secret."
-		echo "[$PCLOUD_REMOTE]"
-		echo "type = pcloud"
-		echo "hostname = $host"
-		echo "token = $PCLOUD_TOKEN"
+		echo "$MARKER — contains your cloud sign-in and vault keys. Keep it secret."
+		echo "[$CLOUD_REMOTE]"
+		echo "type = $CB_SERVICE"
+		printf '%s\n' "$CLOUD_SETTINGS"
 		echo
 		echo "[$VAULT_REMOTE]"
 		echo "type = crypt"
-		echo "remote = $PCLOUD_REMOTE:$(normalise_path "$CB_VAULT_PATH")"
+		echo "remote = $CLOUD_REMOTE:$(normalise_path "$CB_VAULT_PATH")"
 		echo "filename_encryption = $VAULT_ENCRYPTION"
 		echo "directory_name_encryption = $VAULT_DIRNAMES"
 		echo "filename_encoding = $VAULT_ENCODING"
 		echo "suffix = $VAULT_SUFFIX"
 		echo "password = $pw1"
 		if [[ -n "$pw2" ]]; then echo "password2 = $pw2"; fi
-	} >"$RCLONE_CONF"
+	} | write_private "$RCLONE_CONF"
+}
+
+# prepare_rclone_dir — the folder of the rclone configuration, which only
+# the desktop user can enter (see RCLONE_DIR). Files of an earlier desktop
+# user change hands too; -h keeps chown on links themselves.
+prepare_rclone_dir() {
+	install -d -m 0750 -o root -g "$CB_GROUP" "$CONF_DIR"
+	install -d -m 0700 -o "$CB_USER" -g "$CB_GROUP" "$RCLONE_DIR"
+	chown -hR "$CB_USER:$CB_GROUP" "$RCLONE_DIR"
+}
+
+# write_private FILE — writes stdin into FILE as the desktop user, readable
+# by nobody else. Root never writes into the user's folder itself, so a link
+# placed there cannot turn root's writing to another file.
+write_private() {
+	as_user sh -c 'umask 077 && rm -f "$1" && cat >"$1"' sh "$1"
+}
+
+# copy_old_rclone_conf — up to CryptBridge 0.7 the configuration lay in
+# CONF_DIR, and the cloud remote had pCloud's name. It is copied to its own
+# folder under the new name. The old file stays until the services use the
+# new one (remove_old_rclone_conf): a setup ended before that leaves them
+# working as they were.
+copy_old_rclone_conf() {
+	[[ -f "$OLD_RCLONE_CONF" ]] || return 0
+	prepare_rclone_dir
+	[[ -s "$RCLONE_CONF" ]] && return 0
+	sed -e "s/^\[$OLD_CLOUD_REMOTE\]\$/[$CLOUD_REMOTE]/" \
+		-e "s/^remote = $OLD_CLOUD_REMOTE:/remote = $CLOUD_REMOTE:/" "$OLD_RCLONE_CONF" | write_private "$RCLONE_CONF"
+	ok "rclone configuration copied to $RCLONE_DIR"
+}
+
+remove_old_rclone_conf() {
+	rm -f "$OLD_RCLONE_CONF"
 }
 
 normalise_path() {
@@ -464,39 +581,65 @@ normalise_path() {
 
 configure_remotes() {
 	if [[ "$KEEP_KEYS" == 1 ]]; then
-		CB_VAULT_PATH="$(awk -F' = ' '$1 == "remote" {sub(/^[^:]*:/, "", $2); print $2}' "$RCLONE_CONF")"
-		VAULT_ENCRYPTION="$(awk -F' = ' '$1 == "filename_encryption" {print $2}' "$RCLONE_CONF")"
-		VAULT_DIRNAMES="$(awk -F' = ' '$1 == "directory_name_encryption" {print $2}' "$RCLONE_CONF")"
-		check_pcloud_access
+		read_kept_keys
+		check_cloud_access
 		return
 	fi
-	if [[ -n "$PCLOUD_HOST" ]]; then
-		write_rclone_conf "$PCLOUD_HOST"
-		check_pcloud_access
+	if [[ -n "$CLOUD_SETTINGS" ]]; then
+		write_rclone_conf
+		check_cloud_access
 		return
 	fi
-	# Typed by hand: the region is not known, try EU first.
+	# pCloud typed by hand: the region is not known, try EU first.
 	local host
 	for host in "$HOST_EU" "$HOST_US"; do
-		write_rclone_conf "$host"
-		if rc about "$PCLOUD_REMOTE:" >/dev/null 2>&1; then
-			PCLOUD_HOST="$host"
+		CLOUD_SETTINGS="hostname = $host"$'\n'"token = $PCLOUD_TOKEN"
+		write_rclone_conf
+		if rc about "$CLOUD_REMOTE:" >/dev/null 2>&1; then
 			break
 		fi
 	done
-	check_pcloud_access
+	check_cloud_access
 }
 
-check_pcloud_access() {
-	local out
-	if ! out="$(rc about "$PCLOUD_REMOTE:" 2>&1)"; then
+# read_kept_keys — what the later steps need from the kept configuration.
+read_kept_keys() {
+	CB_SERVICE="$(conf_value "$CLOUD_REMOTE" type)"
+	CB_VAULT_PATH="$(conf_value "$VAULT_REMOTE" remote)"
+	CB_VAULT_PATH="${CB_VAULT_PATH#*:}"
+	VAULT_ENCRYPTION="$(conf_value "$VAULT_REMOTE" filename_encryption)"
+	VAULT_DIRNAMES="$(conf_value "$VAULT_REMOTE" directory_name_encryption)"
+}
+
+# conf_value REMOTE KEY — prints the setting KEY of REMOTE in the rclone
+# configuration.
+conf_value() {
+	awk -v section="[$1]" -v key="$2" '
+		$0 == section { inside = 1; next }
+		/^\[/ { inside = 0 }
+		inside && index($0, key " = ") == 1 { print substr($0, length(key) + 4); exit }' "$RCLONE_CONF"
+}
+
+# check_cloud_access — the cloud must accept the sign-in. The parts of
+# rclone's messages are the ones the Windows program measured (see
+# windows/internal/cloud/problem.go and pcloud.go); a missing network comes
+# first, as a token renewal can fail for want of it too.
+check_cloud_access() {
+	local out title free
+	title="$(service_title)"
+	if ! out="$(rc about "$CLOUD_REMOTE:" 2>&1)"; then
 		case "$out" in
-		*"(2095)"*) die "pCloud has revoked this sign-in. Sign in again (in the Windows program) and bring the keys again." ;;
-		*"(2094)"*) die "pCloud does not accept this sign-in. Sign in again and bring the keys again." ;;
-		*) die "pCloud cannot be reached: $out" ;;
+		*"dial tcp"* | *"i/o timeout"* | *"TLS handshake timeout"*)
+			die "$title cannot be reached. Please check the internet connection of this server: $out" ;;
+		*"(2094)"* | *"(2095)"* | *invalid_grant* | *"Error 401"* | *InvalidAuthenticationToken* | *invalid_access_token* | *expired_access_token*)
+			die "$title no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again." ;;
+		*invalid_client* | *unauthorized_client*)
+			die "$title does not accept your own app. Check its client ID and secret in the Windows program and bring the keys again." ;;
+		*) die "$title cannot be reached: $out" ;;
 		esac
 	fi
-	ok "pCloud reached: $(awk '/^Free:/{print "free " $2 " " $3}' <<<"$out")"
+	free="$(awk '/^Free:/{print $2 " " $3}' <<<"$out")"
+	ok "$title reached${free:+: free $free}"
 }
 
 # ==========================================================================
@@ -507,7 +650,7 @@ verify_keys() {
 	step "Checking the keys"
 	local path raw check_name opened checked
 	path="$(normalise_path "$CB_VAULT_PATH")"
-	if ! raw="$(rc lsf "$PCLOUD_REMOTE:$path" 2>/dev/null)" || [[ -z "$raw" ]]; then
+	if ! raw="$(rc lsf "$CLOUD_REMOTE:$path" 2>/dev/null)" || [[ -z "$raw" ]]; then
 		warn "The folder '$path' is empty or does not exist yet."
 		confirm "Create a NEW vault there with these keys?" n || die "Nothing changed. Check the folder name."
 		rc mkdir "$VAULT_REMOTE:"
@@ -585,7 +728,7 @@ folder_names_encrypted() {
 # prove the keys: larger than an empty encrypted file, and small enough to
 # be read completely. Prints nothing if there is none.
 content_sample() {
-	rc lsf --files-only --format sp --separator $'\t' "$PCLOUD_REMOTE:$1" |
+	rc lsf --files-only --format sp --separator $'\t' "$CLOUD_REMOTE:$1" |
 		awk -v overhead="$CRYPT_OVERHEAD_SIZE" -v max="$MAX_CONTENT_CHECK_SIZE" '
 			{ size = substr($0, 1, index($0, "\t") - 1) + 0; name = substr($0, index($0, "\t") + 1) }
 			size > overhead && size <= max && (best == "" || size < best_size) { best = name; best_size = size }
@@ -732,7 +875,7 @@ write_units() {
 	cat >"$MOUNT_UNIT" <<EOF
 $MARKER
 [Unit]
-Description=CryptBridge: encrypted pCloud vault at $CB_MOUNT_DIR
+Description=CryptBridge: encrypted vault in $(service_title) at $CB_MOUNT_DIR
 Documentation=https://github.com/burnersen/CryptBridge
 Wants=network-online.target
 After=network-online.target
@@ -1030,7 +1173,7 @@ setup_desktop() {
 	install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$desktop"
 
 	write_launcher "$desktop/cryptbridge-vault.desktop" "CryptBridge Vault" \
-		"Your encrypted pCloud vault" "xdg-open $CB_MOUNT_DIR" "drive-harddisk-encrypted" false
+		"Your encrypted vault in $(service_title)" "xdg-open $CB_MOUNT_DIR" "drive-harddisk-encrypted" false
 	write_launcher "$desktop/cryptbridge.desktop" "CryptBridge" \
 		"Status, streaming settings and restart of CryptBridge" "$SELF_INSTALLED menu" "security-high" true
 
@@ -1168,7 +1311,7 @@ uninstall() {
 	require_root uninstall
 	load_settings
 	step "Uninstall CryptBridge"
-	info "Your files in pCloud are NOT touched."
+	info "Your files in the cloud are NOT touched."
 	confirm "Remove the CryptBridge services from this server?" n || exit 0
 	systemctl disable --now rclone-webdav.service rclone-mount.service >>"$LOG_FILE" 2>&1 || true
 	rm -f "$MOUNT_UNIT" "$WEBDAV_UNIT" "$F2B_FILTER" "$F2B_JAIL"
@@ -1189,7 +1332,7 @@ uninstall() {
 		home="$(getent passwd "${CB_USER:-}" | cut -d: -f6 || true)"
 		rm -f "$home"/*/cryptbridge-vault.desktop "$home"/*/cryptbridge.desktop
 	fi
-	if confirm "Delete the pCloud sign-in and the vault keys on this server ($CONF_DIR)?" n; then
+	if confirm "Delete the cloud sign-in and the vault keys on this server ($CONF_DIR)?" n; then
 		rm -rf "$CONF_DIR"
 	fi
 	if confirm "Delete the cache ($CACHE_DIR)? Files not yet uploaded would be lost." n; then
@@ -1232,6 +1375,7 @@ setup() {
 	choose_webdav_account
 	choose_address
 	write_units
+	remove_old_rclone_conf # the services now use the new one
 	start_services
 	setup_firewall
 	check_https

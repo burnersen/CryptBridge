@@ -11,7 +11,12 @@
 #   CB_TEST_RCLONE=/path/to/rclone CB_TEST_CONF=/path/to/rclone.conf \
 #   CB_TEST_VAULT_PATH=CryptBridge-Test/vault CB_TEST_FINGERPRINT=XXXX-XXXX \
 #   bash linux/tests/functions_test.sh
-# The conf must contain the remotes cbpcloud and cbvault.
+# The conf must contain the remotes cbcloud and cbvault.
+#
+# Optional check against a block of the Windows program (written by
+# TestWriteSampleForOpenSSL in windows/internal/transfer):
+#   CB_TEST_TRANSFER_SAMPLE=/folder/with/sample.cbtransfer/and/sample.code \
+#   bash linux/tests/functions_test.sh
 
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -96,8 +101,126 @@ for ufw_state in inactive active; do
 done
 unset -f ufw admin_ports confirm
 
+# --- service_title -----------------------------------------------------------
+check "title of drive" "Google Drive" "$(CB_SERVICE=drive service_title)"
+check "title when no service is known" "the cloud" "$(CB_SERVICE="" service_title)"
+check "title of a service the setup does not know" "the cloud" "$(CB_SERVICE=s3 service_title)"
+
+# --- rclone configuration: written, read back, moved from CryptBridge 0.7 ---
+as_user() { "$@"; }                       # the tests run as one user
+prepare_rclone_dir() { mkdir -p "$RCLONE_DIR"; } # no root for chown
+obscure() { printf 'obscured(%s)' "$1"; }
+CB_SERVICE="onedrive" CB_VAULT_PATH="/Films/" VAULT_ENCRYPTION="obfuscate" VAULT_DIRNAMES="false"
+CLOUD_SETTINGS=$'drive_id = abc\ndrive_type = personal\ntoken = {"access_token":"x = y"}'
+VAULT_PASSWORD="pw" VAULT_SALT=""
+write_rclone_conf
+check "conf: cloud remote has the service" "onedrive" "$(conf_value "$CLOUD_REMOTE" type)"
+check "conf: settings are written" "abc" "$(conf_value "$CLOUD_REMOTE" drive_id)"
+check "conf: a value with ' = ' is read back whole" '{"access_token":"x = y"}' "$(conf_value "$CLOUD_REMOTE" token)"
+check "conf: vault remote sits on the cloud remote" "cbcloud:Films" "$(conf_value "$VAULT_REMOTE" remote)"
+check "conf: no salt, no password2" "" "$(conf_value "$VAULT_REMOTE" password2)"
+if ! command -v cygpath >/dev/null; then # file modes mean nothing in Git Bash
+	check "conf: only its user can read it" 600 "$(stat -c %a "$RCLONE_CONF")"
+fi
+CB_SERVICE="" CB_VAULT_PATH="" VAULT_ENCRYPTION="" VAULT_DIRNAMES=""
+read_kept_keys
+check "kept keys are read back" "onedrive|Films|obfuscate|false" \
+	"$CB_SERVICE|$CB_VAULT_PATH|$VAULT_ENCRYPTION|$VAULT_DIRNAMES"
+
+rm -f "$RCLONE_CONF"
+printf '%s\n' "$MARKER" "[cbpcloud]" "type = pcloud" "hostname = eapi.pcloud.com" "token = OLD" "" \
+	"[cbvault]" "type = crypt" "remote = cbpcloud:Old Vault" "filename_encryption = standard" >"$OLD_RCLONE_CONF"
+copy_old_rclone_conf >/dev/null
+check "0.7 conf: cloud remote renamed" "pcloud" "$(conf_value "$CLOUD_REMOTE" type)"
+check "0.7 conf: token kept" "OLD" "$(conf_value "$CLOUD_REMOTE" token)"
+check "0.7 conf: vault points to the renamed remote" "cbcloud:Old Vault" "$(conf_value "$VAULT_REMOTE" remote)"
+[[ -f "$OLD_RCLONE_CONF" ]] && r=kept || r=gone
+check "0.7 conf stays until the services use the new one" kept "$r"
+echo "# changed" >>"$RCLONE_CONF"
+copy_old_rclone_conf >/dev/null
+check "a second run keeps the new conf" "# changed" "$(tail -n 1 "$RCLONE_CONF")"
+remove_old_rclone_conf
+[[ -e "$OLD_RCLONE_CONF" ]] && r=kept || r=gone
+check "0.7 conf removed at the end" gone "$r"
+rm -f "$RCLONE_CONF"
+unset -f as_user prepare_rclone_dir obscure
+
+# --- transfer blocks: both formats, and nothing that could change the conf --
+if command -v jq >/dev/null; then
+	vault_json='"vault":{"path":"Films","filenameEncryption":"standard","directoryNameEncryption":true,"filenameEncoding":"base32","suffix":".bin","password":"pw","password2":"salt"},"fingerprint":"ABCD-1234"'
+	# block2 CLOUD — the content of a format-2 block with the sign-in CLOUD
+	block2() { printf '{"format":"cryptbridge-transfer-2","cloud":%s,%s}' "$1" "$vault_json"; }
+	# taken JSON — runs take_transfer; prints "ok service|settings" or why it stopped
+	taken() {
+		local out
+		if out="$( (take_transfer "$1" && printf '%s|%s' "$CB_SERVICE" "$CLOUD_SETTINGS") 2>&1)"; then
+			printf 'ok %s' "$out"
+		else
+			printf 'stopped %s' "$out"
+		fi
+	}
+	# refused CLOUD — prints "refused" if take_transfer stops on the sign-in CLOUD
+	refused() {
+		local r
+		r="$(taken "$(block2 "$1")")"
+		[[ "$r" == "stopped "*"no valid cloud sign-in"* ]] && r=refused
+		printf '%s' "$r"
+	}
+
+	r="$(taken "$(block2 '{"service":"drive","settings":{"client_id":"id.apps.googleusercontent.com","token":"{\"access_token\":\"T\"}"}}')")"
+	check "format 2: Google Drive sign-in taken" \
+		$'ok drive|client_id = id.apps.googleusercontent.com\ntoken = {"access_token":"T"}' "$r"
+	r="$( (take_transfer "$(block2 '{"service":"dropbox","settings":{"token":"T"}}')" &&
+		printf '%s|%s|%s|%s|%s' "$CB_VAULT_PATH" "$VAULT_DIRNAMES" "$VAULT_PASSWORD" "$VAULT_SALT" "$EXPECTED_FINGERPRINT") 2>&1)"
+	check "format 2: vault keys taken" "Films|true|pw|salt|ABCD-1234" "$r"
+	r="$(taken '{"format":"cryptbridge-transfer-1","pcloud":{"hostname":"eapi.pcloud.com","token":"{\"access_token\":\"P\"}"},'"$vault_json"'}')"
+	check "format 1 (CryptBridge 0.7): pCloud sign-in taken" \
+		$'ok pcloud|hostname = eapi.pcloud.com\ntoken = {"access_token":"P"}' "$r"
+
+	r="$(taken '{"format":"cryptbridge-transfer-3"}')"
+	[[ "$r" == "stopped "*"newer CryptBridge"* ]] && r=newer
+	check "a newer format is named as such" newer "$r"
+	r="$(taken 'not JSON: the wrong code gave garbage')"
+	[[ "$r" == "stopped "*"Wrong transfer code"* ]] && r=wrong
+	check "garbage means a wrong code" wrong "$r"
+	r="$(taken "$(block2 '{"service":"s3","settings":{"token":"T"}}')")"
+	[[ "$r" == "stopped "*"cannot sign in to 's3'"* ]] && r=unknown
+	check "an unknown service is refused by name" unknown "$r"
+
+	check "a line break in a value is refused" refused \
+		"$(refused '{"service":"drive","settings":{"token":"T\n[evil]\ntype = local"}}')"
+	check "a carriage return in a value is refused" refused \
+		"$(refused '{"service":"drive","settings":{"token":"T\r[evil]"}}')"
+	check "a line break in a key is refused" refused \
+		"$(refused '{"service":"drive","settings":{"token":"T","a\n[evil]":"x"}}')"
+	check "a key with ' = ' is refused" refused "$(refused '{"service":"drive","settings":{"token":"T","a = b":"x"}}')"
+	check "a second type is refused" refused "$(refused '{"service":"drive","settings":{"token":"T","type":"local"}}')"
+	check "a value that is no text is refused" refused "$(refused '{"service":"drive","settings":{"token":"T","n":1}}')"
+	check "a sign-in without token is refused" refused "$(refused '{"service":"drive","settings":{"client_id":"x"}}')"
+	check "a service name with odd characters is refused" refused "$(refused '{"service":"drive]","settings":{"token":"T"}}')"
+	unset -f block2 taken refused
+
+	# A block of the Windows program, opened with the real openssl.
+	if [[ -n "${CB_TEST_TRANSFER_SAMPLE:-}" ]]; then
+		body="$(transfer_body "$(<"$CB_TEST_TRANSFER_SAMPLE/sample.cbtransfer")")"
+		code="$(<"$CB_TEST_TRANSFER_SAMPLE/sample.code")"
+		r="$( (take_transfer "$(open_transfer_block "$body" "$(tr 'A-Z' 'a-z' <<<"$code")")" &&
+			printf '%s|%s|%s' "$CB_SERVICE" "$VAULT_PASSWORD" "$CB_VAULT_PATH") 2>&1)"
+		check "Windows block: opened with the code in lower case" 'drive|pässwörd with spaces & "quotes"|CryptBridge' "$r"
+		r="$( (take_transfer "$(open_transfer_block "$body" "$code")" && printf '%s' "$CLOUD_SETTINGS") 2>&1)"
+		check "Windows block: every setting of the account arrives" $'client_id = 123-abc.apps.googleusercontent.com\nclient_secret = GOCSPX-secret\nscope = drive\nteam_drive = \ntoken = {"access_token":"T","token_type":"Bearer","refresh_token":"R","expiry":"2026-10-10T23:00:00Z"}' "$r"
+		# openssl takes a wrong code in about 1 of 256 cases and returns
+		# garbage; take_transfer must then stop as well.
+		r="$( (take_transfer "$(open_transfer_block "$body" "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE")") 2>&1)"
+		[[ "$r" == *"Wrong transfer code"* ]] && r=wrong
+		check "Windows block: a wrong code is refused" wrong "$r"
+	fi
+else
+	printf 'skip  transfer blocks (jq not installed)\n'
+fi
+
 # --- verify_keys with vaults whose names prove nothing (needs rclone) -------
-# A folder stands in for pCloud, so no account is needed.
+# A folder stands in for the cloud, so no account is needed.
 rclone_bin="${CB_TEST_RCLONE:-$(command -v rclone || true)}"
 if [[ -n "$rclone_bin" ]]; then
 	cloud_dir="$CB_TEST_ROOT/cloud"
@@ -105,11 +228,11 @@ if [[ -n "$rclone_bin" ]]; then
 	# rclone for Windows (when the tests run in Git Bash) needs a Windows path.
 	if command -v cygpath >/dev/null; then cloud_dir="$(cygpath -m "$cloud_dir")"; fi
 
-	# local_conf FILE FOLDER MODE PASSWORD — a conf whose "pCloud" is the folder above
+	# local_conf FILE FOLDER MODE PASSWORD — a conf whose "cloud" is the folder above
 	local_conf() {
 		{
-			printf '[%s]\ntype = alias\nremote = %s\n\n' "$PCLOUD_REMOTE" "$cloud_dir"
-			printf '[%s]\ntype = crypt\nremote = %s:%s\n' "$VAULT_REMOTE" "$PCLOUD_REMOTE" "$2"
+			printf '[%s]\ntype = alias\nremote = %s\n\n' "$CLOUD_REMOTE" "$cloud_dir"
+			printf '[%s]\ntype = crypt\nremote = %s:%s\n' "$VAULT_REMOTE" "$CLOUD_REMOTE" "$2"
 			printf 'filename_encryption = %s\ndirectory_name_encryption = true\n' "$3"
 			printf 'filename_encoding = base32\nsuffix = .bin\npassword = %s\n' "$(printf '%s' "$4" | "$rclone_bin" obscure -)"
 		} >"$1"

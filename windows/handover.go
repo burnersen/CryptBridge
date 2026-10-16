@@ -28,10 +28,10 @@ type TransferResult struct {
 	Block string `json:"block"`
 }
 
-// CreateTransfer packs the pCloud sign-in and the keys of a pCloud vault into
-// an encrypted block for the Linux setup. Each call makes a new code. With
-// the app lock on, the app password is asked for again, as the block hands
-// the keys on.
+// CreateTransfer packs the sign-in to the cloud account and the keys of a
+// cloud vault into an encrypted block for the Linux setup. Each call makes a
+// new code. With the app lock on, the app password is asked for again, as
+// the block hands the keys on.
 func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	if err := a.core.VerifyPassword(appPassword); err != nil {
 		return TransferResult{}, err
@@ -41,12 +41,14 @@ func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 		return TransferResult{}, err
 	}
 	if v.Kind != settings.KindCloud {
-		return TransferResult{}, errors.New("only a vault in pCloud can be opened on the Linux server")
+		return TransferResult{}, errors.New("only a vault in the cloud can be opened on the Linux server")
 	}
-	// The Linux setup knows pCloud only, for now.
-	signIn, err := a.core.PCloudSignIn(v.Account)
+	account, err := a.core.AccountSecrets(v.Account)
 	if err != nil {
-		return TransferResult{}, fmt.Errorf("only a vault in pCloud can be opened on the Linux server: %w", err)
+		return TransferResult{}, err
+	}
+	if !account.SignedIn() {
+		return TransferResult{}, fmt.Errorf("sign in to %s first", account.Name)
 	}
 	code, err := transfer.NewCode()
 	if err != nil {
@@ -54,7 +56,7 @@ func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	}
 	block, err := transfer.Seal(transfer.Bundle{
 		CreatedAt:   time.Now().UTC(),
-		PCloud:      signIn,
+		Cloud:       transfer.NewCloud(account.Service, account.Remote),
 		Vault:       v.Config,
 		Fingerprint: a.core.Fingerprint(id),
 	}, code)

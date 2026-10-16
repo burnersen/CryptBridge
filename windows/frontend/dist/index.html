@@ -216,8 +216,9 @@
                   <span class="muted">Without it, pCloud answers the sign-in with “redirect_uri is not authorized”.</span></li>
                 <li>Copy the app's <strong>Client ID</strong> and <strong>Client secret</strong> into the fields below.</li>
                 <li><span class="muted">Linux server (not urgent — its sign-in keeps working until pCloud blocks rclone's shared
-                  access again): create a new transfer block on the page of the vault, run <code>sudo cryptbridge setup</code> on the
-                  server, answer <strong>n</strong> to “Keep the pCloud sign-in and vault keys from the last setup?” and paste
+                  access again): create a new transfer block on the page of the vault, run the setup on the server again
+                  (with the current <code>setup.sh</code>, see the README), answer <strong>n</strong> to “Keep the cloud sign-in
+                  and vault keys from the last setup?” and paste
                   the block.</span></li>
               </ol>
             </details>
@@ -371,12 +372,10 @@
 
             <div class="card" id="v-linux">
               <h2>Linux server</h2>
-              <p class="muted hidden" id="v-linux-later">The Linux server setup works with vaults in pCloud for now;
-                vaults in <span id="v-linux-service"></span> follow in a later version.</p>
-              <p class="muted" id="v-linux-text">Bring the pCloud sign-in and the keys of this vault to your server without typing them:
+              <p class="muted">Bring the sign-in to your cloud account and the keys of this vault to your server without typing them:
                 create a transfer block, then run <code>sudo bash setup.sh</code> on the server and choose
                 "Paste the transfer block".</p>
-              <div class="row" id="v-linux-actions">
+              <div class="row">
                 <button class="primary" id="btn-transfer">Create transfer block</button>
               </div>
               <div id="transfer-area" class="hidden">

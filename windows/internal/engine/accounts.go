@@ -360,8 +360,24 @@ func (e *Engine) RemoveAccount(ctx context.Context, id string) error {
 	return nil
 }
 
-// PCloudSignIn returns the sign-in of a pCloud account in the form the
-// Linux server needs it.
+// AccountSecrets returns a cloud account with its secrets (for the transfer
+// to the Linux server). It needs the unlocked app.
+func (e *Engine) AccountSecrets(id string) (settings.Account, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.locked {
+		return settings.Account{}, errLocked
+	}
+	a, ok := e.settings.Account(id)
+	if !ok {
+		return settings.Account{}, errUnknownAccount
+	}
+	a.Remote = maps.Clone(a.Remote) // the caller must not change the settings
+	return a, nil
+}
+
+// PCloudSignIn returns the sign-in of a pCloud account (for its region on
+// the emergency sheet).
 func (e *Engine) PCloudSignIn(id string) (pcloud.Account, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

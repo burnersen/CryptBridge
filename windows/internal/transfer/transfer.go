@@ -2,8 +2,8 @@
 // Copyright (C) 2026 burnersen
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Package transfer packs the pCloud sign-in and the vault keys into an
-// encrypted text block that the Linux setup can read. Nobody has to type
+// Package transfer packs the sign-in to a cloud account and the vault keys
+// into an encrypted text block that the Linux setup can read. Nobody has to type
 // passwords twice, and a typing error can no longer split the vault.
 //
 // The block is exactly what this command produces, so the Linux side needs
@@ -25,17 +25,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"strings"
 	"time"
 
-	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
 const (
-	// Format identifies the content; the Linux setup checks it.
-	Format = "cryptbridge-transfer-1"
+	// Format identifies the content; the Linux setup checks it. Format 1
+	// (up to CryptBridge 0.7) carried a pCloud sign-in only; the Linux setup
+	// still reads it.
+	Format = "cryptbridge-transfer-2"
 
 	// Iterations of PBKDF2-SHA256 (OWASP recommendation 2023). The Linux
 	// setup passes the same number to openssl.
@@ -58,11 +60,29 @@ const (
 
 // Bundle is what travels to the server.
 type Bundle struct {
-	Format      string         `json:"format"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	PCloud      pcloud.Account `json:"pcloud"`
-	Vault       vault.Config   `json:"vault"`
-	Fingerprint string         `json:"fingerprint"`
+	Format      string       `json:"format"`
+	CreatedAt   time.Time    `json:"createdAt"`
+	Cloud       Cloud        `json:"cloud"`
+	Vault       vault.Config `json:"vault"`
+	Fingerprint string       `json:"fingerprint"`
+}
+
+// Cloud is the sign-in to the cloud account of the vault: the service and
+// rclone's settings of the account, as rclone keeps them. The Linux setup
+// writes them into its rclone configuration unchanged, so the server signs
+// in just like the Windows program (token, own app, OneDrive's drive ...).
+type Cloud struct {
+	Service  string            `json:"service"`  // rclone's backend name, e.g. "drive"
+	Settings map[string]string `json:"settings"` // without "type": that is Service
+}
+
+// NewCloud returns the sign-in to an account of service from rclone's
+// settings of the account. It works on a copy: the account's own settings
+// stay as they are.
+func NewCloud(service string, remote map[string]string) Cloud {
+	settings := maps.Clone(remote)
+	delete(settings, "type")
+	return Cloud{Service: service, Settings: settings}
 }
 
 // NewCode returns a random transfer code like "K7Q2M-…-…-…-…".

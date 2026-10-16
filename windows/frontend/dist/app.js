@@ -636,16 +636,10 @@ function renderVaultPage(s) {
   if (filledVault !== v.id) fillVaultForm(v);
 }
 
-// renderLinuxCard offers the transfer to the Linux server for cloud vaults.
-// Its setup knows pCloud only for now; other clouds follow later.
+// renderLinuxCard offers the transfer to the Linux server for cloud vaults;
+// a vault on this PC stays here.
 function renderLinuxCard(v) {
-  const a = v.kind === "cloud" ? accountByID(v.account) : undefined;
   show($("v-linux"), v.kind === "cloud");
-  const later = !!a && a.service !== "pcloud";
-  show($("v-linux-later"), later);
-  show($("v-linux-text"), !later);
-  show($("v-linux-actions"), !later);
-  $("v-linux-service").textContent = a ? a.serviceTitle : "";
 }
 
 async function fillVaultForm(v) {
