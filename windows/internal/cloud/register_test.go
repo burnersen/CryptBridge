@@ -7,13 +7,13 @@ package cloud
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // These tests use a real rclone (from PATH) with a made-up token. They reach
@@ -24,10 +24,7 @@ const fakeToken = `{"access_token":"fake","token_type":"Bearer","refresh_token":
 
 func startRclone(t *testing.T) (context.Context, *rcd.Client) {
 	t.Helper()
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	stateFile := filepath.Join(t.TempDir(), "rcd.json")

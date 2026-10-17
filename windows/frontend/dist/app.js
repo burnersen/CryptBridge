@@ -290,8 +290,19 @@ function renderNotices(s) {
   renderSignInProblems(s);
   show($("winfsp-missing"), !s.winFsp);
   show($("rclone-missing"), !s.rclone && s.phase === "error");
+  renderRcloneUpdate(s.rcloneUpdate);
   show($("setup-needed"), s.phase === "setup");
   renderLANNotice(s);
+}
+
+// renderRcloneUpdate shows the download that replaces an older rclone,
+// which CryptBridge does by itself after an update of CryptBridge.
+function renderRcloneUpdate(update) {
+  show($("rclone-update"), !!update);
+  if (!update) return;
+  $("rclone-update-text").textContent =
+    `Updating rclone to ${update.version}, the version this CryptBridge is tested with… ${update.percent} %`;
+  $("rclone-update-fill").style.width = update.percent + "%";
 }
 
 // renderSignInProblems shows one warning per account whose service refuses

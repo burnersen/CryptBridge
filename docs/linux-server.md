@@ -150,7 +150,7 @@ Your files stay in the cloud the whole time; the servers only pass them through.
 
 | Step | What happens |
 |---|---|
-| Packages | rclone (checksum verified), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
+| Packages | exactly the tested rclone 1.75.2 (checked against a checksum built into the setup; another version is replaced), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
 | Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, one file per vault, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour) |
 | Check | keys tested against your vault; the check code must equal the one in the Windows program |
 | Vaults | each mounted at `~/CryptBridge/NAME` for your desktop user, with a service (`rclone-mount-1.service`, `-2` ...) and a cache of its own, so one vault can be off or fail while the others keep running |

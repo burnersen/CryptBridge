@@ -432,7 +432,7 @@ func (e *Engine) accountIdleClientLocked(ctx context.Context, id string) (*rcd.C
 			return nil, fmt.Errorf("disconnect the drive %s of %s first", describe(v), a.Name)
 		}
 	}
-	if err := e.ensureRcloneFoundLocked(); err != nil {
+	if err := e.ensureRcloneFoundLocked(ctx); err != nil {
 		return nil, err
 	}
 	return e.ensureDaemonLocked(ctx)

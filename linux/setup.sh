@@ -25,7 +25,12 @@ set -Eeuo pipefail
 export LC_ALL=C
 
 readonly CRYPTBRIDGE_VERSION="0.9.1"
-readonly MIN_RCLONE="1.75.0"
+# The one rclone CryptBridge uses: everything is tested with exactly this
+# version, and the Windows program pins the same one. The checksums are those
+# of rclone's official ZIP files, from rclone's PGP-signed SHA256SUMS list.
+readonly RCLONE_VERSION="1.75.2"
+readonly RCLONE_SHA256_LINUX_AMD64="349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702"
+readonly RCLONE_SHA256_LINUX_ARM64="7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10"
 
 # --- Files and folders ---------------------------------------------------
 # CB_TEST_ROOT moves every system path below a test folder; only the tests
@@ -338,12 +343,6 @@ install_caddy() {
 	ok "Caddy $(caddy version | awk '{print $1}')"
 }
 
-# version_ge A B — true if version A >= B (numbers compared, not text):
-# "B then A" is already in version order exactly when A >= B.
-version_ge() {
-	printf '%s\n%s\n' "$2" "$1" | sort -V -C
-}
-
 rclone_version() {
 	local out
 	out="$("$1" version 2>/dev/null)" || return 1
@@ -351,33 +350,77 @@ rclone_version() {
 	printf '%s' "${BASH_REMATCH[1]}"
 }
 
+# rclone_sha256 ARCH — the built-in checksum of rclone's ZIP file for ARCH.
+rclone_sha256() {
+	case "$1" in
+	amd64) printf '%s' "$RCLONE_SHA256_LINUX_AMD64" ;;
+	arm64) printf '%s' "$RCLONE_SHA256_LINUX_ARM64" ;;
+	*) return 1 ;;
+	esac
+}
+
+# rclone_sources ZIP — where rclone's ZIP file is downloaded from, in this
+# order: rclone's download server, rclone's release on GitHub and the
+# unchanged copy kept with the CryptBridge release of this setup.sh.
+rclone_sources() {
+	printf '%s\n' \
+		"https://downloads.rclone.org/v$RCLONE_VERSION/$1" \
+		"https://github.com/rclone/rclone/releases/download/v$RCLONE_VERSION/$1" \
+		"https://github.com/burnersen/CryptBridge/releases/download/v$CRYPTBRIDGE_VERSION/$1"
+}
+
+# download_verified FILE SHA256 URL... — downloads URL after URL into FILE
+# until one file has the checksum SHA256. A file that does not match is
+# deleted before the next try. Fails if no URL delivers the right file.
+download_verified() {
+	local file="$1" want="$2" url actual
+	shift 2
+	for url in "$@"; do
+		if curl -fsSL --connect-timeout 30 --max-time 600 "$url" -o "$file"; then
+			actual="$(sha256sum "$file" | awk '{print $1}')"
+			if [[ "$actual" == "$want" ]]; then
+				return 0
+			fi
+			warn "$url: the file does not match the checksum built into CryptBridge"
+		else
+			warn "$url: download failed"
+		fi
+		rm -f "$file"
+	done
+	return 1
+}
+
+# install_rclone puts exactly RCLONE_VERSION into RCLONE_BIN, in place of any
+# other version. The services pick it up when start_services restarts them.
 install_rclone() {
 	step "rclone"
 	local current=""
 	if [[ -x "$RCLONE_BIN" ]]; then
 		current="$(rclone_version "$RCLONE_BIN" || true)"
 	fi
-	if [[ -n "$current" ]] && version_ge "$current" "$MIN_RCLONE"; then
+	if [[ "$current" == "$RCLONE_VERSION" ]]; then
 		ok "rclone $current is installed"
 		return
 	fi
 
-	local latest tmp zip sums expected actual
-	latest="$(curl -fsSL https://downloads.rclone.org/version.txt)" || die "Cannot reach downloads.rclone.org."
-	latest="${latest#rclone v}"
-	[[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Unexpected answer from downloads.rclone.org: $latest"
-	info "Downloading rclone $latest …"
+	local tmp zip want urls
+	zip="rclone-v$RCLONE_VERSION-linux-$ARCH.zip"
+	want="$(rclone_sha256 "$ARCH")" || die "CryptBridge has no rclone for this processor ($ARCH)."
+	if [[ -n "$current" ]]; then
+		info "Replacing rclone $current with $RCLONE_VERSION, the version CryptBridge is tested with …"
+	else
+		info "Downloading rclone $RCLONE_VERSION …"
+	fi
 	tmp="$(mktemp -d)"
-	zip="rclone-v$latest-linux-$ARCH.zip"
-	curl -fsSL "https://downloads.rclone.org/v$latest/$zip" -o "$tmp/$zip" || die "Download of rclone failed."
-	sums="$(curl -fsSL "https://downloads.rclone.org/v$latest/SHA256SUMS")" || die "Download of the rclone checksums failed."
-	expected="$(awk -v f="$zip" '$2 == f {print $1}' <<<"$sums")"
-	actual="$(sha256sum "$tmp/$zip" | awk '{print $1}')"
-	[[ -n "$expected" && "$expected" == "$actual" ]] || die "Checksum of the rclone download does not match — not installed."
+	mapfile -t urls < <(rclone_sources "$zip")
+	if ! download_verified "$tmp/$zip" "$want" "${urls[@]}"; then
+		rm -rf "$tmp"
+		die "rclone $RCLONE_VERSION could not be downloaded with the right checksum — nothing was installed."
+	fi
 	unzip -q -o "$tmp/$zip" -d "$tmp"
-	install -m 0755 "$tmp/rclone-v$latest-linux-$ARCH/rclone" "$RCLONE_BIN"
+	install -m 0755 "$tmp/rclone-v$RCLONE_VERSION-linux-$ARCH/rclone" "$RCLONE_BIN"
 	rm -rf "$tmp"
-	ok "rclone $latest installed (checksum verified)"
+	ok "rclone $RCLONE_VERSION installed (checked against the checksum built into CryptBridge)"
 }
 
 # as_user runs a command as the desktop user, who runs rclone.

@@ -10,6 +10,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -79,6 +80,7 @@ type Snapshot struct {
 	Accounts          []AccountSnapshot `json:"accounts"`
 	Vaults            []VaultSnapshot   `json:"vaults"`
 	Rclone            *prereq.Rclone    `json:"rclone"`
+	RcloneUpdate      *RcloneUpdate     `json:"rcloneUpdate"` // set while an older rclone is being replaced
 	WinFsp            bool              `json:"winFsp"`
 	AutoReconnect     bool              `json:"autoReconnect"`
 	CacheDir          string            `json:"cacheDir"`
@@ -90,6 +92,13 @@ type Snapshot struct {
 	Locked            bool              `json:"locked"`         // the app password is needed first
 	UnlockConnects    []string          `json:"unlockConnects"` // letters of the drives that connect after unlocking
 	LAN               LANStatus         `json:"lan"`
+}
+
+// RcloneUpdate is the progress of downloading the rclone version this
+// CryptBridge needs in place of the older one it downloaded before.
+type RcloneUpdate struct {
+	Version string `json:"version"`
+	Percent int    `json:"percent"` // 0..100
 }
 
 // PendingUploads counts the files of all drives that are not safely in
@@ -144,6 +153,9 @@ type Engine struct {
 	lan       lanRuntime                 // the LAN server (see lan.go)
 	listeners []func(Snapshot)
 
+	// The download replacing an older rclone, guarded by mu; nil otherwise.
+	rcloneUpdate *RcloneUpdate
+
 	// App lock (see lock.go), guarded by mu.
 	locked         bool          // no secrets in memory; the app password is needed
 	key            *passlock.Key // from the app password while unlocked; nil without app lock
@@ -192,6 +204,7 @@ func (e *Engine) snapshotLocked() Snapshot {
 		Accounts:          make([]AccountSnapshot, 0, len(s.Accounts)),
 		Vaults:            make([]VaultSnapshot, 0, len(s.Vaults)),
 		Rclone:            e.rclone,
+		RcloneUpdate:      e.rcloneUpdate, // replaced, never changed: safe to share
 		WinFsp:            e.winFsp,
 		AutoReconnect:     s.AutoReconnect,
 		CacheDir:          s.Cache.Dir,
@@ -252,6 +265,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("create CryptBridge folders: %w", err)
 	}
 	e.ctx = ctx
+	prereq.CleanUp(e.paths.BinDir) // leftovers of an earlier rclone download
 
 	loaded, loadErr := settings.Load(e.paths.SettingsFile, e.paths.CacheDir)
 	if loadErr != nil {
@@ -324,7 +338,7 @@ func (e *Engine) prepareLocked(ctx context.Context) error {
 	if e.isLocked() {
 		return errLocked
 	}
-	if err := e.ensureRcloneFoundLocked(); err != nil {
+	if err := e.ensureRcloneFoundLocked(ctx); err != nil {
 		return err
 	}
 	client, err := e.ensureDaemonLocked(ctx)
@@ -334,8 +348,11 @@ func (e *Engine) prepareLocked(ctx context.Context) error {
 	return e.ensureRemotesLocked(ctx, client)
 }
 
-// ensureRcloneFoundLocked locates rclone.exe once.
-func (e *Engine) ensureRcloneFoundLocked() error {
+// ensureRcloneFoundLocked locates rclone.exe once. An older rclone that
+// CryptBridge downloaded before is replaced right away, without asking:
+// it came from CryptBridge, and this CryptBridge is tested with another one.
+// The first download of all is left to the user (InstallRclone).
+func (e *Engine) ensureRcloneFoundLocked(ctx context.Context) error {
 	e.mu.Lock()
 	found := e.rclone != nil
 	e.mu.Unlock()
@@ -343,13 +360,39 @@ func (e *Engine) ensureRcloneFoundLocked() error {
 		return nil
 	}
 	rclone, err := prereq.FindRclone(e.paths.BinDir)
+	if errors.Is(err, prereq.ErrRcloneOutdated) {
+		if rclone, err = e.updateRcloneLocked(ctx); err != nil {
+			return fmt.Errorf("rclone could not be updated to %s: %v", prereq.RcloneVersion, err)
+		}
+	}
 	if err != nil {
-		return fmt.Errorf("%v. CryptBridge needs rclone %s or newer.", err, prereq.MinRcloneVersion)
+		return fmt.Errorf("%v. CryptBridge needs exactly rclone %s.", err, prereq.RcloneVersion)
 	}
 	e.mu.Lock()
 	e.rclone = &rclone
 	e.mu.Unlock()
 	return nil
+}
+
+// updateRcloneLocked downloads prereq.RcloneVersion in place of the older
+// rclone in CryptBridge's own folder and shows the progress. An older rclone
+// that still runs (it outlived a crashed window) keeps running until it is
+// restarted. The caller holds actionMu.
+func (e *Engine) updateRcloneLocked(ctx context.Context) (prereq.Rclone, error) {
+	e.setUpdate(&RcloneUpdate{Version: prereq.RcloneVersion})
+	defer e.setUpdate(nil)
+	return prereq.DownloadRclone(ctx, e.paths.BinDir, e.version, func(done, total int64) {
+		if total > 0 {
+			e.setUpdate(&RcloneUpdate{Version: prereq.RcloneVersion, Percent: int(done * 100 / total)})
+		}
+	})
+}
+
+func (e *Engine) setUpdate(update *RcloneUpdate) {
+	e.mu.Lock()
+	e.rcloneUpdate = update
+	e.mu.Unlock()
+	e.publish()
 }
 
 // ensureDaemonLocked returns a client for a running rclone, attaching to an

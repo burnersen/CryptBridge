@@ -479,6 +479,7 @@ func (a *App) OpenURL(url string) error {
 		"https://console.cloud.google.com/",       // where users set up their own Google app
 		"https://www.dropbox.com/developers/apps", // where users set up their own Dropbox app
 		"https://winfsp.dev/",
+		"https://github.com/winfsp/winfsp", // named in WinFsp's licence notice
 		"https://rclone.org/",
 		"https://www.gnu.org/licenses/",
 		"http://127.0.0.1:", // the sign-in link printed by rclone

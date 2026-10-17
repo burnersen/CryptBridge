@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -27,10 +28,7 @@ func Live(t *testing.T) (string, pcloud.Account, vault.Config) {
 	if confPath == "" {
 		t.Skip("CRYPTBRIDGE_DEV_RCLONE_CONF not set")
 	}
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	sections := readINI(t, confPath)
 
 	account := pcloud.Account{Hostname: sections["cbpcloud"]["hostname"], Token: sections["cbpcloud"]["token"]}

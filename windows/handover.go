@@ -150,8 +150,9 @@ func (a *App) EmergencySheet(id, appPassword string) (SheetData, error) {
 	return sheet, nil
 }
 
-// DownloadRclone fetches rclone from rclone.org (checksum verified) and
-// reports progress to the window ("download-progress", 0..100).
+// DownloadRclone fetches the rclone version CryptBridge needs (checked
+// against the checksum built in) and reports progress to the window
+// ("download-progress", 0..100).
 func (a *App) DownloadRclone() error {
 	return a.core.InstallRclone(context.WithoutCancel(a.coreCtx), func(done, total int64) {
 		if total > 0 {

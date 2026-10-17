@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,6 +23,7 @@ import (
 	"unsafe"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 func TestFolderNames(t *testing.T) {
@@ -172,7 +172,7 @@ func TestShellExecuteInfoSize(t *testing.T) {
 // the log shows the rules Windows has about it.
 func TestReadFirewall(t *testing.T) {
 	program := `C:\no-such-folder\rclone.exe`
-	if found, err := exec.LookPath("rclone"); err == nil {
+	if found := testrclone.Lookup(); found != "" {
 		if real, err := filepath.EvalSymlinks(found); err == nil {
 			program = real
 		}
@@ -235,10 +235,7 @@ func TestRemoveRulesScript(t *testing.T) {
 
 func startRclone(t *testing.T) (context.Context, *rcd.Client) {
 	t.Helper()
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	stateFile := filepath.Join(t.TempDir(), "rcd.json")

@@ -8,20 +8,18 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // TestStartAttachStop runs the real rclone: start it hidden, attach to it a
 // second time (as a new CryptBridge start would), then stop it and make sure
 // the process and its state file are gone. Skipped when rclone is missing.
 func TestStartAttachStop(t *testing.T) {
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "rcd.json")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -79,10 +77,7 @@ func TestAttachStaleState(t *testing.T) {
 // TestAttachWrongProcess covers a port taken over by another program after
 // a crash: the answer must come from the recorded PID, or Attach refuses.
 func TestAttachWrongProcess(t *testing.T) {
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "rcd.json")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

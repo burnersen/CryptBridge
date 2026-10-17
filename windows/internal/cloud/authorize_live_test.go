@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // authPort is where "rclone authorize" waits for the browser (rclone 1.75.1).
@@ -20,10 +22,7 @@ const authPort = "127.0.0.1:53682"
 // the port, and every later sign-in fails (seen 2026-10-12). The browser is
 // kept closed through rclone's environment variable.
 func TestAuthorizeCancelFreesThePort(t *testing.T) {
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	t.Setenv("RCLONE_AUTH_NO_OPEN_BROWSER", "true")
 	service := mustService(t, OneDrive)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,10 +54,7 @@ func TestAuthorizeCancelFreesThePort(t *testing.T) {
 // A port held by something else ends the sign-in with words that say so,
 // not with "exit status 2".
 func TestAuthorizeExplainsABusyPort(t *testing.T) {
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	t.Setenv("RCLONE_AUTH_NO_OPEN_BROWSER", "true")
 	listener, err := net.Listen("tcp", authPort)
 	if err != nil {
@@ -76,10 +72,7 @@ func TestAuthorizeExplainsABusyPort(t *testing.T) {
 // When CryptBridge ends while a sign-in waits, Windows must end rclone too.
 // Ending CryptBridge closes its handle to the job, as release does here.
 func TestEndWithThisProgram(t *testing.T) {
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	cmd := exec.Command(exe, "authorize", OneDrive, "--auth-no-open-browser")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

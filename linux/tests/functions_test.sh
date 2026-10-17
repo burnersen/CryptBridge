@@ -45,11 +45,56 @@ check "normalise plain" "Vault" "$(normalise_path "Vault")"
 check "normalise slashes and spaces" "Videos/Vault" "$(normalise_path ' /Videos\Vault/ ')"
 check "normalise only slashes" "" "$(normalise_path "///")"
 
-# --- version_ge ------------------------------------------------------------
-version_ge 1.75.1 1.75.0 && r=yes || r=no; check "1.75.1 >= 1.75.0" yes "$r"
-version_ge 1.75.0 1.75.0 && r=yes || r=no; check "1.75.0 >= 1.75.0" yes "$r"
-version_ge 1.9.0 1.10.0 && r=yes || r=no; check "1.9.0 >= 1.10.0 is false" no "$r"
-version_ge 2.0.0 1.99.9 && r=yes || r=no; check "2.0.0 >= 1.99.9" yes "$r"
+# --- the pinned rclone: checksums, sources, exactly one version -------------
+[[ "$(rclone_sha256 amd64)" =~ ^[0-9a-f]{64}$ ]] && r=yes || r=no; check "rclone checksum for amd64" yes "$r"
+[[ "$(rclone_sha256 arm64)" =~ ^[0-9a-f]{64}$ ]] && r=yes || r=no; check "rclone checksum for arm64" yes "$r"
+rclone_sha256 386 >/dev/null && r=yes || r=no; check "no rclone checksum for 386" no "$r"
+check "rclone sources in order" \
+	"https://downloads.rclone.org/v$RCLONE_VERSION/z.zip https://github.com/rclone/rclone/releases/download/v$RCLONE_VERSION/z.zip https://github.com/burnersen/CryptBridge/releases/download/v$CRYPTBRIDGE_VERSION/z.zip" \
+	"$(rclone_sources z.zip | tr '\n' ' ' | sed 's/ $//')"
+
+# install_rclone with fake tools: the first server fails, the second sends a
+# wrong file, the third the right one. Prints the asked URLs and what was
+# installed; INSTALLED names the version that "rclone version" reports.
+fake_install_rclone() {
+	(
+		ARCH=amd64
+		asked="$CB_TEST_ROOT/rclone.asked" installed="$CB_TEST_ROOT/rclone.installed"
+		: >"$asked"
+		: >"$installed"
+		mkdir -p "$(dirname "$RCLONE_BIN")"
+		rm -f "$RCLONE_BIN"
+		# The #! line counts in Git Bash, where chmod alone makes nothing executable.
+		[[ -n "$INSTALLED" ]] && printf '#!/bin/sh\n' >"$RCLONE_BIN" && chmod +x "$RCLONE_BIN"
+		rclone_version() { [[ -n "$INSTALLED" ]] && printf '%s' "$INSTALLED"; }
+		rclone_sha256() { printf '%s' "$(printf 'right zip' | sha256sum | awk '{print $1}')"; }
+		curl() {
+			local url="${*: -3:1}" out="${*: -1}"
+			printf '%s\n' "${url%%/v*}" >>"$asked"
+			case "$url" in
+			*downloads.rclone.org*) [[ "$SERVERS" == all-wrong ]] && printf 'wrong zip' >"$out" || return 22 ;;
+			*/rclone/rclone/*) printf 'wrong zip' >"$out" ;;
+			*) [[ "$SERVERS" == all-wrong ]] && printf 'wrong zip' >"$out" || printf 'right zip' >"$out" ;;
+			esac
+		}
+		unzip() { mkdir -p "${*: -1}/rclone-v$RCLONE_VERSION-linux-$ARCH" && : >"${*: -1}/rclone-v$RCLONE_VERSION-linux-$ARCH/rclone"; }
+		install() { printf '%s\n' "${*: -1}" >>"$installed"; }
+		(install_rclone) >/dev/null 2>&1 # die ends only this inner shell
+		echo "status=$? asked=$(tr '\n' ' ' <"$asked")installed=$(cat "$installed")"
+	)
+}
+check "pinned rclone installed: nothing downloaded" "status=0 asked=installed=" \
+	"$(INSTALLED="$RCLONE_VERSION" SERVERS=ok fake_install_rclone)"
+check "other rclone: replaced, next server after a failure and a wrong checksum" \
+	"status=0 asked=https://downloads.rclone.org https://github.com/rclone/rclone/releases/download https://github.com/burnersen/CryptBridge/releases/download installed=$RCLONE_BIN" \
+	"$(INSTALLED=1.75.1 SERVERS=ok fake_install_rclone)"
+check "newer rclone: replaced too (exactly one version)" "status=0" \
+	"$(INSTALLED=1.76.0 SERVERS=ok fake_install_rclone | cut -d' ' -f1)"
+check "no rclone yet: installed" "status=0" \
+	"$(INSTALLED='' SERVERS=ok fake_install_rclone | cut -d' ' -f1)"
+check "only wrong files: stops, installs nothing" \
+	"status=1 asked=https://downloads.rclone.org https://github.com/rclone/rclone/releases/download https://github.com/burnersen/CryptBridge/releases/download installed=" \
+	"$(INSTALLED=1.75.1 SERVERS=all-wrong fake_install_rclone)"
 
 # --- save_settings / load_settings: odd values must survive and never run ---
 mkdir -p "$CONF_DIR"

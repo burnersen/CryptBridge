@@ -21,9 +21,15 @@ cache, vaults on your own disks, the app lock and moving files you already have 
 
 - Windows 11 (64-bit).
 - [WinFsp](https://winfsp.dev/rel/), a free helper that lets Windows show a vault as a drive.
-  CryptBridge tells you if it is missing.
-- rclone 1.75 or newer, the tool that does the locking. If it is missing, CryptBridge downloads it for
-  you from rclone.org and checks that the download is genuine.
+  CryptBridge tells you if it is missing. WinFsp - Windows File System Proxy, Copyright (C) Bill
+  Zissimopoulos, [github.com/winfsp/winfsp](https://github.com/winfsp/winfsp). Each
+  [CryptBridge release](https://github.com/burnersen/CryptBridge/releases) also keeps an unchanged copy of
+  the WinFsp installer as a backup. The official page comes first; install the copy only if WinFsp is not
+  installed yet.
+- rclone 1.75.2, the tool that does the locking. CryptBridge uses exactly this tested version. If it is
+  missing, CryptBridge downloads it for you from rclone.org (or from a copy of the same file on GitHub)
+  and checks it against a checksum built into CryptBridge. After a CryptBridge update, the matching rclone
+  is downloaded automatically.
 - For vaults in the cloud: an account at pCloud, Google Drive, OneDrive or Dropbox. Google Drive also
   needs [your own free Google app](google-drive-app.md).
 
@@ -159,6 +165,9 @@ they arrived, then delete the originals.
 
 Replace `CryptBridge.exe` with the one from the
 [latest release](https://github.com/burnersen/CryptBridge/releases/latest) and start it. Your settings and
-vaults stay as they are. The [release notes](https://github.com/burnersen/CryptBridge/releases) say what
+vaults stay as they are. If the new version needs another rclone, it downloads it by itself and shows
+the progress. Did you use an rclone of your own (on the PATH or next to `CryptBridge.exe`)? Then click
+*Download rclone* once; if you use the [LAN access](lan-access.md), allow it in the firewall once more.
+The [release notes](https://github.com/burnersen/CryptBridge/releases) say what
 changed and whether anything else is needed. Coming from CryptBridge 0.6 or older, see
 [Cloud accounts](cloud-accounts.md#updating-from-cryptbridge-06-or-older).

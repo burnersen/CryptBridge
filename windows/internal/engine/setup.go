@@ -47,15 +47,15 @@ func NewPassword() (string, error) {
 	return string(out), nil
 }
 
-// InstallRclone downloads rclone (checksum verified) into CryptBridge's own
-// folder and starts working with it.
+// InstallRclone downloads rclone prereq.RcloneVersion (checked against the
+// checksum built in) into CryptBridge's own folder and starts working with it.
 func (e *Engine) InstallRclone(ctx context.Context, progress prereq.Progress) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 	if e.isLocked() {
 		return errLocked
 	}
-	rclone, err := prereq.DownloadRclone(ctx, e.paths.BinDir, progress)
+	rclone, err := prereq.DownloadRclone(ctx, e.paths.BinDir, e.version, progress)
 	if err != nil {
 		return err
 	}

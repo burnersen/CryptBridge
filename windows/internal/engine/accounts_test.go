@@ -6,7 +6,6 @@ package engine
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -154,15 +153,13 @@ func TestAccountChanges(t *testing.T) {
 // The renewal is simulated by giving rclone another token; no cloud service
 // is asked.
 func TestKeepRenewedSignIn(t *testing.T) {
-	if _, err := exec.LookPath("rclone"); err != nil {
-		t.Skip("rclone not found in PATH")
-	}
 	const oldToken = `{"access_token":"old","token_type":"Bearer","refresh_token":"old","expiry":"2030-01-01T00:00:00Z"}`
 	const newToken = `{"access_token":"new","token_type":"Bearer","refresh_token":"renewed","expiry":"2030-01-02T00:00:00Z"}`
 	s := settings.Defaults(`C:\cache`)
 	s.Accounts = []settings.Account{{ID: "adropbox", Service: cloud.Dropbox, Name: "Dropbox",
 		Remote: map[string]string{"type": cloud.Dropbox, "token": oldToken}}}
 	e := accountEngine(t, s)
+	useTestRclone(t, e.paths)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

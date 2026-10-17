@@ -53,8 +53,9 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 ## 🚀 Quick start
 
 **You need** Windows 11 (64-bit) and [WinFsp](https://winfsp.dev/rel/), a free helper that lets Windows
-show a vault as a drive. rclone 1.75 or newer does the locking; if it is missing, CryptBridge downloads it
-for you and checks that the download is genuine.
+show a vault as a drive. rclone does the locking: CryptBridge uses exactly the tested rclone 1.75.2. If it
+is missing, CryptBridge downloads it for you and checks it against a checksum built into CryptBridge.
+After a CryptBridge update, the matching rclone is downloaded by itself.
 
 1. **Install WinFsp**, then download and start **`CryptBridge.exe`** from the
    [latest release](https://github.com/burnersen/CryptBridge/releases/latest). There is no installer:
@@ -192,6 +193,7 @@ Log files: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server
 
 - **Windows:** replace `CryptBridge.exe` with the one from the
   [latest release](https://github.com/burnersen/CryptBridge/releases/latest). Your settings and vaults stay.
+  If the new version needs another rclone, it downloads it by itself.
 - **Linux server:** download `setup.sh` again and run it:
 
   ```bash
@@ -217,9 +219,16 @@ open the vault.
 
 ### rclone and WinFsp
 
-CryptBridge does **not** bundle rclone or WinFsp. [rclone](https://rclone.org) (MIT License) is used as a
-separate program, found on your PC or downloaded from rclone.org on request. [WinFsp](https://winfsp.dev)
-(GPLv3 with FLOSS exception) is installed by you from its official site.
+CryptBridge does **not** build rclone or WinFsp into the program. [rclone](https://rclone.org)
+(MIT License) runs as a separate program. CryptBridge uses exactly the tested rclone 1.75.2 and checks it
+against a checksum built into CryptBridge. After a CryptBridge update, the matching rclone is downloaded
+automatically. [WinFsp](https://winfsp.dev) (GPLv3 with FLOSS exception) is installed by you from its
+official site. WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos,
+[github.com/winfsp/winfsp](https://github.com/winfsp/winfsp).
+
+Each [release](https://github.com/burnersen/CryptBridge/releases) also keeps unchanged copies of rclone's
+original ZIP files and of the WinFsp installer as a backup, together with both license texts. The
+official download pages come first; install the WinFsp copy only if WinFsp is not installed yet.
 
 ### Third-party components
 

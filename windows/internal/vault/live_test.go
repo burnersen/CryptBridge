@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // The live tests run against a real pCloud account. They need a developer
@@ -28,10 +29,7 @@ func liveSetup(t *testing.T) (context.Context, *rcd.Client, Config) {
 	if confPath == "" {
 		t.Skip("CRYPTBRIDGE_DEV_RCLONE_CONF not set")
 	}
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	sections := readINI(t, confPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

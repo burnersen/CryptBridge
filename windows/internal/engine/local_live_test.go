@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -26,9 +25,8 @@ import (
 // this PC cannot run it.
 func localEngine(t *testing.T) (*Engine, context.Context, []string) {
 	t.Helper()
-	if _, err := exec.LookPath("rclone"); err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	paths := testPaths(t.TempDir())
+	useTestRclone(t, paths)
 	if _, ok := prereq.WinFspInstalled(); !ok {
 		t.Skip("WinFsp is not installed")
 	}
@@ -40,7 +38,7 @@ func localEngine(t *testing.T) (*Engine, context.Context, []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
-	e := New(testPaths(t.TempDir()), "test")
+	e := New(paths, "test")
 	if err := e.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

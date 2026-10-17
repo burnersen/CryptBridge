@@ -5,6 +5,8 @@
 package engine
 
 import (
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/appdir"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // testPaths puts every file of a test engine below root.
@@ -23,6 +26,34 @@ func testPaths(root string) appdir.Paths {
 		RcloneLog:    filepath.Join(root, "local", "logs", "rclone.log"),
 		CacheDir:     filepath.Join(root, "local", "cache"),
 		BinDir:       filepath.Join(root, "local", "bin"),
+	}
+}
+
+// useTestRclone copies the rclone for tests (exactly the pinned version, see
+// testrclone) into the test profile's own folder, where the engine looks
+// first, so that the engine runs exactly that rclone. Without it the test
+// is skipped.
+func useTestRclone(t *testing.T, paths appdir.Paths) {
+	t.Helper()
+	exe := testrclone.Path(t)
+	if err := os.MkdirAll(paths.BinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.Open(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dst, err := os.Create(filepath.Join(paths.BinDir, "rclone.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		t.Fatal(err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

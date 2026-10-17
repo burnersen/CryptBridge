@@ -8,9 +8,17 @@ A vault is an [rclone crypt](https://rclone.org/crypt/) folder. CryptBridge uses
 you can always open your vaults with plain rclone too, even without CryptBridge: the emergency sheet
 lists the commands. Existing rclone crypt vaults work as well.
 
-CryptBridge does **not** bundle rclone or WinFsp. [rclone](https://rclone.org) (MIT License) is used as a
-separate program, found on your PC or downloaded from rclone.org on request (checksum verified).
-[WinFsp](https://winfsp.dev) (GPLv3 with FLOSS exception) is installed by you from its official site.
+CryptBridge does **not** build rclone or WinFsp into the program. [rclone](https://rclone.org)
+(MIT License) runs as a separate program. The Windows program and the Linux setup use exactly the tested
+rclone 1.75.2 and check every download against a checksum built into CryptBridge: from rclone.org first,
+then from rclone's release on GitHub, then from the copy kept with the CryptBridge release. After a
+CryptBridge update, the matching rclone is downloaded automatically. [WinFsp](https://winfsp.dev)
+(GPLv3 with FLOSS exception) is installed by you from its official site. WinFsp - Windows File System
+Proxy, Copyright (C) Bill Zissimopoulos, [github.com/winfsp/winfsp](https://github.com/winfsp/winfsp).
+
+Each [release](https://github.com/burnersen/CryptBridge/releases) also keeps unchanged copies of rclone's
+original ZIP files and of the WinFsp installer as a backup, together with both license texts. The
+official download pages come first; install the WinFsp copy only if WinFsp is not installed yet.
 
 ## Streaming settings (rclone options)
 

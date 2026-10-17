@@ -8,13 +8,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 )
 
 // These tests use a real rclone (from PATH) on folders of this PC; they need
@@ -22,10 +22,7 @@ import (
 
 func localSetup(t *testing.T) (context.Context, *rcd.Client) {
 	t.Helper()
-	exe, err := exec.LookPath("rclone")
-	if err != nil {
-		t.Skip("rclone not found in PATH")
-	}
+	exe := testrclone.Path(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	stateFile := filepath.Join(t.TempDir(), "rcd.json")

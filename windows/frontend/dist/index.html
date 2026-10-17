@@ -60,10 +60,14 @@
         — install it, then click Connect.
       </div>
       <div class="notice warn hidden" id="rclone-missing">
-        rclone is needed and was not found on this PC.
+        The rclone version CryptBridge is tested with was not found on this PC.
         <button class="primary" id="btn-download-rclone">Download rclone</button>
-        <span class="muted">from rclone.org, checked against rclone's published checksum.</span>
+        <span class="muted">from rclone.org or GitHub, checked against a checksum built into CryptBridge.</span>
         <div class="bar hidden" id="download-bar"><div class="bar-fill" id="download-fill"></div></div>
+      </div>
+      <div class="notice info hidden" id="rclone-update">
+        <span id="rclone-update-text"></span>
+        <div class="bar"><div class="bar-fill" id="rclone-update-fill"></div></div>
       </div>
 
       <div class="empty-state hidden" id="setup-needed">
@@ -775,7 +779,9 @@
         <h2>Third-party software</h2>
         <ul class="plain">
           <li><button class="link" data-url="https://rclone.org/">rclone</button> (MIT licence) does the encryption and transfers. It runs as its own program.</li>
-          <li><button class="link" data-url="https://winfsp.dev/">WinFsp</button> (GPLv3 with FLOSS exception) lets Windows show the drives. Installed separately.</li>
+          <li><button class="link" data-url="https://winfsp.dev/">WinFsp</button> (GPLv3 with FLOSS exception) lets Windows show the drives. Installed separately.
+            WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos,
+            <button class="link" data-url="https://github.com/winfsp/winfsp">github.com/winfsp/winfsp</button>.</li>
           <li>Built into this program: Wails and further libraries under the MIT licence, fyne systray (Apache 2.0),
             Go and golang.org/x (BSD-3-Clause). The full list with links is in the
             <button class="link" data-url="https://github.com/burnersen/CryptBridge#third-party-components">README</button>.</li>

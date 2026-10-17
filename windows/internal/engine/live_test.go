@@ -25,6 +25,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
 	"github.com/burnersen/CryptBridge/windows/internal/testenv"
+	"github.com/burnersen/CryptBridge/windows/internal/testrclone"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -56,6 +57,7 @@ func liveSettingsWith(t *testing.T, appLock *passlock.Key, change func(*vault.Co
 	}
 	letter := free[len(free)-2] // leave Z: alone if it is free
 	paths := testPaths(t.TempDir())
+	useTestRclone(t, paths)
 	s := settings.Defaults(paths.CacheDir)
 	s.Accounts = []settings.Account{{
 		ID: settings.MigratedAccountID, Service: cloud.PCloud, Name: "pCloud",
@@ -299,9 +301,9 @@ func TestLivePCloudWrongFolder(t *testing.T) {
 	}
 
 	// Nothing may have been written where the renamed folder was.
-	_, _, cfg := testenv.Live(t)
+	exe, _, cfg := testenv.Live(t)
 	conf := os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF")
-	out, err := exec.Command("rclone", "--config", conf, "lsf", "cbpcloud:"+cfg.NormalisedPath()+missing).CombinedOutput()
+	out, err := exec.Command(exe, "--config", conf, "lsf", "cbpcloud:"+cfg.NormalisedPath()+missing).CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "directory not found") {
 		t.Fatalf("the missing folder exists now (err %v): %s", err, out)
 	}
@@ -408,7 +410,7 @@ func TestLiveAppLock(t *testing.T) {
 	}
 	waitState(t, e, testVaultID, StateConnected, 60*time.Second)
 	waitUploadsDone(t, e, testVaultID, 2*time.Minute)
-	out, err := exec.Command("rclone", "--config", os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF"), "lsf", "cbvault:", "--include", late).CombinedOutput()
+	out, err := exec.Command(testrclone.Path(t), "--config", os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF"), "lsf", "cbvault:", "--include", late).CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != late {
 		t.Fatalf("file held back by LockNow is not in pCloud after unlocking: %q %v", out, err)
 	}
@@ -424,7 +426,7 @@ func TestLiveAppLock(t *testing.T) {
 // when it stopped half-way.
 func removeTestFiles(t *testing.T) {
 	conf := os.Getenv("CRYPTBRIDGE_DEV_RCLONE_CONF")
-	out, err := exec.Command("rclone", "--config", conf, "delete", "cbvault:", "--include", "engine-test-*.bin").CombinedOutput()
+	out, err := exec.Command(testrclone.Path(t), "--config", conf, "delete", "cbvault:", "--include", "engine-test-*.bin").CombinedOutput()
 	if err != nil {
 		t.Logf("cleaning the test vault failed: %v %s", err, out)
 	}
