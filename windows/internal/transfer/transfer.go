@@ -60,8 +60,13 @@ const (
 
 // Bundle is what travels to the server.
 type Bundle struct {
-	Format      string       `json:"format"`
-	CreatedAt   time.Time    `json:"createdAt"`
+	Format    string    `json:"format"`
+	CreatedAt time.Time `json:"createdAt"`
+	// Name is the vault's name in this program. The Linux setup offers it as
+	// the name of the vault's folder, so both sides call the vault the same.
+	// Blocks of CryptBridge up to 0.8 have none; the format stays the same,
+	// as older setups simply ignore the field.
+	Name        string       `json:"name"`
 	Cloud       Cloud        `json:"cloud"`
 	Vault       vault.Config `json:"vault"`
 	Fingerprint string       `json:"fingerprint"`

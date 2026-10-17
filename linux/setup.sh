@@ -5,24 +5,26 @@
 #
 # CryptBridge Linux setup.
 #
-# Turns a fresh Ubuntu/Debian server into a streaming server for an
-# rclone-crypt encrypted vault in pCloud, Google Drive, OneDrive or Dropbox:
+# Turns a fresh Ubuntu/Debian server into a streaming server for rclone-crypt
+# encrypted vaults in pCloud, Google Drive, OneDrive or Dropbox, one folder
+# per vault:
 #
-#   cloud <-> rclone mount (rclone-mount.service) -> ~/CryptBridge (read/write in the desktop)
-#                 \-> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
+#   cloud <-> rclone mount, one per vault (rclone-mount-N.service) -> ~/CryptBridge/NAME (read/write in the desktop)
+#   ~/CryptBridge -> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
 #
 # Run it again at any time to repair or change the setup. After the first run
-# it is also installed as the command "cryptbridge" (status, restart, ...).
+# it is also installed as the command "cryptbridge" (status, vaults, ...).
 #
 #   sudo bash setup.sh            set up or change CryptBridge
-#   cryptbridge                   menu: status, streaming settings, restart, ...
+#   cryptbridge                   menu: status, vaults, streaming settings, restart, ...
+#   sudo cryptbridge vault add    add a vault (transfer block from the Windows program)
 #   sudo cryptbridge uninstall    remove CryptBridge (keeps your files in the cloud)
 
 set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.8.3"
+readonly CRYPTBRIDGE_VERSION="0.9.0"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -36,13 +38,29 @@ readonly CONF_DIR="$ROOT/etc/cryptbridge"
 # desktop user (who runs rclone) may write to. CONF_DIR itself stays root's:
 # root reads the settings file in there as commands.
 readonly RCLONE_DIR="$CONF_DIR/rclone"
-readonly RCLONE_CONF="$RCLONE_DIR/rclone.conf"
-readonly OLD_RCLONE_CONF="$CONF_DIR/rclone.conf" # up to CryptBridge 0.7
+# Every vault has a configuration of its own, NUMBER.conf: rclone writes the
+# whole file anew when it renews a sign-in, so two vaults sharing one file
+# would overwrite each other's new sign-in. RCLONE_CONF is the file of the
+# vault being worked on (see select_vault).
+RCLONE_CONF=""
+# The keys of a transfer block wait here until they are checked; only then
+# do they become a vault's configuration.
+readonly NEW_RCLONE_CONF="$RCLONE_DIR/new.conf"
+readonly SINGLE_RCLONE_CONF="$RCLONE_DIR/rclone.conf" # CryptBridge 0.8: one vault only
+readonly OLD_RCLONE_CONF="$CONF_DIR/rclone.conf"      # up to CryptBridge 0.7
 readonly HTPASSWD="$CONF_DIR/htpasswd"
 readonly SETTINGS_FILE="$CONF_DIR/settings"
+# One settings file per vault, named by its number (name, cloud, folder,
+# check code, on or off). No secrets in there either.
+readonly VAULTS_DIR="$CONF_DIR/vaults"
+# One cache folder per vault, named by its number as well.
 readonly CACHE_DIR="$ROOT/var/cache/cryptbridge"
-readonly MOUNT_UNIT="$ROOT/etc/systemd/system/rclone-mount.service"
-readonly WEBDAV_UNIT="$ROOT/etc/systemd/system/rclone-webdav.service"
+readonly UNIT_DIR="$ROOT/etc/systemd/system"
+# One mount service per vault (rclone-mount-NUMBER.service), so that a vault
+# can be off, or fail, while the others keep working.
+readonly VAULT_UNIT_PREFIX="rclone-mount-"
+readonly OLD_MOUNT_UNIT="$UNIT_DIR/rclone-mount.service" # CryptBridge 0.8: one vault only
+readonly WEBDAV_UNIT="$UNIT_DIR/rclone-webdav.service"
 readonly CADDYFILE="$ROOT/etc/caddy/Caddyfile"
 readonly F2B_FILTER="$ROOT/etc/fail2ban/filter.d/cryptbridge-webdav.conf"
 readonly F2B_JAIL="$ROOT/etc/fail2ban/jail.d/cryptbridge-webdav.conf"
@@ -59,6 +77,10 @@ readonly VAULT_REMOTE="cbvault"
 readonly -A SERVICE_TITLES=([pcloud]="pCloud" [drive]="Google Drive" [onedrive]="OneDrive" [dropbox]="Dropbox")
 readonly WEBDAV_ADDR="127.0.0.1:8080"
 readonly CHECK_FILE=".cryptbridge-vault"
+# A vault's name is the name of its folder; see valid_vault_name.
+readonly VAULT_NAME_MAX=60
+readonly VAULT_NAME_FORBIDDEN='/\"$%`'
+readonly DEFAULT_VAULT_NAME="Vault"
 # Key check, the same rules as the Windows program: a wrong key passes one
 # encrypted name by chance in about 256 cases, eight names make that
 # negligible. An encrypted file starts with a 32-byte header, and its content
@@ -215,10 +237,12 @@ save_settings() {
 	# This file is read back with "." — every value is quoted with %q so that
 	# a folder name with special characters can never run as a command.
 	# No secrets in here, so the desktop user may read it (for "cryptbridge").
+	# What belongs to one vault is in the vault's own file (save_vault); up to
+	# CryptBridge 0.8 the folder and check code of the one vault were in here.
 	{
 		echo "$MARKER — settings of the last setup run and of the menu (no secrets here)"
 		local name
-		for name in CB_USER CB_MOUNT_DIR CB_VAULT_PATH CB_ADDRESS CB_WEBDAV_USER CB_CACHE_MAX CB_CACHE_MIN_FREE CB_FINGERPRINT CB_STREAMING; do
+		for name in CB_USER CB_MOUNT_DIR CB_ADDRESS CB_WEBDAV_USER CB_CACHE_MAX CB_CACHE_MIN_FREE CB_STREAMING; do
 			printf '%s=%q\n' "$name" "${!name}"
 		done
 	} >"$SETTINGS_FILE"
@@ -237,10 +261,15 @@ choose_user() {
 		id "$CB_USER" >/dev/null 2>&1 && break
 		warn "User '$CB_USER' does not exist."
 	done
+	load_user
+	CB_MOUNT_DIR="${CB_MOUNT_DIR:-$CB_HOME/CryptBridge}"
+	ok "Folder of the vaults for $CB_USER: $CB_MOUNT_DIR"
+}
+
+# load_user — the group and home folder of the desktop user CB_USER.
+load_user() {
 	CB_GROUP="$(id -gn "$CB_USER")"
 	CB_HOME="$(getent passwd "$CB_USER" | cut -d: -f6)"
-	CB_MOUNT_DIR="${CB_MOUNT_DIR:-$CB_HOME/CryptBridge}"
-	ok "Vault folder for $CB_USER: $CB_MOUNT_DIR"
 }
 
 # ==========================================================================
@@ -360,20 +389,26 @@ obscure() {
 # Cloud sign-in and vault keys
 # ==========================================================================
 
-# Values filled by one of the ways in get_keys. CLOUD_SETTINGS are rclone's
-# settings of the cloud account, one "key = value" per line, without the type
-# (that is CB_SERVICE).
-CB_SERVICE=""
-CLOUD_SETTINGS=""
-PCLOUD_TOKEN=""
-CB_VAULT_PATH="${CB_VAULT_PATH:-}"
-VAULT_ENCRYPTION="standard"
-VAULT_DIRNAMES="true"
-VAULT_ENCODING="base32"
-VAULT_SUFFIX=".bin"
-VAULT_PASSWORD=""
-VAULT_SALT=""
-EXPECTED_FINGERPRINT=""
+# reset_keys — the values that one of the ways in get_keys fills, empty or at
+# rclone's defaults, so that nothing of an earlier vault is taken by mistake.
+# CLOUD_SETTINGS are rclone's settings of the cloud account, one
+# "key = value" per line, without the type (that is CB_SERVICE). CB_VAULT_NAME
+# is the vault's name in the Windows program, if the block brings one.
+reset_keys() {
+	CB_SERVICE=""
+	CLOUD_SETTINGS=""
+	PCLOUD_TOKEN=""
+	CB_VAULT_NAME=""
+	CB_VAULT_PATH=""
+	VAULT_ENCRYPTION="standard"
+	VAULT_DIRNAMES="true"
+	VAULT_ENCODING="base32"
+	VAULT_SUFFIX=".bin"
+	VAULT_PASSWORD=""
+	VAULT_SALT=""
+	EXPECTED_FINGERPRINT=""
+}
+reset_keys
 
 # A valid cloud sign-in in a transfer block: a service name, and settings
 # that can only become "key = value" lines of the rclone configuration —
@@ -397,16 +432,11 @@ service_title() {
 	fi
 }
 
+# get_keys reads the cloud sign-in and the keys of one vault.
 get_keys() {
 	step "Cloud sign-in and vault keys"
-	copy_old_rclone_conf
-	if [[ -s "$RCLONE_CONF" ]] && confirm "Keep the cloud sign-in and vault keys from the last setup?" y; then
-		KEEP_KEYS=1
-		ok "Keeping the existing keys"
-		return
-	fi
-	KEEP_KEYS=0
-	info "How do you want to bring the keys to this server?"
+	reset_keys
+	info "How do you want to bring the keys of the vault to this server?"
 	info "  1) Paste the transfer block from the CryptBridge Windows program (recommended)"
 	info "  2) Read the transfer block from a file"
 	info "  3) Type everything by hand (pCloud only)"
@@ -498,6 +528,8 @@ take_transfer() {
 	esac
 	take_cloud_sign_in "$cloud"
 
+	# Blocks of CryptBridge up to 0.8 carry no name.
+	CB_VAULT_NAME="$(jq -r '.name // ""' <<<"$json")"
 	CB_VAULT_PATH="$(jq -r '.vault.path' <<<"$json")"
 	VAULT_ENCRYPTION="$(jq -r '.vault.filenameEncryption' <<<"$json")"
 	VAULT_DIRNAMES="$(jq -r '.vault.directoryNameEncryption' <<<"$json")"
@@ -528,7 +560,7 @@ read_keys_by_hand() {
 	[[ "$PCLOUD_TOKEN" == '{"access_token"'* ]] || die "That does not look like an rclone pCloud token."
 	CB_SERVICE="pcloud"
 	CLOUD_SETTINGS="" # configure_remotes finds the pCloud server
-	ask CB_VAULT_PATH "Folder of the vault in pCloud" "${CB_VAULT_PATH:-CryptBridge}"
+	ask CB_VAULT_PATH "Folder of the vault in pCloud" "CryptBridge"
 	ask_secret VAULT_PASSWORD "Encryption password"
 	local again
 	ask_secret again "Encryption password again"
@@ -585,15 +617,16 @@ write_private() {
 
 # copy_old_rclone_conf — up to CryptBridge 0.7 the configuration lay in
 # CONF_DIR, and the cloud remote had pCloud's name. It is copied to its own
-# folder under the new name. The old file stays until the services use the
-# new one (remove_old_rclone_conf): a setup ended before that leaves them
+# folder under the new name, where CryptBridge 0.8 kept it, and from there
+# update_single_vault takes it on. The old file stays until the services use
+# the new one (remove_old_rclone_conf): a setup ended before that leaves them
 # working as they were.
 copy_old_rclone_conf() {
 	[[ -f "$OLD_RCLONE_CONF" ]] || return 0
 	prepare_rclone_dir
-	[[ -s "$RCLONE_CONF" ]] && return 0
+	[[ -s "$SINGLE_RCLONE_CONF" ]] && return 0
 	sed -e "s/^\[$OLD_CLOUD_REMOTE\]\$/[$CLOUD_REMOTE]/" \
-		-e "s/^remote = $OLD_CLOUD_REMOTE:/remote = $CLOUD_REMOTE:/" "$OLD_RCLONE_CONF" | write_private "$RCLONE_CONF"
+		-e "s/^remote = $OLD_CLOUD_REMOTE:/remote = $CLOUD_REMOTE:/" "$OLD_RCLONE_CONF" | write_private "$SINGLE_RCLONE_CONF"
 	ok "rclone configuration copied to $RCLONE_DIR"
 }
 
@@ -609,11 +642,6 @@ normalise_path() {
 }
 
 configure_remotes() {
-	if [[ "$KEEP_KEYS" == 1 ]]; then
-		read_kept_keys
-		check_cloud_access
-		return
-	fi
 	if [[ -n "$CLOUD_SETTINGS" ]]; then
 		write_rclone_conf
 		check_cloud_access
@@ -649,26 +677,35 @@ conf_value() {
 		inside && index($0, key " = ") == 1 { print substr($0, length(key) + 4); exit }' "$RCLONE_CONF"
 }
 
-# check_cloud_access — the cloud must accept the sign-in. The parts of
-# rclone's messages are the ones the Windows program measured (see
+# check_cloud_access — the cloud must accept the sign-in; stops otherwise.
+check_cloud_access() {
+	local free
+	free="$(reach_cloud)" || die "$free"
+	ok "$(service_title) reached${free:+: free $free}"
+}
+
+# reach_cloud — asks the cloud of RCLONE_CONF for its free space and prints
+# it; if the cloud does not answer, prints why in words and fails. The parts
+# of rclone's messages are the ones the Windows program measured (see
 # windows/internal/cloud/problem.go and pcloud.go); a missing network comes
 # first, as a token renewal can fail for want of it too.
-check_cloud_access() {
-	local out title free
+reach_cloud() {
+	local out title
 	title="$(service_title)"
-	if ! out="$(rc about "$CLOUD_REMOTE:" 2>&1)"; then
-		case "$out" in
-		*"dial tcp"* | *"i/o timeout"* | *"TLS handshake timeout"*)
-			die "$title cannot be reached. Please check the internet connection of this server: $out" ;;
-		*"(2094)"* | *"(2095)"* | *invalid_grant* | *"Error 401"* | *InvalidAuthenticationToken* | *invalid_access_token* | *expired_access_token*)
-			die "$title no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again." ;;
-		*invalid_client* | *unauthorized_client*)
-			die "$title does not accept your own app. Check its client ID and secret in the Windows program and bring the keys again." ;;
-		*) die "$title cannot be reached: $out" ;;
-		esac
+	if out="$(rc about "$CLOUD_REMOTE:" 2>&1)"; then
+		awk '/^Free:/{print $2 " " $3}' <<<"$out"
+		return 0
 	fi
-	free="$(awk '/^Free:/{print $2 " " $3}' <<<"$out")"
-	ok "$title reached${free:+: free $free}"
+	case "$out" in
+	*"dial tcp"* | *"i/o timeout"* | *"TLS handshake timeout"*)
+		printf '%s cannot be reached. Please check the internet connection of this server: %s' "$title" "$out" ;;
+	*"(2094)"* | *"(2095)"* | *invalid_grant* | *"Error 401"* | *InvalidAuthenticationToken* | *invalid_access_token* | *expired_access_token*)
+		printf '%s no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again.' "$title" ;;
+	*invalid_client* | *unauthorized_client*)
+		printf '%s does not accept your own app. Check its client ID and secret in the Windows program and bring the keys again.' "$title" ;;
+	*) printf '%s cannot be reached: %s' "$title" "$out" ;;
+	esac
+	return 1
 }
 
 # ==========================================================================
@@ -798,21 +835,452 @@ compute_fingerprint() {
 }
 
 # ==========================================================================
+# Vaults: several on one server, each in a folder of its own
+# ==========================================================================
+
+# The vault being worked on. Its file in VAULTS_DIR holds VAULT_SETTINGS;
+# select_vault reads them and points RCLONE_CONF to its configuration.
+CB_VAULT_ID=""
+CB_VAULT_STATE="on"
+readonly VAULT_SETTINGS=(CB_VAULT_NAME CB_SERVICE CB_VAULT_PATH CB_FINGERPRINT CB_VAULT_STATE)
+
+# vault_ids — the numbers of the vaults on this server, in order.
+vault_ids() {
+	local file
+	for file in "$VAULTS_DIR"/*; do
+		if [[ -f "$file" && "${file##*/}" =~ ^[0-9]+$ ]]; then
+			printf '%s\n' "${file##*/}"
+		fi
+	done | sort -n
+}
+
+# next_vault_id — the number of a new vault: one more than the highest.
+next_vault_id() {
+	local last
+	last="$(vault_ids | tail -n1)"
+	echo $((${last:-0} + 1))
+}
+
+# select_vault ID — makes vault ID the one being worked on.
+select_vault() {
+	CB_VAULT_ID="$1"
+	RCLONE_CONF="$RCLONE_DIR/$1.conf"
+	# shellcheck disable=SC1090
+	. "$VAULTS_DIR/$1"
+}
+
+# save_vault — writes the file of the selected vault. Like the settings, it
+# is read back with ".", so every value is quoted with %q.
+save_vault() {
+	install -d -m 0755 "$VAULTS_DIR"
+	{
+		echo "$MARKER — vault $CB_VAULT_ID (no secrets here)"
+		local name
+		for name in "${VAULT_SETTINGS[@]}"; do
+			printf '%s=%q\n' "$name" "${!name}"
+		done
+	} >"$VAULTS_DIR/$CB_VAULT_ID"
+	chmod 0644 "$VAULTS_DIR/$CB_VAULT_ID"
+}
+
+# vault_name ID — the name of vault ID; the selected vault stays selected.
+vault_name() {
+	(
+		# shellcheck disable=SC1090
+		. "$VAULTS_DIR/$1"
+		printf '%s' "$CB_VAULT_NAME"
+	)
+}
+
+# vault_names — the names of all vaults, for messages.
+vault_names() {
+	local id text=""
+	for id in $(vault_ids); do
+		text+="${text:+, }'$(vault_name "$id")'"
+	done
+	printf '%s' "${text:-none}"
+}
+
+# vault_identity ID — what makes vault ID the same vault as the keys of a
+# transfer block: cloud service, folder in the cloud and check code.
+vault_identity() {
+	(
+		# shellcheck disable=SC1090
+		. "$VAULTS_DIR/$1"
+		printf '%s|%s|%s' "$CB_SERVICE" "$(normalise_path "$CB_VAULT_PATH")" "$CB_FINGERPRINT"
+	)
+}
+
+# The folder and the service of the selected vault.
+vault_dir() { printf '%s/%s' "$CB_MOUNT_DIR" "$CB_VAULT_NAME"; }
+vault_unit() { printf '%s%s.service' "$VAULT_UNIT_PREFIX" "$CB_VAULT_ID"; }
+
+# valid_vault_name NAME — the name becomes a folder in CB_MOUNT_DIR, a folder
+# of the video players' share and part of the vault's service file. So: not
+# empty, not too long, not hidden (a leading dot), no spaces around it, no
+# control characters, no "/" (a folder in a folder), and none of the
+# characters that systemd reads differently in quotes (VAULT_NAME_FORBIDDEN).
+valid_vault_name() {
+	local name="$1" i
+	[[ -n "$name" && ${#name} -le $VAULT_NAME_MAX ]] || return 1
+	[[ "$name" != [.\ ]* && "$name" != *" " ]] || return 1
+	[[ ! "$name" =~ [[:cntrl:]] ]] || return 1
+	for ((i = 0; i < ${#VAULT_NAME_FORBIDDEN}; i++)); do
+		[[ "$name" != *"${VAULT_NAME_FORBIDDEN:i:1}"* ]] || return 1
+	done
+}
+
+# vault_name_taken NAME [ID] — true if a vault other than ID is called NAME.
+# Upper and lower case count as the same, as they do on a Mac or Apple TV.
+vault_name_taken() {
+	local wanted="${1,,}" id other
+	for id in $(vault_ids); do
+		[[ "$id" == "${2:-}" ]] && continue
+		other="$(vault_name "$id")"
+		[[ "${other,,}" == "$wanted" ]] && return 0
+	done
+	return 1
+}
+
+# suggested_vault_name — the vault's name in the Windows program; for a block
+# of an older version, or keys typed by hand, the last part of its folder in
+# the cloud.
+suggested_vault_name() {
+	local folder
+	folder="$(normalise_path "$CB_VAULT_PATH")"
+	folder="${folder##*/}"
+	printf '%s' "${CB_VAULT_NAME:-${folder:-$DEFAULT_VAULT_NAME}}"
+}
+
+# choose_vault_name SUGGESTION — asks for the name of the selected vault,
+# which is the name of its folder.
+choose_vault_name() {
+	local suggestion="$1" own=""
+	# A vault being named again (see update_single_vault) has its folder already.
+	if [[ -f "$VAULTS_DIR/$CB_VAULT_ID" ]]; then
+		own="$(vault_name "$CB_VAULT_ID")"
+	fi
+	if ! valid_vault_name "$suggestion" || vault_name_taken "$suggestion" "$CB_VAULT_ID"; then
+		suggestion=""
+	fi
+	while true; do
+		ask CB_VAULT_NAME "Name of the vault (its folder in $CB_MOUNT_DIR)" "$suggestion"
+		if ! valid_vault_name "$CB_VAULT_NAME"; then
+			warn "Please choose another name: at most $VAULT_NAME_MAX characters, no dot or space at the start, none of these: $VAULT_NAME_FORBIDDEN"
+		elif vault_name_taken "$CB_VAULT_NAME" "$CB_VAULT_ID"; then
+			warn "There is a vault called '$CB_VAULT_NAME' already."
+		# Up to CryptBridge 0.8 the folder itself was the vault (mounted):
+		# what is in there then belongs to the vault and is no obstacle.
+		elif [[ "$CB_VAULT_NAME" != "$own" ]] && is_not_mounted "$CB_MOUNT_DIR" && [[ -e "$CB_MOUNT_DIR/$CB_VAULT_NAME" ]]; then
+			warn "$CB_MOUNT_DIR/$CB_VAULT_NAME exists already. Please choose another name."
+		else
+			return 0
+		fi
+		suggestion=""
+	done
+}
+
+# find_vault — prints the number of the vault on this server that the keys
+# just read belong to, if there is one.
+find_vault() {
+	local wanted id
+	wanted="$CB_SERVICE|$(normalise_path "$CB_VAULT_PATH")|$CB_FINGERPRINT"
+	for id in $(vault_ids); do
+		if [[ "$(vault_identity "$id")" == "$wanted" ]]; then
+			echo "$id"
+			return 0
+		fi
+	done
+}
+
+# choose_vaults — the first setup adds a vault. A later one keeps the vaults,
+# checks that their clouds still accept the sign-in, and offers to add a
+# vault or to renew one (with a new transfer block).
+choose_vaults() {
+	step "Vaults"
+	local ids id free
+	ids="$(vault_ids)"
+	if [[ -z "$ids" ]]; then
+		add_vault
+		return
+	fi
+	for id in $ids; do
+		select_vault "$id"
+		if [[ "$CB_VAULT_STATE" == "off" ]]; then
+			info "$CB_VAULT_NAME ($(service_title)): switched off"
+		elif free="$(reach_cloud)"; then
+			ok "$CB_VAULT_NAME: $(service_title) reached${free:+: free $free}"
+		else
+			warn "$CB_VAULT_NAME: $free"
+		fi
+	done
+	if confirm "Add a vault, or renew one with a new transfer block?" n; then
+		add_vault
+	fi
+}
+
+# add_vault — reads the keys of one vault, checks them and adds the vault. If
+# the vault is on this server already, it is renewed instead: it takes the
+# new sign-in (after signing in again in the Windows program, say). The
+# keys wait in NEW_RCLONE_CONF until they are checked, so a wrong block
+# changes no vault. The caller writes the service and starts it.
+add_vault() {
+	get_keys
+	RCLONE_CONF="$NEW_RCLONE_CONF"
+	configure_remotes
+	verify_keys
+	compute_fingerprint
+	local id
+	id="$(find_vault)"
+	if [[ -n "$id" ]]; then
+		renew_vault "$id"
+		return
+	fi
+	CB_VAULT_ID="$(next_vault_id)"
+	choose_vault_name "$(suggested_vault_name)"
+	CB_VAULT_STATE="on"
+	RCLONE_CONF="$RCLONE_DIR/$CB_VAULT_ID.conf"
+	as_user mv -f "$NEW_RCLONE_CONF" "$RCLONE_CONF"
+	save_vault
+	ok "Vault '$CB_VAULT_NAME' added: $(vault_dir)"
+}
+
+# renew_vault ID — vault ID takes the keys just read. Its mount stops first:
+# still running, it would write its old sign-in back over the new one.
+renew_vault() {
+	select_vault "$1"
+	systemctl stop "$(vault_unit)" >>"$LOG_FILE" 2>&1 || true
+	as_user mv -f "$NEW_RCLONE_CONF" "$RCLONE_CONF"
+	ok "Vault '$CB_VAULT_NAME' is on this server already: it takes the new sign-in and keys"
+}
+
+# pending_uploads ID — how many files of vault ID wait in its cache for their
+# upload. rclone marks them "Dirty" in its notes on the cache, and the notes
+# stay while the vault is off (measured with rclone 1.75).
+pending_uploads() {
+	local notes="$CACHE_DIR/$1/vfsMeta"
+	if [[ ! -d "$notes" ]]; then
+		echo 0
+		return
+	fi
+	{ grep -rlE '"Dirty": *true' "$notes" 2>/dev/null || true; } | wc -l
+}
+
+# remove_vault_dir — removes the folder of the selected vault, which is empty
+# once the vault is unmounted. What was put in there by hand stays.
+remove_vault_dir() {
+	local dir
+	dir="$(vault_dir)"
+	[[ -d "$dir" ]] || return 0
+	as_user rmdir "$dir" 2>/dev/null || warn "$dir is not empty, so it stays. The files in there are NOT in the vault."
+}
+
+# select_vault_named NAME — selects the vault called NAME (upper and lower
+# case do not matter), or stops and names the vaults there are.
+select_vault_named() {
+	local wanted="${1,,}" id name
+	[[ -n "$wanted" ]] || die "Which vault? Vaults: $(vault_names). For example:  sudo cryptbridge vault off NAME"
+	for id in $(vault_ids); do
+		name="$(vault_name "$id")"
+		if [[ "${name,,}" == "$wanted" ]]; then
+			select_vault "$id"
+			return 0
+		fi
+	done
+	die "There is no vault called '$1' on this server. Vaults: $(vault_names)"
+}
+
+# require_vaults — the vault commands need a server that the setup has set
+# up, and has updated from the one vault of CryptBridge 0.8.
+require_vaults() {
+	[[ -r "$SETTINGS_FILE" ]] || die "CryptBridge is not set up yet. Run:  sudo bash setup.sh"
+	if [[ -s "$SINGLE_RCLONE_CONF" || -f "$OLD_RCLONE_CONF" ]]; then
+		die "Please run the current setup once first; it updates this server to several vaults:  sudo bash setup.sh"
+	fi
+	load_settings
+	load_user
+}
+
+# list_vaults — "cryptbridge vault": the vaults and their state.
+list_vaults() {
+	load_settings
+	show_vaults
+}
+
+# vault_add — "cryptbridge vault add": adds a vault, or renews one, without
+# running the whole setup and without touching the other vaults.
+vault_add() {
+	require_root vault add
+	require_vaults
+	add_vault
+	write_vault_unit
+	systemctl daemon-reload
+	if [[ "$CB_VAULT_STATE" == "on" ]]; then
+		start_vault || exit 1
+		ok "Video players find it as the folder '$CB_VAULT_NAME' in the share."
+	else
+		info "The vault is switched off. Switch it on with:  sudo cryptbridge vault on \"$CB_VAULT_NAME\""
+	fi
+}
+
+# switch_vault on|off NAME — a switched-off vault is unmounted, and its folder
+# removed, so that video players and the file manager no longer show it.
+# Files waiting for their upload stay in its cache and go up once it is on
+# again. The choice lasts through a reboot and a new setup run.
+switch_vault() {
+	local wanted="$1" name="$2" pending
+	require_root vault "$wanted" "$name"
+	require_vaults
+	select_vault_named "$name"
+	if [[ "$wanted" == "off" ]]; then
+		# What counts is that the vault is unmounted afterwards; a missing
+		# service file (a setup ended early) is no reason to stop.
+		systemctl disable --now "$(vault_unit)" >>"$LOG_FILE" 2>&1 || true
+		is_not_mounted "$(vault_dir)" || die "Could not stop the vault. See: journalctl -u $(vault_unit)"
+		remove_vault_dir
+		CB_VAULT_STATE="off"
+		save_vault
+		ok "Vault '$CB_VAULT_NAME' switched off"
+		pending="$(pending_uploads "$CB_VAULT_ID")"
+		if ((pending > 0)); then
+			info "$pending file(s) still wait for their upload. They go up once the vault is on again."
+		fi
+		return 0
+	fi
+	if [[ "$(vault_state)" == "running" ]]; then
+		ok "Vault '$CB_VAULT_NAME' is on already"
+		return 0
+	fi
+	CB_VAULT_STATE="on"
+	save_vault
+	start_vault || exit 1
+	ok "Vault '$CB_VAULT_NAME' switched on: $(vault_dir)"
+}
+
+# delete_vault NAME — removes a vault from this server only: its service,
+# folder, cache and keys. The files in the cloud are not touched. Files that
+# still wait for their upload would be lost: they are counted, and the vault
+# goes only after an explicit yes.
+delete_vault() {
+	local name="$1" pending
+	require_root vault delete "$name"
+	require_vaults
+	select_vault_named "$name"
+	step "Delete the vault '$CB_VAULT_NAME' from this server"
+	info "Your files in $(service_title) are NOT touched. Deleted here: the keys, the cache and the folder."
+	pending="$(pending_uploads "$CB_VAULT_ID")"
+	if ((pending > 0)); then
+		warn "$pending file(s) of this vault are not uploaded yet. Deleting the vault now loses them."
+		info "Better: switch the vault on (if it is off), wait until they are uploaded, then delete it."
+	fi
+	if ! confirm "Delete the vault '$CB_VAULT_NAME' from this server?" n; then
+		info "Nothing deleted."
+		return 0
+	fi
+	# Guards the "rm -rf" below.
+	[[ "$CB_VAULT_ID" =~ ^[0-9]+$ ]] || die "Unexpected vault number '$CB_VAULT_ID'."
+	systemctl disable --now "$(vault_unit)" >>"$LOG_FILE" 2>&1 || true
+	rm -f "$UNIT_DIR/$(vault_unit)"
+	systemctl daemon-reload
+	remove_vault_dir
+	rm -rf "${CACHE_DIR:?}/$CB_VAULT_ID"
+	rm -f "$RCLONE_DIR/$CB_VAULT_ID.conf" "$VAULTS_DIR/$CB_VAULT_ID"
+	ok "Vault '$CB_VAULT_NAME' deleted from this server"
+}
+
+# ==========================================================================
+# Update from CryptBridge 0.8: one vault, mounted at CB_MOUNT_DIR itself
+# ==========================================================================
+
+# update_single_vault — up to CryptBridge 0.8 the server held one vault: one
+# rclone configuration, the cache directly in CACHE_DIR, and the vault
+# mounted at CB_MOUNT_DIR itself. It becomes vault 1, in a folder of its own
+# in CB_MOUNT_DIR; files waiting for their upload move along with the cache.
+# The vault runs again at the end of this step, whatever the rest of the
+# setup does. The 0.8 configuration goes last: a setup run again after an
+# interruption takes the update up again.
+update_single_vault() {
+	copy_old_rclone_conf # CryptBridge 0.7 kept it elsewhere
+	[[ -s "$SINGLE_RCLONE_CONF" ]] || return 0
+	step "Update: several vaults on this server"
+	RCLONE_CONF="$SINGLE_RCLONE_CONF"
+	read_kept_keys
+	if [[ -z "${CB_FINGERPRINT:-}" ]]; then
+		EXPECTED_FINGERPRINT=""
+		compute_fingerprint
+	fi
+	# Normally vault 1. A setup run again after an interruption finds the
+	# vault it began to update, and keeps its name as the suggestion.
+	CB_VAULT_ID="$(find_vault)"
+	CB_VAULT_NAME=""
+	if [[ -n "$CB_VAULT_ID" ]]; then
+		CB_VAULT_NAME="$(vault_name "$CB_VAULT_ID")"
+	else
+		CB_VAULT_ID="$(next_vault_id)"
+	fi
+	CB_VAULT_STATE="on"
+	info "From now on, every vault has a folder of its own in $CB_MOUNT_DIR, and video players"
+	info "see each vault as a folder of the same share. Your vault in $(service_title) moves into one."
+	choose_vault_name "$(suggested_vault_name)"
+
+	# The cache may only move while rclone is off.
+	systemctl disable --now rclone-webdav.service rclone-mount.service >>"$LOG_FILE" 2>&1 || true
+	wait_for "the vault to be unmounted" 30 is_not_mounted "$CB_MOUNT_DIR"
+	move_single_cache
+	write_private "$RCLONE_DIR/$CB_VAULT_ID.conf" <"$SINGLE_RCLONE_CONF"
+	RCLONE_CONF="$RCLONE_DIR/$CB_VAULT_ID.conf"
+	save_vault
+	rm -f "$OLD_MOUNT_UNIT"
+	install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$CB_MOUNT_DIR"
+	write_webdav_unit
+	write_vault_unit
+	systemctl daemon-reload
+	start_vault || true # explained already; the setup goes on
+	systemctl enable --now rclone-webdav.service >>"$LOG_FILE" 2>&1 || warn "WebDAV did not start. See: journalctl -u rclone-webdav"
+	rm -f "$SINGLE_RCLONE_CONF"
+	remove_old_rclone_conf
+	save_settings
+	ok "Your vault is now '$CB_VAULT_NAME': $(vault_dir)"
+}
+
+# move_single_cache — the cache of the one vault into the folder of vault 1.
+# The vault's remote keeps its name (cbvault), so rclone finds its files
+# waiting for upload there. Moved as the desktop user, who owns the cache.
+move_single_cache() {
+	local part target="$CACHE_DIR/$CB_VAULT_ID"
+	as_user mkdir -p "$target"
+	for part in vfs vfsMeta; do
+		[[ -d "$CACHE_DIR/$part" ]] || continue
+		if [[ -e "$target/$part" ]]; then
+			warn "$CACHE_DIR/$part was not moved: $target/$part exists already."
+			continue
+		fi
+		as_user mv "$CACHE_DIR/$part" "$target/$part"
+	done
+}
+
+# ==========================================================================
 # Cache, WebDAV account, address
 # ==========================================================================
 
 choose_cache() {
 	step "Cache on this server"
 	install -d -m 0750 -o "$CB_USER" -g "$CB_GROUP" "$CACHE_DIR"
-	local free_gb default_max
+	local free_gb vaults default_max
 	free_gb="$(df -BG --output=avail "$CACHE_DIR" | tail -n1 | tr -dc '0-9')"
-	default_max=$((free_gb / 2))
+	((free_gb / 2 >= 2)) || die "Only ${free_gb} GB free on the disk — not enough for the cache."
+	# Each vault caches up to the limit; half of the free space is shared out.
+	# Adding a vault later leaves the limit alone (it would restart all vaults):
+	# the space kept free below protects the disk in any case.
+	vaults="$(vault_ids | wc -l)"
+	((vaults > 0)) || vaults=1
+	default_max=$((free_gb / 2 / vaults))
 	((default_max > DEFAULT_CACHE_MAX_GB)) && default_max=$DEFAULT_CACHE_MAX_GB
-	((default_max < 2)) && die "Only ${free_gb} GB free on the disk — not enough for the cache."
+	((default_max < 1)) && default_max=1
 	info "Free disk space: ${free_gb} GB. Films are cached while they play; the cache is cleaned automatically."
-	info "Files you copy into the vault folder are kept here until they are uploaded."
-	ask CB_CACHE_MAX "Cache size (soft limit)" "${CB_CACHE_MAX:-${default_max}G}"
-	ask CB_CACHE_MIN_FREE "Always keep this much disk space free" "${CB_CACHE_MIN_FREE:-5G}"
+	info "Every vault has a cache of its own. Files you copy into a vault folder are kept here until they are uploaded."
+	ask CB_CACHE_MAX "Cache size per vault (soft limit)" "${CB_CACHE_MAX:-${default_max}G}"
+	ask CB_CACHE_MIN_FREE "Always keep this much disk space free (all vaults together)" "${CB_CACHE_MIN_FREE:-5G}"
 	[[ "$CB_CACHE_MAX" =~ ^[1-9][0-9]*[MGT]$ && "$CB_CACHE_MIN_FREE" =~ ^[1-9][0-9]*[MGT]$ ]] ||
 		die "Sizes must look like 20G or 500M."
 }
@@ -982,39 +1450,52 @@ choose_address() {
 # Services
 # ==========================================================================
 
+# write_units — the WebDAV service and the service of every vault. The
+# folder of the vaults itself is never mounted, so root may create it even
+# while the vaults in it are mounted.
 write_units() {
 	step "Services"
-	# On a repeated setup the vault is still mounted, and root may not even
-	# look into the user's FUSE mount: only create the folder when it is free.
-	if ! is_mounted; then
-		install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$CB_MOUNT_DIR"
-	fi
+	install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$CB_MOUNT_DIR"
+	write_webdav_unit
+	local id
+	for id in $(vault_ids); do
+		select_vault "$id"
+		write_vault_unit
+	done
+	systemctl daemon-reload
+	ok "Services written: rclone-webdav.service and one ${VAULT_UNIT_PREFIX}NUMBER.service per vault"
+}
 
-	cat >"$MOUNT_UNIT" <<EOF
+# write_vault_unit — the mount service of the selected vault. Its folder is
+# written in quotes, as the name may hold spaces; valid_vault_name keeps out
+# the characters that systemd reads differently in quotes.
+write_vault_unit() {
+	local dir
+	dir="$(vault_dir)"
+	cat >"$UNIT_DIR/$(vault_unit)" <<EOF
 $MARKER
 [Unit]
-Description=CryptBridge: encrypted vault in $(service_title) at $CB_MOUNT_DIR
+Description=CryptBridge: vault "$CB_VAULT_NAME" in $(service_title)
 Documentation=https://github.com/burnersen/CryptBridge
 Wants=network-online.target
 After=network-online.target
-# WebDAV stops together with the mount (BindsTo there). Upholds brings it back
-# once the mount runs again — without it, WebDAV stayed off after rclone had
-# crashed and was restarted (measured).
-Upholds=rclone-webdav.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=notify
 User=$CB_USER
 Group=$CB_GROUP
-# A crash leaves a dead mount behind ("Transport endpoint is not connected"); clear it first.
-ExecStartPre=/bin/sh -c 'if findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null; then /usr/bin/fusermount3 -uz "$CB_MOUNT_DIR"; fi'
+# A crash leaves a dead mount behind ("Transport endpoint is not connected");
+# clear it first. "-": usually there is nothing to clear.
+ExecStartPre=-/usr/bin/fusermount3 -uz "$dir"
+# A switched-off vault has no folder, so that players do not show it.
+ExecStartPre=/usr/bin/mkdir -p "$dir"
 # The check file stays in the vault for the key check, but neither the folder
 # nor WebDAV (which serves the folder) shows it: people took it for clutter.
-ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: $CB_MOUNT_DIR \\
+ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: "$dir" \\
   --exclude /$CHECK_FILE \\
   --config $RCLONE_CONF \\
-  --cache-dir $CACHE_DIR \\
+  --cache-dir $CACHE_DIR/$CB_VAULT_ID \\
   --vfs-cache-mode $CACHE_MODE \\
   --vfs-cache-max-size $CB_CACHE_MAX \\
   --vfs-cache-min-free-space $CB_CACHE_MIN_FREE \\
@@ -1026,7 +1507,7 @@ ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: $CB_MOUNT_DIR \\
   --poll-interval $POLL_INTERVAL \\
   --umask 022 \\
   --log-level INFO
-ExecStop=/usr/bin/fusermount3 -uz $CB_MOUNT_DIR
+ExecStop=/usr/bin/fusermount3 -uz "$dir"
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60
@@ -1037,26 +1518,30 @@ TimeoutStopSec=60
 [Install]
 WantedBy=multi-user.target
 EOF
+	chmod 0644 "$UNIT_DIR/$(vault_unit)"
+}
 
+# write_webdav_unit — the WebDAV server for the video players. It serves the
+# folder of the vaults, so every vault is a folder of the one share. A
+# switched-off vault has no folder there, and a vault whose mount failed is
+# left out of the list (measured): the other vaults stay available.
+write_webdav_unit() {
 	cat >"$WEBDAV_UNIT" <<EOF
 $MARKER
 [Unit]
-Description=CryptBridge: WebDAV for video players (read-only)
+Description=CryptBridge: WebDAV for video players (read-only), one folder per vault
 Documentation=https://github.com/burnersen/CryptBridge
-# Never serve the empty mount point: stop together with the mount.
-BindsTo=rclone-mount.service
-After=rclone-mount.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=$CB_USER
 Group=$CB_GROUP
-ExecStartPre=/usr/bin/timeout 30 /bin/sh -c 'until findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null; do sleep 1; done'
-# Serves the mounted folder: one cache, and new files are visible at once.
-# The mount below already caches, so no second cache here.
-ExecStart=$RCLONE_BIN serve webdav $CB_MOUNT_DIR \\
-  --config $RCLONE_CONF \\
+# Serves the mounted folders: one cache, and new files are visible at once.
+# The mounts already cache, so no second cache here. A plain folder needs no
+# rclone configuration ("": none, not even one of the user's own).
+ExecStart=$RCLONE_BIN serve webdav "$CB_MOUNT_DIR" \\
+  --config "" \\
   --addr $WEBDAV_ADDR \\
   --htpasswd $HTPASSWD \\
   --read-only \\
@@ -1074,9 +1559,7 @@ LockPersonality=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-	chmod 0644 "$MOUNT_UNIT" "$WEBDAV_UNIT"
-	systemctl daemon-reload
-	ok "Services written: rclone-mount.service, rclone-webdav.service"
+	chmod 0644 "$WEBDAV_UNIT"
 }
 
 write_caddyfile() {
@@ -1109,9 +1592,14 @@ start_services() {
 	# restart, not "enable --now": on a repeated setup the services already
 	# run and must pick up the new settings. Unfinished uploads stay in the
 	# cache and continue after the restart.
-	systemctl enable rclone-mount.service rclone-webdav.service >>"$LOG_FILE" 2>&1
-	systemctl restart rclone-mount.service >>"$LOG_FILE" 2>&1 || die "The vault could not be mounted. See: journalctl -u rclone-mount"
-	wait_for "vault mounted at $CB_MOUNT_DIR" 60 is_mounted
+	local id
+	for id in $(vault_ids); do
+		select_vault "$id"
+		if [[ "$CB_VAULT_STATE" == "on" ]]; then
+			start_vault || true # explained already; the other vaults still start
+		fi
+	done
+	systemctl enable rclone-webdav.service >>"$LOG_FILE" 2>&1
 	systemctl restart rclone-webdav.service >>"$LOG_FILE" 2>&1 || die "WebDAV did not start. See: journalctl -u rclone-webdav"
 	wait_for "WebDAV answering" 30 webdav_answers
 	if [[ "$CB_STREAMING" == "off" ]]; then
@@ -1138,11 +1626,31 @@ start_services() {
 	ok "Caddy configured for https://$CB_ADDRESS"
 }
 
-# is_mounted asks the kernel's mount table instead of looking into the
+# start_vault — (re)starts the selected vault and waits for its folder. If it
+# does not come up, says so and fails, but does not stop the setup: one vault
+# must not keep the others from starting.
+start_vault() {
+	local unit dir
+	unit="$(vault_unit)"
+	dir="$(vault_dir)"
+	systemctl enable "$unit" >>"$LOG_FILE" 2>&1
+	if systemctl restart "$unit" >>"$LOG_FILE" 2>&1 &&
+		wait_until "vault '$CB_VAULT_NAME' mounted at $dir" 60 is_mounted "$dir"; then
+		return 0
+	fi
+	warn "Vault '$CB_VAULT_NAME' did not start. See: journalctl -u ${unit%.service}"
+	return 1
+}
+
+# is_mounted DIR asks the kernel's mount table instead of looking into the
 # folder: a FUSE mount of the desktop user refuses everybody else — even
 # root — so "mountpoint" run as root would wrongly say "not mounted".
 is_mounted() {
-	findmnt -rn --mountpoint "$CB_MOUNT_DIR" >/dev/null 2>&1
+	findmnt -rn --mountpoint "$1" >/dev/null 2>&1
+}
+
+is_not_mounted() {
+	! is_mounted "$1"
 }
 
 webdav_answers() {
@@ -1151,8 +1659,9 @@ webdav_answers() {
 	[[ "$code" == "401" ]] # answering, and refusing without password
 }
 
-# wait_for "what" SECONDS command... — shows progress instead of hanging silently
-wait_for() {
+# wait_until "what" SECONDS command... — waits until command succeeds and
+# shows progress instead of hanging silently; fails after SECONDS.
+wait_until() {
 	local what="$1" seconds="$2" i
 	shift 2
 	printf '    waiting for %s ' "$what"
@@ -1166,7 +1675,12 @@ wait_for() {
 		sleep 1
 	done
 	printf '\n'
-	die "Timed out waiting for: $what"
+	return 1
+}
+
+# wait_for "what" SECONDS command... — wait_until, but a timeout stops the setup.
+wait_for() {
+	wait_until "$@" || die "Timed out waiting for: $1"
 }
 
 # explain_certificate_problem reads Caddy's log and says in plain words why
@@ -1336,9 +1850,9 @@ setup_desktop() {
 	install -d -m 0755 -o "$CB_USER" -g "$CB_GROUP" "$desktop"
 
 	write_launcher "$desktop/cryptbridge-vault.desktop" "CryptBridge Vault" \
-		"Your encrypted vault in $(service_title)" "xdg-open $CB_MOUNT_DIR" "drive-harddisk-encrypted" false
+		"Your encrypted vaults, one folder each" "xdg-open $CB_MOUNT_DIR" "drive-harddisk-encrypted" false
 	write_launcher "$desktop/cryptbridge.desktop" "CryptBridge" \
-		"Status, streaming settings and restart of CryptBridge" "$SELF_INSTALLED menu" "security-high" true
+		"Status, vaults, streaming settings and restart of CryptBridge" "$SELF_INSTALLED menu" "security-high" true
 
 	# XFCE runs a desktop launcher without asking only if it is marked as
 	# trusted with the SHA-256 of its content (XFCE 4.18 and later).
@@ -1418,7 +1932,7 @@ show_streaming_settings() {
 	printf '    Protocol:  WebDAV (HTTPS)\n'
 	printf '    Address:   %s\n' "${CB_ADDRESS:-?}"
 	printf '    Port:      443\n'
-	printf '    Path:      /\n'
+	printf '    Path:      /   (every vault is a folder there)\n'
 	printf '    User:      %s\n' "${CB_WEBDAV_USER:-?}"
 	printf '    Password:  the streaming password you chose during setup\n'
 	printf '    Infuse (Apple TV / iPhone): Settings -> Shares -> Add share -> WebDAV.\n'
@@ -1432,7 +1946,8 @@ show_status() {
 	load_settings
 	local unit state
 	printf '\n%sCryptBridge %s%s\n' "$BOLD" "$CRYPTBRIDGE_VERSION" "$RESET"
-	for unit in rclone-mount rclone-webdav caddy fail2ban; do
+	show_vaults
+	for unit in rclone-webdav caddy fail2ban; do
 		if [[ "$unit" == "caddy" && "$CB_STREAMING" == "off" ]]; then
 			info "caddy: switched off (streaming is off, ports 80 and 443 are free)"
 			continue
@@ -1440,17 +1955,53 @@ show_status() {
 		state="$(systemctl is-active "$unit" 2>/dev/null || true)"
 		if [[ "$state" == "active" ]]; then ok "$unit: running"; else warn "$unit: $state"; fi
 	done
-	if [[ -n "${CB_MOUNT_DIR:-}" ]] && is_mounted; then
-		ok "Vault folder: ${CB_MOUNT_DIR}"
-	else
-		warn "Vault folder ${CB_MOUNT_DIR:-?} is not mounted"
+	info "Folder of the vaults: ${CB_MOUNT_DIR:-?}"
+}
+
+# show_vaults — one line per vault: its name, cloud, state and check code.
+show_vaults() {
+	local ids id
+	ids="$(vault_ids)"
+	if [[ -z "$ids" ]]; then
+		if [[ -f "$OLD_MOUNT_UNIT" ]]; then
+			warn "This server still has the one vault of CryptBridge 0.8. Run the setup once to update it:  sudo bash setup.sh"
+		else
+			warn "No vault on this server yet. Add one with:  sudo cryptbridge vault add"
+		fi
+		return 0
 	fi
-	info "Check code: ${CB_FINGERPRINT:-?}"
+	for id in $ids; do
+		select_vault "$id"
+		case "$(vault_state)" in
+		running) ok "$CB_VAULT_NAME ($(service_title)): running, check code $CB_FINGERPRINT" ;;
+		off) printf '  - %s (%s): switched off\n' "$CB_VAULT_NAME" "$(service_title)" ;;
+		*) warn "$CB_VAULT_NAME ($(service_title)): not running. See: journalctl -u $(vault_unit)" ;;
+		esac
+	done
+}
+
+# vault_state — "off" (switched off), "running" (mounted) or "failed" for
+# the selected vault.
+vault_state() {
+	if [[ "$CB_VAULT_STATE" == "off" ]]; then
+		echo off
+	elif [[ "$(systemctl is-active "$(vault_unit)" 2>/dev/null || true)" == "active" ]] && is_mounted "$(vault_dir)"; then
+		echo running
+	else
+		echo failed
+	fi
 }
 
 restart_services() {
 	load_settings
-	local units=(rclone-mount.service rclone-webdav.service)
+	local units=() id
+	for id in $(vault_ids); do
+		select_vault "$id"
+		if [[ "$CB_VAULT_STATE" == "on" ]]; then
+			units+=("$(vault_unit)")
+		fi
+	done
+	units+=(rclone-webdav.service)
 	# Switched off, Caddy stays off: it would take ports 80 and 443 back.
 	[[ "$CB_STREAMING" == "off" ]] || units+=(caddy.service)
 	systemctl restart "${units[@]}"
@@ -1505,10 +2056,11 @@ menu() {
 		printf '\n'
 		info "1) Streaming settings"
 		info "2) $streaming_item"
-		info "3) Restart CryptBridge"
-		info "4) Recent log of the vault"
-		info "5) Run the setup again (change keys or settings)"
-		info "6) Uninstall"
+		info "3) Vaults: add, switch on/off, delete"
+		info "4) Restart CryptBridge"
+		info "5) Recent log of the vaults"
+		info "6) Run the setup again (change settings)"
+		info "7) Uninstall"
 		info "0) Close"
 		ask choice "Choice" "0"
 		case "$choice" in
@@ -1516,14 +2068,89 @@ menu() {
 		# "|| true": a refusal (a port in use) is explained already and must
 		# not end the menu.
 		2) sudo "$SELF_INSTALLED" streaming "$next_streaming" || true ;;
-		3) sudo "$SELF_INSTALLED" restart ;;
-		4) journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager || sudo journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager ;;
-		5) sudo "$SELF_INSTALLED" setup ;;
-		6) sudo "$SELF_INSTALLED" uninstall ;;
+		3)
+			vaults_menu
+			continue
+			;;
+		4) sudo "$SELF_INSTALLED" restart ;;
+		5) journalctl -u "${VAULT_UNIT_PREFIX}*" -u rclone-webdav -n 40 --no-pager || sudo journalctl -u "${VAULT_UNIT_PREFIX}*" -u rclone-webdav -n 40 --no-pager ;;
+		6) sudo "$SELF_INSTALLED" setup ;;
+		7) sudo "$SELF_INSTALLED" uninstall ;;
 		0 | "") return ;;
 		esac
-		read -r -p "    Press Enter …" _ <"$TTY"
+		press_enter
 	done
+}
+
+# vaults_menu — the list of vaults; choosing one offers what can be done
+# with it. Every action runs as a command of its own (with sudo), so a
+# refusal ends that command, not the menu.
+vaults_menu() {
+	local choice ids i
+	while true; do
+		mapfile -t ids < <(vault_ids)
+		printf '\n%sVaults%s (one folder each in %s)\n' "$BOLD" "$RESET" "${CB_MOUNT_DIR:-?}"
+		for i in "${!ids[@]}"; do
+			select_vault "${ids[i]}"
+			info "$((i + 1))) $CB_VAULT_NAME ($(service_title)): $(vault_state_text)"
+		done
+		info "a) Add a vault (paste a transfer block from the Windows program)"
+		info "0) Back"
+		ask choice "Choice" "0"
+		case "$choice" in
+		0 | "") return ;;
+		a | A)
+			sudo "$SELF_INSTALLED" vault add || true
+			press_enter
+			;;
+		*)
+			if [[ "$choice" =~ ^[1-9][0-9]*$ ]] && ((choice <= ${#ids[@]})); then
+				select_vault "${ids[choice - 1]}"
+				vault_menu
+			else
+				warn "Please choose a number from the list, a or 0."
+			fi
+			;;
+		esac
+	done
+}
+
+# vault_menu — what can be done with the selected vault.
+vault_menu() {
+	local choice switch_item next_state
+	if [[ "$CB_VAULT_STATE" == "off" ]]; then
+		switch_item="Switch on" next_state="on"
+	else
+		switch_item="Switch off (video players and the file manager no longer show it)" next_state="off"
+	fi
+	printf '\n%s%s%s (%s, check code %s)\n' "$BOLD" "$CB_VAULT_NAME" "$RESET" "$(service_title)" "$CB_FINGERPRINT"
+	info "1) $switch_item"
+	info "2) Delete from this server (your files in the cloud stay)"
+	info "0) Back"
+	ask choice "Choice" "0"
+	case "$choice" in
+	1)
+		sudo "$SELF_INSTALLED" vault "$next_state" "$CB_VAULT_NAME" || true
+		press_enter
+		;;
+	2)
+		sudo "$SELF_INSTALLED" vault delete "$CB_VAULT_NAME" || true
+		press_enter
+		;;
+	esac
+}
+
+# vault_state_text — the state of the selected vault in words.
+vault_state_text() {
+	case "$(vault_state)" in
+	running) echo "running" ;;
+	off) echo "switched off" ;;
+	*) echo "not running" ;;
+	esac
+}
+
+press_enter() {
+	read -r -p "    Press Enter …" _ <"$TTY"
 }
 
 uninstall() {
@@ -1532,8 +2159,17 @@ uninstall() {
 	step "Uninstall CryptBridge"
 	info "Your files in the cloud are NOT touched."
 	confirm "Remove the CryptBridge services from this server?" n || exit 0
-	systemctl disable --now rclone-webdav.service rclone-mount.service >>"$LOG_FILE" 2>&1 || true
-	rm -f "$MOUNT_UNIT" "$WEBDAV_UNIT" "$F2B_FILTER" "$F2B_JAIL"
+	systemctl disable --now rclone-webdav.service >>"$LOG_FILE" 2>&1 || true
+	local id
+	for id in $(vault_ids); do
+		select_vault "$id"
+		systemctl disable --now "$(vault_unit)" >>"$LOG_FILE" 2>&1 || true
+		rm -f "$UNIT_DIR/$(vault_unit)"
+		rmdir "$(vault_dir)" 2>/dev/null || true # empty once unmounted
+	done
+	# The one vault of CryptBridge 0.8, if the setup never updated it.
+	systemctl disable --now rclone-mount.service >>"$LOG_FILE" 2>&1 || true
+	rm -f "$OLD_MOUNT_UNIT" "$WEBDAV_UNIT" "$F2B_FILTER" "$F2B_JAIL"
 	systemctl daemon-reload
 	systemctl reload-or-restart fail2ban >>"$LOG_FILE" 2>&1 || true
 	if [[ -f "$CADDYFILE.before-cryptbridge" ]]; then
@@ -1563,8 +2199,9 @@ uninstall() {
 
 summary() {
 	printf '\n%s%s CryptBridge is ready %s\n' "$BOLD" "$GREEN" "$RESET"
-	info "Vault folder on this server: $CB_MOUNT_DIR (also on the desktop: 'CryptBridge Vault')"
-	info "Check code: $CB_FINGERPRINT — must be the same in the Windows program."
+	info "Your vaults, one folder each in $CB_MOUNT_DIR (on the desktop: 'CryptBridge Vault'):"
+	show_vaults
+	info "The check code of each vault must be the same as in the Windows program."
 	show_streaming_settings
 	if ((HTTPS_POSSIBLE == 0)); then
 		printf '\n'
@@ -1576,7 +2213,8 @@ summary() {
 		warn "point it to this server, then run:  sudo cryptbridge setup"
 	fi
 	printf '\n'
-	info "Later: run 'cryptbridge' (or the 'CryptBridge' icon) for status, restart and settings."
+	info "Later: run 'cryptbridge' (or the 'CryptBridge' icon) for status, vaults, restart and settings."
+	info "Another vault: create its transfer block in the Windows program, then run:  sudo cryptbridge vault add"
 	info "Moving to a new server: run this setup there, then point your host name to the new server."
 }
 
@@ -1596,15 +2234,12 @@ setup() {
 	choose_user
 	install_packages
 	install_rclone
-	get_keys
-	configure_remotes
-	verify_keys
-	compute_fingerprint
+	update_single_vault
+	choose_vaults
 	choose_cache
 	choose_webdav_account
 	choose_address
 	write_units
-	remove_old_rclone_conf # the services now use the new one
 	start_services
 	setup_firewall
 	check_https
@@ -1628,13 +2263,22 @@ main() {
 		esac
 		;;
 	infuse) show_streaming_settings ;; # the name of "streaming" up to CryptBridge 0.5
+	vault)
+		case "${2:-}" in
+		"" | list) list_vaults ;;
+		add) vault_add ;;
+		on | off) switch_vault "$2" "${3:-}" ;;
+		delete) delete_vault "${3:-}" ;;
+		*) die "Unknown choice '$2'. Use: cryptbridge vault (lists them), or: sudo cryptbridge vault add | on NAME | off NAME | delete NAME" ;;
+		esac
+		;;
 	restart)
 		require_root restart
 		restart_services
 		;;
 	uninstall) uninstall ;;
 	version) echo "$CRYPTBRIDGE_VERSION" ;;
-	*) die "Unknown command '$1'. Use: setup, menu, status, streaming [on|off], restart, uninstall, version" ;;
+	*) die "Unknown command '$1'. Use: setup, menu, status, vault [add|on|off|delete], streaming [on|off], restart, uninstall, version" ;;
 	esac
 }
 

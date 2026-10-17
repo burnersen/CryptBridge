@@ -43,7 +43,7 @@ them, the files are useless to anyone: to your cloud provider, to a thief, and t
   your home network, for example for video players such as Infuse or Kodi. See
   [LAN access](#lan-access-optional).
 - **Your own streaming server (optional, for advanced users).** A setup script turns a rented Linux
-  server into a streaming server for your vault, reachable from anywhere over a secure connection.
+  server into a streaming server for your vaults, reachable from anywhere over a secure connection.
   See [Linux server](#linux-server).
 - **Free and open source:** no ads, no tracking, no CryptBridge account.
 
@@ -160,7 +160,7 @@ and read this file. The Windows program looks for it when you add the vault and 
 drive appears, the Linux setup when it sets up the server. The file contains just two lines of text
 that say what it is for.
 
-You do not see it on the drives, in the LAN access or in the server's vault folder, but it stays in the
+You do not see it on the drives, in the LAN access or in the server's vault folders, but it stays in the
 vault. You may still meet it where the vault is opened another way, for example with plain rclone.
 
 **Please keep it.** Deleting it does not harm your files. The key test still works without it, using
@@ -349,9 +349,9 @@ Request the app **now, while everything works**: pCloud has to approve it, which
    new sign-in. Connected pCloud drives are disconnected for the sign-in and connected again afterwards.
    The page then says *… through your own app*.
 5. **Linux server** (not urgent: its sign-in keeps working until pCloud blocks rclone's shared access
-   again): create a new transfer block on the page of the vault, run the setup on the server again (with
-   the current `setup.sh`, see [Setup](#setup)), answer **n** to *Keep the cloud sign-in and vault keys
-   from the last setup?* and paste the block.
+   again): create a new transfer block on the page of the vault, run `sudo cryptbridge vault add` on the
+   server and paste the block. The vault on the server takes the new sign-in. (Server still on
+   CryptBridge 0.8 or older: run the current `setup.sh` once first, see [Setup](#setup).)
 
 Client ID and secret are stored encrypted with your Windows account like the rest of the settings. They
 are used only for signing in and are not part of the transfer block: the server needs only the sign-in.
@@ -432,10 +432,10 @@ The VPN has to give your devices an address of your home network:
 ## Linux server
 
 *Optional, for advanced users.* Want to watch your films anywhere, without your PC at home running? Rent
-a small Linux server (a VPS) and let one setup script turn it into a streaming server for your vault in
-pCloud, Google Drive, OneDrive or Dropbox. Your video player, for example **Infuse** on Apple TV, iPhone
-or iPad, then plays straight from it over a secure connection (HTTPS). On the server itself, the vault is
-the folder `~/CryptBridge`.
+a small Linux server (a VPS) and let one setup script turn it into a streaming server for your vaults in
+pCloud, Google Drive, OneDrive or Dropbox, as many as you like and in different clouds. Your video
+player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from it over a secure
+connection (HTTPS). On the server itself, every vault is a folder in `~/CryptBridge`.
 
 Tested on **Ubuntu 26.04 with an XFCE desktop**, on a server that already had its own firewall rules,
 fail2ban jails and third-party package sources, with vaults in all four clouds. Made for Ubuntu 24.04 and Debian 12 and 13 as well (not
@@ -455,8 +455,8 @@ tested there yet), with or without a desktop.
 - **Ports 80 and 443** must be reachable, also in your provider's firewall if it has one, and free: no
   other web server (such as nginx or Apache for a website) may use them. The setup checks this at the
   start, names the program and offers to stop it. If you keep it, everything else is set up without HTTPS.
-- A **transfer block** of your vault from the Windows program (*Vaults tab > the page of the vault >
-  Linux server*), or its keys at hand.
+- A **transfer block** of each vault you want on the server, from the Windows program (*Vaults tab > the
+  page of the vault > Linux server*), or its keys at hand.
 
 ### Setup
 
@@ -471,20 +471,40 @@ The setup asks a few questions and does everything else. When it asks for the ke
 **transfer block** and type its code (or use **Copy code** and paste it). A mistyped code can be typed
 again; the block stays. Block and code belong together: each new block gets a new code. At the end the
 setup shows a **check code** (for example `7F3A-91C2`): it must be the same as on the vault's page in the
-Windows program. If the codes match, the keys match.
+Windows program. If the codes match, the keys match. The setup then asks for the vault's name: that is
+the name of its folder, and it suggests the name from the Windows program.
+
+**More vaults.** Every vault is a folder in `~/CryptBridge`, and your video player sees each one as a
+folder of the same share. To add one, create its transfer block in the Windows program and run
+`sudo cryptbridge vault add` on the server (or choose *Vaults > Add a vault* in the `cryptbridge` menu).
+A block of a vault that is on the server already renews it, for example after you signed in again; it
+is not added twice.
+
+**Server set up with CryptBridge 0.8?** Download `setup.sh` again (the two lines above) and run it. Your
+vault moves into a folder of its own in `~/CryptBridge` (you choose its name), and files still waiting
+for their upload move along. In your video player the films are then one folder deeper: open the share
+again (Infuse may need to update its library).
 
 **Server set up with CryptBridge 0.7 or older?** Download `setup.sh` again (the two lines above) before
 you paste a transfer block of CryptBridge 0.8 or newer: the old setup only knows the old blocks and would
 report a wrong code. The new setup takes over everything of the old one.
 
-Afterwards, the command `cryptbridge` (or the *CryptBridge* desktop icon) shows the status and the
-settings for your player, restarts the services or runs the setup again. `cryptbridge streaming` shows
-the settings for your player directly. `sudo cryptbridge uninstall` removes everything except your files
-in the cloud.
+Afterwards, the command `cryptbridge` (or the *CryptBridge* desktop icon) shows the status of every vault
+and the settings for your player, switches vaults on or off, adds or deletes them, restarts the services
+or runs the setup again. `cryptbridge vault` lists the vaults; `sudo cryptbridge vault on NAME`,
+`off NAME` and `delete NAME` do the same as the menu (put a name with spaces in quotes).
+`cryptbridge streaming` shows the settings for your player directly. `sudo cryptbridge uninstall` removes
+everything except your files in the cloud.
+
+- **Switched off,** a vault is unmounted and its folder disappears, for the video players too. It stays
+  off, also after a restart of the server, until you switch it on again.
+- **Deleting** a vault removes it from the server only: its keys, its cache and its folder. Your files
+  in the cloud are not touched. If files of the vault still wait for their upload, CryptBridge says how
+  many and asks before they would be lost.
 
 **Need ports 80 and 443 for something else for a while,** for example a test website with nginx or
 Apache? Choose *Switch streaming off* in the `cryptbridge` menu (or run `sudo cryptbridge streaming off`).
-The vault folder keeps working, only video players cannot connect. Streaming stays off, also after a
+The vault folders keep working, only video players cannot connect. Streaming stays off, also after a
 restart of the server, until you choose *Switch streaming on* (or run `sudo cryptbridge streaming on`).
 Stop the other web server first: if it still uses the ports, CryptBridge names it and waits.
 
@@ -494,10 +514,10 @@ Stop the other web server first: if it still uses the ports, CryptBridge names i
 | Step | What happens |
 |---|---|
 | Packages | rclone (checksum verified), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
-| Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour) |
+| Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, one file per vault, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour) |
 | Check | keys tested against your vault; the check code must equal the one in the Windows program |
-| Vault | mounted at `~/CryptBridge` for your desktop user (`rclone-mount.service`) |
-| Streaming | WebDAV for your video player, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, both services come back by themselves |
+| Vaults | each mounted at `~/CryptBridge/NAME` for your desktop user, with a service (`rclone-mount-1.service`, `-2` ...) and a cache of its own, so one vault can be off or fail while the others keep running |
+| Streaming | WebDAV for your video player serves `~/CryptBridge`, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, the service comes back by itself |
 | Firewall | allows 80/443 in ufw (also when ufw stays off, so they are open once it is switched on later), and keeps your SSH and remote-desktop ports open before switching ufw on |
 | Protection | the streaming access is read-only, so a guessed password cannot delete anything; repeated wrong passwords are blocked by fail2ban |
 | Desktop | icons *CryptBridge Vault* and *CryptBridge*, a file-manager bookmark, no film thumbnails |
@@ -514,7 +534,7 @@ values:
 | Protocol | WebDAV, HTTPS on |
 | Address | your server's host name |
 | Port | 443 |
-| Path | `/` |
+| Path | `/` (every vault is a folder there) |
 | User / password | the user name and password you chose in the setup |
 
 Tested with **Infuse** on Apple TV, iPhone and iPad: *Settings > Shares > Add share > WebDAV*.
@@ -524,8 +544,9 @@ Tested with **Infuse** on Apple TV, iPhone and iPad: *Settings > Shares > Add sh
 
 ### Moving to a new server
 
-1. Run the setup on the new server (paste a fresh transfer block, or copy `/etc/cryptbridge/` over).
-2. Check that the check code is the same.
+1. Run the setup on the new server and add your vaults (paste fresh transfer blocks, or copy
+   `/etc/cryptbridge/` over before the setup).
+2. Check that the check codes are the same.
 3. Point your host name to the new server. With your own domain your player needs no change at all; with
    a provider host name, enter the new name in the player once.
 4. Uninstall on the old server: `sudo cryptbridge uninstall`.
@@ -536,7 +557,7 @@ Your files stay in the cloud the whole time; the servers only pass them through.
 
 ## Moving your existing files into a vault
 
-Copy them onto the vault's drive (on the server: into `~/CryptBridge`), check that they arrived, then
+Copy them onto the vault's drive (on the server: into the vault's folder in `~/CryptBridge`), check that they arrived, then
 delete the originals. Plan for space: **until you delete an original, the file is in your cloud twice**
 (unlocked and locked). Move in portions that fit into your free space in the cloud, and check whether
 deleted files still count against your storage while they sit in the cloud's trash.
@@ -567,10 +588,11 @@ deleted files still count against your storage while they sit in the cloud's tra
 | A device at home cannot reach the LAN access | *Settings > LAN access* shows the firewall state: allow it there if needed, and set your network to *private* in Windows if CryptBridge says it is public. Use the address shown there; the PC must be awake. |
 | LAN access: "port … is used by another program" | Choose another port (1024 to 65535) for that access and save. The two accesses need different ports. |
 | The video player cannot reach the server | Run `cryptbridge` on the server: it shows which service is not running. Check ports 80 and 443 at your provider. |
-| No certificate on the server, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep the keys and the account). |
+| A vault is missing in the video player | It is switched off or not running: run `cryptbridge` on the server. A vault that was just switched on or off can take 10 seconds to show up or disappear. |
+| No certificate on the server, log says `rateLimited` | Your provider's host name shares Let's Encrypt's weekly limit with all customers. Use a DuckDNS name or your own domain and run `sudo cryptbridge setup` again (keep the streaming account). |
 
 Log files: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server
-`journalctl -u rclone-mount -u rclone-webdav -u caddy`
+`journalctl -u 'rclone-mount-*' -u rclone-webdav -u caddy`
 
 ---
 

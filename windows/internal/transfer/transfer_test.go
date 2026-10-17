@@ -25,6 +25,7 @@ func sampleBundle() Bundle {
 	v.Password2 = "salt"
 	return Bundle{
 		CreatedAt: time.Date(2026, 10, 10, 22, 0, 0, 0, time.UTC),
+		Name:      "Filme & Serien \"neu\"",
 		Cloud: NewCloud("drive", map[string]string{
 			"type":          "drive",
 			"client_id":     "123-abc.apps.googleusercontent.com",
@@ -130,6 +131,7 @@ func TestWriteLiveTransfer(t *testing.T) {
 	code, _ := NewCode()
 	text, err := Seal(Bundle{
 		CreatedAt:   time.Now().UTC(),
+		Name:        os.Getenv("CRYPTBRIDGE_LIVE_VAULT_NAME"),
 		Cloud:       NewCloud("pcloud", map[string]string{"hostname": account.Hostname, "token": account.Token}),
 		Vault:       v,
 		Fingerprint: os.Getenv("CRYPTBRIDGE_LIVE_FINGERPRINT"),

@@ -216,10 +216,10 @@
                   <span class="muted">Without it, pCloud answers the sign-in with “redirect_uri is not authorized”.</span></li>
                 <li>Copy the app's <strong>Client ID</strong> and <strong>Client secret</strong> into the fields below.</li>
                 <li><span class="muted">Linux server (not urgent — its sign-in keeps working until pCloud blocks rclone's shared
-                  access again): create a new transfer block on the page of the vault, run the setup on the server again
-                  (with the current <code>setup.sh</code>, see the README), answer <strong>n</strong> to “Keep the cloud sign-in
-                  and vault keys from the last setup?” and paste
-                  the block.</span></li>
+                  access again): create a new transfer block on the page of the vault, then on the server run
+                  <code>sudo cryptbridge vault add</code> (CryptBridge 0.9 or later; older servers: run the current
+                  <code>setup.sh</code>, see the README) and paste the block. The vault on the server takes the new
+                  sign-in.</span></li>
               </ol>
             </details>
 

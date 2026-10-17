@@ -56,6 +56,7 @@ func (a *App) CreateTransfer(id, appPassword string) (TransferResult, error) {
 	}
 	block, err := transfer.Seal(transfer.Bundle{
 		CreatedAt:   time.Now().UTC(),
+		Name:        v.Name,
 		Cloud:       transfer.NewCloud(account.Service, account.Remote),
 		Vault:       v.Config,
 		Fingerprint: a.core.Fingerprint(id),

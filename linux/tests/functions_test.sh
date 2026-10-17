@@ -53,17 +53,262 @@ version_ge 2.0.0 1.99.9 && r=yes || r=no; check "2.0.0 >= 1.99.9" yes "$r"
 
 # --- save_settings / load_settings: odd values must survive and never run ---
 mkdir -p "$CONF_DIR"
-CB_USER="tester" CB_MOUNT_DIR="/home/tester/Crypt Bridge" CB_ADDRESS="host.example"
-CB_VAULT_PATH='Films "4K" $(touch '"$CB_TEST_ROOT"'/pwned) `id` ; echo x'
-CB_WEBDAV_USER="infuse" CB_CACHE_MAX="20G" CB_CACHE_MIN_FREE="5G" CB_FINGERPRINT="ABCD-1234"
-saved_path="$CB_VAULT_PATH"
+CB_USER="tester" CB_ADDRESS="host.example" CB_WEBDAV_USER="infuse" CB_CACHE_MAX="20G" CB_CACHE_MIN_FREE="5G"
+CB_MOUNT_DIR='/home/tester/Crypt Bridge "4K" $(touch '"$CB_TEST_ROOT"'/pwned) `id` ; echo x'
+saved_dir="$CB_MOUNT_DIR"
 save_settings
-CB_VAULT_PATH="" CB_MOUNT_DIR=""
+CB_MOUNT_DIR=""
 load_settings
-check "settings: odd vault path survives" "$saved_path" "$CB_VAULT_PATH"
-check "settings: path with space survives" "/home/tester/Crypt Bridge" "$CB_MOUNT_DIR"
+check "settings: odd folder with spaces survives" "$saved_dir" "$CB_MOUNT_DIR"
 [[ -e "$CB_TEST_ROOT/pwned" ]] && r=executed || r=safe
 check "settings: value is never executed" safe "$r"
+grep -qE '^CB_(VAULT_PATH|FINGERPRINT)=' "$SETTINGS_FILE" && r=there || r=gone
+check "settings: nothing of a vault in them (each has its own file)" gone "$r"
+CB_MOUNT_DIR="$CB_TEST_ROOT/home/tester/Crypt Bridge"
+save_settings
+
+# --- vault files, names, services, switching and deleting -------------------
+# In a subshell: the stand-ins below must not replace the real functions for
+# the tests further down. It returns its number of failures.
+(
+	failures=0
+	LOG_FILE="$CB_TEST_ROOT/setup.log"
+	mkdir -p "$CB_MOUNT_DIR" "$UNIT_DIR" "$RCLONE_DIR"
+
+	# Vault files: odd values survive and never run, numbers in order.
+	CB_VAULT_ID=1 CB_SERVICE="pcloud" CB_VAULT_PATH="Videos/Filme" CB_FINGERPRINT="ABCD-1234" CB_VAULT_STATE="on"
+	CB_VAULT_NAME='Filme "4K" $(touch '"$CB_TEST_ROOT"'/pwned-vault) `id` ; echo x'
+	saved_name="$CB_VAULT_NAME"
+	save_vault
+	CB_VAULT_ID=10 CB_VAULT_NAME="Zehn"
+	save_vault
+	CB_VAULT_ID=2 CB_VAULT_NAME="Serien" CB_SERVICE="drive" CB_VAULT_PATH="/Serien/" CB_FINGERPRINT="EEEE-0000" CB_VAULT_STATE="off"
+	save_vault
+	echo "not a vault" >"$VAULTS_DIR/README"
+	check "vault numbers in order, other files left out" "1 2 10" "$(vault_ids | paste -sd ' ')"
+	check "a new vault gets the next number" 11 "$(next_vault_id)"
+	select_vault 1
+	check "vault file: odd name survives" "$saved_name" "$CB_VAULT_NAME"
+	check "vault file: settings read back" "pcloud|Videos/Filme|ABCD-1234|on|$RCLONE_DIR/1.conf" \
+		"$CB_SERVICE|$CB_VAULT_PATH|$CB_FINGERPRINT|$CB_VAULT_STATE|$RCLONE_CONF"
+	[[ -e "$CB_TEST_ROOT/pwned-vault" ]] && r=executed || r=safe
+	check "vault file: a value is never executed" safe "$r"
+	check "vault_name leaves the selected vault alone" "Serien|$saved_name" "$(vault_name 2)|$CB_VAULT_NAME"
+	rm -f "$VAULTS_DIR/10" "$VAULTS_DIR/README"
+	CB_VAULT_NAME="Filme"
+	save_vault
+
+	# Names: folder names that work in the file manager, the players and systemd.
+	for name in "Filme" "Filme & Serien" "Kinder (alt)" "Bob's Films" $'K\xc3\xbcche' "v1.2" "$(printf 'x%.0s' {1..60})"; do
+		valid_vault_name "$name" && r=valid || r=refused
+		check "vault name $(printf '%q' "$name") is valid" valid "$r"
+	done
+	for name in "" ".hidden" " lead" "trail " "a/b" 'a\b' 'a"b' 'a$b' 'a%b' 'a`b' $'a\tb' $'a\nb' "$(printf 'x%.0s' {1..61})"; do
+		valid_vault_name "$name" && r=valid || r=refused
+		check "vault name $(printf '%q' "$name") is refused" refused "$r"
+	done
+	check "a name is taken in any case" yes "$(vault_name_taken SERIEN && echo yes || echo no)"
+	check "a vault's own name is no obstacle" no "$(vault_name_taken Serien 2 && echo yes || echo no)"
+	check "a free name" no "$(vault_name_taken Dokus && echo yes || echo no)"
+	check "suggestion: the name from Windows" "Filme neu" "$(CB_VAULT_NAME="Filme neu" CB_VAULT_PATH="x/y" suggested_vault_name)"
+	check "suggestion: else the last part of the cloud folder" "Dokus" "$(CB_VAULT_NAME="" CB_VAULT_PATH="/Videos/Dokus/" suggested_vault_name)"
+	check "suggestion: a vault at the top of the cloud" "Vault" "$(CB_VAULT_NAME="" CB_VAULT_PATH="" suggested_vault_name)"
+
+	ask() { # stand-in: answers from $typed in turn ("" = Enter), notes the suggestions
+		suggestions+="[${3:-}]"
+		local answer="ran-out"
+		if ((${#typed[@]} > 0)); then
+			answer="${typed[0]}"
+			typed=("${typed[@]:1}")
+		fi
+		printf -v "$1" '%s' "${answer:-${3:-}}"
+	}
+	findmnt() { [[ "${mounted:-no}" == yes ]]; } # stand-in for the mount table
+	mkdir -p "$CB_MOUNT_DIR/Dokus"              # a folder that is no vault
+	CB_VAULT_ID=3 suggestions="" typed=("a/b" "serien" "Dokus" "Doku Neu")
+	choose_vault_name "Serien" >/dev/null 2>&1
+	check "vault name: a wrong, taken or existing name is asked again" "Doku Neu" "$CB_VAULT_NAME"
+	check "vault name: a taken suggestion is not offered" "[][][][]" "$suggestions"
+	CB_VAULT_ID=3 suggestions="" typed=("")
+	choose_vault_name "Filme 2" >/dev/null 2>&1
+	check "vault name: Enter takes the suggestion" "Filme 2|[Filme 2]" "$CB_VAULT_NAME|$suggestions"
+	rmdir "$CB_MOUNT_DIR/Dokus"
+
+	check "find_vault: the same vault" 2 "$(CB_SERVICE=drive CB_VAULT_PATH='Serien' CB_FINGERPRINT=EEEE-0000 find_vault)"
+	check "find_vault: other keys in the same folder" "" "$(CB_SERVICE=drive CB_VAULT_PATH='Serien' CB_FINGERPRINT=FFFF-1111 find_vault)"
+	check "find_vault: the same folder in another cloud" "" "$(CB_SERVICE=dropbox CB_VAULT_PATH='Serien' CB_FINGERPRINT=EEEE-0000 find_vault)"
+
+	# Service files: the vault's folder is one quoted argument.
+	CB_USER="tester" CB_GROUP="testers"
+	select_vault 1
+	CB_VAULT_NAME="Filme & Serien" # not saved
+	write_vault_unit
+	unit="$(<"$UNIT_DIR/rclone-mount-1.service")"
+	[[ "$unit" == *"ExecStart=$RCLONE_BIN mount cbvault: \"$CB_MOUNT_DIR/Filme & Serien\" \\"* &&
+		"$unit" == *"ExecStop=/usr/bin/fusermount3 -uz \"$CB_MOUNT_DIR/Filme & Serien\""* ]] && r=quoted || r="$unit"
+	check "vault unit: the folder is quoted" quoted "$r"
+	[[ "$unit" == *"--config $RCLONE_DIR/1.conf "* && "$unit" == *"--cache-dir $CACHE_DIR/1 "* ]] && r=own || r="$unit"
+	check "vault unit: keys and cache of its own" own "$r"
+	write_webdav_unit
+	unit="$(<"$WEBDAV_UNIT")"
+	[[ "$unit" == *"serve webdav \"$CB_MOUNT_DIR\""* && "$unit" == *'--config ""'* && "$unit" != *BindsTo* ]] && r=folder || r="$unit"
+	check "WebDAV unit: serves the folder of the vaults, bound to no vault" folder "$r"
+	select_vault 1
+
+	# Files waiting for their upload, as rclone notes them in the cache.
+	meta="$CACHE_DIR/1/vfsMeta/cbvault"
+	mkdir -p "$meta/sub"
+	printf '{\n\t"Size": 6,\n\t"Dirty": true\n}\n' >"$meta/waiting.mkv"
+	printf '{\n\t"Dirty": false\n}\n' >"$meta/uploaded.mkv"
+	printf '{\n\t"Dirty": true\n}\n' >"$meta/sub/also waiting.mkv"
+	check "waiting uploads are counted" 2 "$(pending_uploads 1)"
+	check "a vault without cache has none" 0 "$(pending_uploads 2)"
+
+	# Switching: off unmounts and hides the folder, on brings it back.
+	calls_file="$CB_TEST_ROOT/vault.calls"
+	systemctl() { # stand-in: records the calls (also from subshells)
+		printf '%s;' "$*" >>"$calls_file"
+		[[ "$1" == "is-active" ]] && echo "$active"
+		return 0
+	}
+	calls() { cat "$calls_file" 2>/dev/null; : >"$calls_file"; }
+	require_root() { :; }
+	load_user() { :; }
+	as_user() { "$@"; }
+	state_of() { (select_vault "$1" && echo "$CB_VAULT_STATE"); }
+	mkdir -p "$CB_MOUNT_DIR/Filme"
+	active=active mounted=no
+	calls >/dev/null
+	out="$(switch_vault off filme 2>&1)"
+	check "vault off: stopped, and kept off after a reboot" "disable --now rclone-mount-1.service;" "$(calls)"
+	[[ -d "$CB_MOUNT_DIR/Filme" ]] && r=shown || r=hidden
+	check "vault off: its folder is gone, so players no longer show it" hidden "$r"
+	check "vault off: saved" off "$(state_of 1)"
+	[[ "$out" == *"2 file(s) still wait"* ]] && r=told || r="not told: $out"
+	check "vault off: waiting uploads are named" told "$r"
+	active=inactive mounted=yes
+	out="$(switch_vault on FILME 2>&1)"
+	check "vault on: started, and kept on" "enable rclone-mount-1.service;restart rclone-mount-1.service;" "$(calls)"
+	check "vault on: saved" on "$(state_of 1)"
+	active=active
+	out="$(switch_vault on Filme 2>&1)"
+	check "vault on while it runs: nothing restarted" "is-active rclone-mount-1.service;" "$(calls)"
+	out="$( (switch_vault off Dokus) 2>&1)"
+	status=$?
+	[[ $status == 1 && "$out" == *"no vault called 'Dokus'"*"'Filme', 'Serien'"* ]] && r=named || r="$status $out"
+	check "an unknown vault: refused, the vaults are named" named "$r"
+	calls >/dev/null
+
+	# Deleting: only after a yes, and waiting uploads are named first.
+	confirm() { [[ "$answer" == yes ]]; }
+	touch "$UNIT_DIR/rclone-mount-1.service" "$RCLONE_DIR/1.conf"
+	answer=no
+	out="$(delete_vault Filme 2>&1)"
+	[[ -f "$VAULTS_DIR/1" && -d "$CACHE_DIR/1" && -f "$RCLONE_DIR/1.conf" ]] && r=kept || r=deleted
+	check "delete, answer no: nothing deleted" kept "$r"
+	[[ "$out" == *"2 file(s) of this vault are not uploaded yet"* ]] && r=warned || r="not warned: $out"
+	check "delete: waiting uploads are named before the question" warned "$r"
+	answer=yes mounted=no
+	out="$(delete_vault Filme 2>&1)"
+	[[ -e "$VAULTS_DIR/1" || -e "$CACHE_DIR/1" || -e "$RCLONE_DIR/1.conf" || -e "$UNIT_DIR/rclone-mount-1.service" ]] && r=left || r=deleted
+	check "delete, answer yes: vault file, cache, keys and service gone" deleted "$r"
+	check "delete: the other vault stays" 2 "$(vault_ids | paste -sd ' ')"
+
+	# Adding: the keys of a vault on the server renew it, other keys add one.
+	get_keys() { CB_SERVICE="drive" CB_VAULT_PATH="Serien" CB_VAULT_NAME="Serien (Windows)"; }
+	configure_remotes() { printf 'keys of the block\n' >"$RCLONE_CONF"; }
+	verify_keys() { :; }
+	compute_fingerprint() { CB_FINGERPRINT="$fingerprint"; }
+	printf 'old keys\n' >"$RCLONE_DIR/2.conf"
+	fingerprint="EEEE-0000"
+	calls >/dev/null
+	add_vault >/dev/null 2>&1
+	check "add, same vault: renewed, not added" "2|Serien|keys of the block" \
+		"$(vault_ids | paste -sd ' ')|$CB_VAULT_NAME|$(<"$RCLONE_DIR/2.conf")"
+	check "add, same vault: its mount stops before it takes the new keys" "stop rclone-mount-2.service;" "$(calls)"
+	[[ -e "$NEW_RCLONE_CONF" ]] && r=left || r=gone
+	check "add: no keys left waiting" gone "$r"
+	fingerprint="FFFF-1111" typed=("")
+	add_vault >/dev/null 2>&1
+	check "add, other keys: a new vault, named as in Windows, on" "2 3|Serien (Windows)|on|keys of the block" \
+		"$(vault_ids | paste -sd ' ')|$(
+			select_vault 3
+			echo "$CB_VAULT_NAME|$CB_VAULT_STATE"
+		)|$(<"$RCLONE_DIR/3.conf")"
+
+	# Back to the vaults the tests below expect: 1 Filme (on), 2 Serien (off).
+	rm -f "$VAULTS_DIR/3" "$RCLONE_DIR/3.conf"
+	CB_VAULT_ID=1 CB_VAULT_NAME="Filme" CB_SERVICE="pcloud" CB_VAULT_PATH="Videos/Filme" CB_FINGERPRINT="ABCD-1234" CB_VAULT_STATE="on"
+	save_vault
+	exit "$failures"
+)
+failures=$((failures + $?))
+
+# --- update from CryptBridge 0.8: the one vault becomes vault 1 -------------
+# A fresh test root of its own, laid out as CryptBridge 0.8 left it.
+r="$(CB_TEST_ROOT="$CB_TEST_ROOT/update-0.8" bash -s "$here/../setup.sh" 2>&1 <<'EOF'
+. "$1"
+set +e
+trap - ERR
+systemctl() { printf '%s;' "$*" >>"$CB_TEST_ROOT/calls"; }
+start_vault() { printf 'start %s;' "$(vault_unit)" >>"$CB_TEST_ROOT/calls"; }
+as_user() { "$@"; }
+install() { mkdir -p "${@: -1}"; } # no chown without root
+ask() { printf -v "$1" '%s' "${3:-ran-out}"; } # takes the suggestion; never loops for want of one
+findmnt() { return 1; }             # nothing mounted
+mkdir -p "$CONF_DIR" "$RCLONE_DIR" "$UNIT_DIR" "$CACHE_DIR/vfs/cbvault" "$CACHE_DIR/vfsMeta/cbvault" "$(dirname "$LOG_FILE")"
+# The settings file as CryptBridge 0.8.3 writes it.
+cat >"$SETTINGS_FILE" <<SETTINGS
+CB_USER=$(id -un)
+CB_MOUNT_DIR=$CB_TEST_ROOT/home/CryptBridge
+CB_VAULT_PATH=Videos/Old\ Films
+CB_ADDRESS=host.example
+CB_WEBDAV_USER=infuse
+CB_CACHE_MAX=20G
+CB_CACHE_MIN_FREE=5G
+CB_FINGERPRINT=1234-ABCD
+CB_STREAMING=on
+SETTINGS
+load_settings
+CB_GROUP="testers"
+mkdir -p "$CB_MOUNT_DIR"
+single_conf() {
+	printf '[cbcloud]\ntype = pcloud\ntoken = T\n\n[cbvault]\ntype = crypt\nremote = cbcloud:Videos/Old Films\n' >"$SINGLE_RCLONE_CONF"
+	printf 'filename_encryption = standard\ndirectory_name_encryption = true\n' >>"$SINGLE_RCLONE_CONF"
+	printf 'old unit\n' >"$OLD_MOUNT_UNIT"
+}
+single_conf
+printf 'film\n' >"$CACHE_DIR/vfs/cbvault/film.mkv"
+printf '{\n\t"Dirty": true\n}\n' >"$CACHE_DIR/vfsMeta/cbvault/film.mkv"
+update_single_vault >/dev/null 2>&1
+echo "ids=$(vault_ids | paste -sd ' ')"
+select_vault 1
+echo "vault=$CB_VAULT_NAME|$CB_SERVICE|$CB_VAULT_PATH|$CB_FINGERPRINT|$CB_VAULT_STATE"
+echo "conf=$(conf_value cbvault remote)"
+[[ -e "$SINGLE_RCLONE_CONF" ]] && echo "single=left" || echo "single=gone"
+echo "cache=$(cat "$CACHE_DIR/1/vfs/cbvault/film.mkv")|$(pending_uploads 1)"
+[[ -e "$OLD_MOUNT_UNIT" ]] && echo "oldunit=left" || echo "oldunit=gone"
+grep -qF "mount cbvault: \"$CB_MOUNT_DIR/Old Films\"" "$UNIT_DIR/rclone-mount-1.service" && echo "unit=ok" || echo "unit=wrong"
+grep -qE '^CB_(VAULT_PATH|FINGERPRINT)=' "$SETTINGS_FILE" && echo "settings=old" || echo "settings=new"
+echo "calls=$(cat "$CB_TEST_ROOT/calls")"
+single_conf # as if the setup had been interrupted before the end
+update_single_vault >/dev/null 2>&1
+echo "rerun=$(vault_ids | paste -sd ' ')"
+EOF
+)"
+line() { grep "^$1=" <<<"$r" | cut -d= -f2-; }
+check "update from 0.8: one vault, number 1" 1 "$(line ids)"
+check "update from 0.8: named after its cloud folder, settings moved" "Old Films|pcloud|Videos/Old Films|1234-ABCD|on" "$(line vault)"
+check "update from 0.8: the keys move to the vault's own file" "cbcloud:Videos/Old Films" "$(line conf)"
+check "update from 0.8: the old configuration goes" gone "$(line single)"
+check "update from 0.8: the cache moves, with the file waiting for upload" "film|1" "$(line cache)"
+check "update from 0.8: the old service goes, the new one has the folder" "gone ok" "$(line oldunit) $(line unit)"
+check "update from 0.8: the settings keep nothing of the vault" new "$(line settings)"
+check "update from 0.8: stopped first, then the vault and WebDAV started" \
+	"disable --now rclone-webdav.service rclone-mount.service;daemon-reload;start rclone-mount-1.service;enable --now rclone-webdav.service;" \
+	"$(line calls)"
+check "update from 0.8, run again after an interruption: still one vault" 1 "$(line rerun)"
+unset -f line
 
 # --- admin_ports: the SSH port of this connection must be found ------------
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -184,7 +429,7 @@ check "streaming off: status says switched off, no warning" shown "$r"
 check "streaming off: status does not ask Caddy" not-asked "$r"
 
 restart_services >/dev/null
-check "streaming off: restart leaves Caddy off" "restart rclone-mount.service rclone-webdav.service;" "$(calls)"
+check "streaming off: restart leaves Caddy off (and vault 2, which is off)" "restart rclone-mount-1.service rclone-webdav.service;" "$(calls)"
 
 out="$(check_web_ports 2>&1)"
 [[ "$out" == *"switched off"* && "$HTTPS_POSSIBLE" == 1 ]] && r=skipped || r="checked: $out"
@@ -208,7 +453,7 @@ switch_streaming on >/dev/null
 check "streaming on, ports free: Caddy started and kept on" "enable --now caddy;" "$(calls)"
 check "streaming on: saved" on "$(saved_streaming)"
 restart_services >/dev/null
-check "streaming on: restart includes Caddy" "restart rclone-mount.service rclone-webdav.service caddy.service;" "$(calls)"
+check "streaming on: restart includes Caddy" "restart rclone-mount-1.service rclone-webdav.service caddy.service;" "$(calls)"
 unset -f require_root systemctl web_port_users calls saved_streaming
 
 # --- choose_address: an IP address is explained and asked again ------------
@@ -237,6 +482,7 @@ check "title of a service the setup does not know" "the cloud" "$(CB_SERVICE=s3 
 as_user() { "$@"; }                       # the tests run as one user
 prepare_rclone_dir() { mkdir -p "$RCLONE_DIR"; } # no root for chown
 obscure() { printf 'obscured(%s)' "$1"; }
+RCLONE_CONF="$RCLONE_DIR/7.conf"
 CB_SERVICE="onedrive" CB_VAULT_PATH="/Films/" VAULT_ENCRYPTION="obfuscate" VAULT_DIRNAMES="false"
 CLOUD_SETTINGS=$'drive_id = abc\ndrive_type = personal\ntoken = {"access_token":"x = y"}'
 VAULT_PASSWORD="pw" VAULT_SALT=""
@@ -255,6 +501,8 @@ check "kept keys are read back" "onedrive|Films|obfuscate|false" \
 	"$CB_SERVICE|$CB_VAULT_PATH|$VAULT_ENCRYPTION|$VAULT_DIRNAMES"
 
 rm -f "$RCLONE_CONF"
+# CryptBridge 0.7 to 0.8 (update_single_vault then makes it a vault of its own).
+RCLONE_CONF="$SINGLE_RCLONE_CONF"
 printf '%s\n' "$MARKER" "[cbpcloud]" "type = pcloud" "hostname = eapi.pcloud.com" "token = OLD" "" \
 	"[cbvault]" "type = crypt" "remote = cbpcloud:Old Vault" "filename_encryption = standard" >"$OLD_RCLONE_CONF"
 copy_old_rclone_conf >/dev/null
@@ -300,6 +548,11 @@ if command -v jq >/dev/null; then
 	r="$( (take_transfer "$(block2 '{"service":"dropbox","settings":{"token":"T"}}')" &&
 		printf '%s|%s|%s|%s|%s' "$CB_VAULT_PATH" "$VAULT_DIRNAMES" "$VAULT_PASSWORD" "$VAULT_SALT" "$EXPECTED_FINGERPRINT") 2>&1)"
 	check "format 2: vault keys taken" "Films|true|pw|salt|ABCD-1234" "$r"
+	r="$( (take_transfer "$(printf '{"format":"cryptbridge-transfer-2","name":"Filme & Serien","cloud":{"service":"dropbox","settings":{"token":"T"}},%s}' "$vault_json")" &&
+		printf '%s' "$CB_VAULT_NAME") 2>&1)"
+	check "format 2 with the vault's name (CryptBridge 0.9): name taken" "Filme & Serien" "$r"
+	r="$( (take_transfer "$(block2 '{"service":"dropbox","settings":{"token":"T"}}')" && printf '[%s]' "$CB_VAULT_NAME") 2>&1)"
+	check "a block without a name (up to CryptBridge 0.8): no name" "[]" "$r"
 	r="$(taken '{"format":"cryptbridge-transfer-1","pcloud":{"hostname":"eapi.pcloud.com","token":"{\"access_token\":\"P\"}"},'"$vault_json"'}')"
 	check "format 1 (CryptBridge 0.7): pCloud sign-in taken" \
 		$'ok pcloud|hostname = eapi.pcloud.com\ntoken = {"access_token":"P"}' "$r"
@@ -337,6 +590,8 @@ if command -v jq >/dev/null; then
 		r="$( (take_transfer "$(open_transfer_block "$body" "$(tr 'A-Z' 'a-z' <<<"$code")")" &&
 			printf '%s|%s|%s' "$CB_SERVICE" "$VAULT_PASSWORD" "$CB_VAULT_PATH") 2>&1)"
 		check "Windows block: opened with the code in lower case" 'drive|pässwörd with spaces & "quotes"|CryptBridge' "$r"
+		r="$( (take_transfer "$(open_transfer_block "$body" "$code")" && printf '%s' "$CB_VAULT_NAME") 2>&1)"
+		check "Windows block: the vault's name arrives" 'Filme & Serien "neu"' "$r"
 		r="$(open_transfer_block "$body" $'\xc2\xa0'"$code"$' \r' | jq -r '.vault.path')"
 		check "Windows block: opened with a copied code (invisible characters)" CryptBridge "$r"
 		r="$( (take_transfer "$(open_transfer_block "$body" "$code")" && printf '%s' "$CLOUD_SETTINGS") 2>&1)"
