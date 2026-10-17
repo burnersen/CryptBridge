@@ -139,6 +139,18 @@ flowchart TB
 - Shares ports 80 and 443 with your website: CryptBridge pauses nginx or Apache while streaming is on and
   starts it again afterwards.
 
+How a vault gets onto the server, in four steps:
+
+1. In the Windows program: *Vaults tab > the page of the vault > Linux server > **Create transfer block***.
+2. Open a terminal on the server, the easiest way being `ssh yourname@your-server` from the Windows
+   Terminal (remote desktop works too).
+3. Run the setup (or `sudo cryptbridge vault add` for another vault), paste the block with **Copy block**
+   and `Ctrl+V`, then the code with **Copy code**.
+4. Compare the **check code** the server shows with the one in the Windows program: same code, same keys.
+
+No copy and paste at hand? Save the block as a file and read it from there; the
+[guide](docs/linux-server.md#getting-the-block-to-the-server) shows all three ways.
+
 ---
 
 ## 🛡️ Security at a glance

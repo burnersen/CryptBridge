@@ -19,6 +19,7 @@ Debian 12 and 13 as well (not tested there yet), with or without a desktop.
 
 - [Before you start](#before-you-start)
 - [Setup](#setup)
+- [Getting the block to the server](#getting-the-block-to-the-server)
 - [More vaults](#more-vaults)
 - [The `cryptbridge` command](#the-cryptbridge-command)
 - [Ports 80 and 443 for a website](#ports-80-and-443-for-a-website)
@@ -59,8 +60,45 @@ sudo bash setup.sh
 The same command is on the vault's page in the Windows program (*Linux server*), with a **Copy** button.
 
 The setup asks a few questions and does everything else. When it asks for the keys, paste the
-**transfer block** and type its code (or use **Copy code** and paste it). A mistyped code can be typed
+**transfer block** and type its code (or use **Copy code** and paste it); how the block gets from your PC
+to the server is explained [below](#getting-the-block-to-the-server). A mistyped code can be typed
 again; the block stays. Block and code belong together: each new block gets a new code.
+
+## Getting the block to the server
+
+The block is created on your Windows PC (*Vaults tab > the page of the vault > Linux server > Create
+transfer block*) and has to get into the setup on the server. Three ways, pick the one that suits you:
+
+**1. SSH from Windows (recommended, the server needs no desktop).** Windows 11 has SSH built in. Open
+*Terminal* (or PowerShell) and connect to your server:
+
+```powershell
+ssh yourname@your-server
+```
+
+Run the setup (or `sudo cryptbridge vault add` for another vault) and choose *1) Paste the transfer
+block*. In the Windows program click **Copy block**, then paste it into the terminal with `Ctrl+V` or a
+right-click; if the terminal warns that the text has several lines, paste anyway. Then click **Copy
+code** and paste the code the same way (it stays invisible while you paste, that is on purpose).
+
+**2. Remote desktop.** If your server has a desktop (for example XFCE over RDP), copy and paste work
+through the remote desktop's clipboard: open a terminal on the server's desktop and paste block and code
+just as above. After the setup, the server needs no desktop any more; the vaults run without it.
+
+**3. As a file.** In the Windows program click **Save as file…** (it suggests
+`CryptBridge-transfer.cbtransfer`), copy the file to the server, for example with:
+
+```powershell
+scp CryptBridge-transfer.cbtransfer yourname@your-server:
+```
+
+(or with a program like WinSCP), then choose *2) Read the transfer block from a file* in the setup and
+type its **full path**, for example `/home/yourname/CryptBridge-transfer.cbtransfer` (a path with `~`
+is not understood there). Type or paste the code when asked. Delete the file afterwards
+(`rm ~/CryptBridge-transfer.cbtransfer`) and on your PC as well.
+
+Whichever way: never send block and code together, for example not both in one e-mail or one chat
+message. The block alone is useless without its code.
 
 At the end the setup shows a **check code** (for example `7F3A-91C2`): it must be the same as on the
 vault's page in the Windows program. If the codes match, the keys match. The setup then asks for the
