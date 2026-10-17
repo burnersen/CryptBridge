@@ -96,21 +96,22 @@ function Save-Checked([string]$url, [string]$name, [string]$expected) {
 function Write-ReleaseNotes([string]$rcloneVersion) {
     $dot = [char]0x00B7
     $winFspSource = "https://github.com/winfsp/winfsp/tree/$winFspTag"
+    # Each line in parentheses: the comma binds more strongly than "+".
     $lines = @(
         'You only need CryptBridge.exe. Everything else is an optional backup.',
         '',
         'Backup copies, unchanged originals:',
         '',
-        "- rclone $rcloneVersion (ZIP files). Official: https://rclone.org/downloads/ $dot " +
-        "Source: https://github.com/rclone/rclone/tree/v$rcloneVersion $dot MIT License (rclone-LICENSE.txt)",
-        "- WinFsp $winFspTag (MSI installer). Install it only if WinFsp is not installed yet. " +
-        "Official: https://winfsp.dev/rel/ $dot Source: $winFspSource $dot " +
-        "WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos $dot " +
-        'GPLv3 with FLOSS exception (WinFsp-LICENSE.txt)',
+        ("- rclone $rcloneVersion (ZIP files). Official: https://rclone.org/downloads/ $dot " +
+            "Source: https://github.com/rclone/rclone/tree/v$rcloneVersion $dot MIT License (rclone-LICENSE.txt)"),
+        ("- WinFsp $winFspTag (MSI installer). Install it only if WinFsp is not installed yet. " +
+            "Official: https://winfsp.dev/rel/ $dot Source: $winFspSource $dot " +
+            "WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos $dot " +
+            'GPLv3 with FLOSS exception (WinFsp-LICENSE.txt)'),
         '',
-        'Did you use an rclone of your own so far (on the PATH or next to CryptBridge.exe)? CryptBridge now ' +
-        "uses exactly rclone ${rcloneVersion}: click Download rclone once, and if you use the LAN access, " +
-        'allow it in the Windows firewall once more.'
+        ('Did you use an rclone of your own so far (on the PATH or next to CryptBridge.exe)? CryptBridge now ' +
+            "uses exactly rclone ${rcloneVersion}: click Download rclone once, and if you use the LAN access, " +
+            'allow it in the Windows firewall once more.')
     )
     $text = ($lines -join "`n") + "`n"
     [IO.File]::WriteAllText((Join-Path $stagingDir 'release-notes.md'), $text, [Text.UTF8Encoding]::new($false))
