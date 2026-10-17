@@ -454,7 +454,8 @@ tested there yet), with or without a desktop.
   and asks for a name again.
 - **Ports 80 and 443** must be reachable, also in your provider's firewall if it has one, and free: no
   other web server (such as nginx or Apache for a website) may use them. The setup checks this at the
-  start, names the program and offers to stop it. If you keep it, everything else is set up without HTTPS.
+  start, names the program and offers to pause it while streaming is on (see *Need ports 80 and 443 for
+  something else* below). If you keep it running, everything else is set up without HTTPS.
 - A **transfer block** of each vault you want on the server, from the Windows program (*Vaults tab > the
   page of the vault > Linux server*), or its keys at hand.
 
@@ -506,7 +507,9 @@ everything except your files in the cloud.
 Apache? Choose *Switch streaming off* in the `cryptbridge` menu (or run `sudo cryptbridge streaming off`).
 The vault folders keep working, only video players cannot connect. Streaming stays off, also after a
 restart of the server, until you choose *Switch streaming on* (or run `sudo cryptbridge streaming on`).
-Stop the other web server first: if it still uses the ports, CryptBridge names it and waits.
+If another web server uses the ports then, CryptBridge names it and offers to pause it while streaming
+is on. When you switch streaming off again (or uninstall CryptBridge), it offers to start that web server
+again, just as it was before. A web server that you switched off yourself is never started.
 
 <details>
 <summary><b>Technical details: what the setup does</b></summary>

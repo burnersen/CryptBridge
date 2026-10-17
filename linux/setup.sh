@@ -24,7 +24,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.9.0"
+readonly CRYPTBRIDGE_VERSION="0.9.1"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -50,6 +50,11 @@ readonly SINGLE_RCLONE_CONF="$RCLONE_DIR/rclone.conf" # CryptBridge 0.8: one vau
 readonly OLD_RCLONE_CONF="$CONF_DIR/rclone.conf"      # up to CryptBridge 0.7
 readonly HTPASSWD="$CONF_DIR/htpasswd"
 readonly SETTINGS_FILE="$CONF_DIR/settings"
+# The web servers (nginx for a website, say) paused for streaming, one per
+# line: "UNIT enabled|disabled", i.e. whether it started with the server.
+# Not in the settings: the setup writes those at its very end, and a setup
+# that stops halfway must not forget a paused website.
+readonly PAUSED_WEB_SERVERS="$CONF_DIR/paused-web-servers"
 # One settings file per vault, named by its number (name, cloud, folder,
 # check code, on or off). No secrets in there either.
 readonly VAULTS_DIR="$CONF_DIR/vaults"
@@ -256,6 +261,12 @@ choose_user() {
 		ask CB_USER "Linux user who works with the vault in the desktop" "$default"
 		if [[ "$CB_USER" == "root" ]]; then
 			warn "Using root for the desktop is not recommended. Please name your normal user."
+			continue
+		fi
+		# "id" takes a number as a user ID (2 is "bin"), but the services
+		# need the name.
+		if [[ "$CB_USER" =~ ^[0-9]+$ ]]; then
+			warn "Please type the user's name, not a number."
 			continue
 		fi
 		id "$CB_USER" >/dev/null 2>&1 && break
@@ -1357,37 +1368,121 @@ warn_port_user() {
 	fi
 }
 
+# Paused web servers: another web server on ports 80 and 443 (a website, say)
+# can be paused for as long as Caddy holds the ports for streaming. Whenever
+# Caddy lets go of them again (streaming switched off, CryptBridge removed,
+# Caddy not starting), the paused web servers get back the state they had.
+# Only web servers that CryptBridge paused itself are ever started.
+
+# is_paused_web_server UNIT — whether UNIT is noted as paused
+is_paused_web_server() {
+	[[ -r "$PAUSED_WEB_SERVERS" ]] &&
+		awk -v unit="$1" '$1 == unit { found = 1 } END { exit !found }' "$PAUSED_WEB_SERVERS"
+}
+
+# pause_web_server UNIT — stops UNIT and notes it, with whether it starts
+# with the server. Paused, it must not start at boot either: it would take
+# the ports from Caddy. It is noted before it is stopped, so that a setup
+# that ends right afterwards cannot forget it; a web server paused already
+# keeps its first note, which has the state from before CryptBridge.
+pause_web_server() {
+	local unit="$1" start_at_boot=disabled
+	if [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" == enabled ]]; then
+		start_at_boot=enabled
+	fi
+	if ! is_paused_web_server "$unit"; then
+		[[ -d "$CONF_DIR" ]] || install -d -m 0750 "$CONF_DIR" # first setup run
+		printf '%s %s\n' "$unit" "$start_at_boot" >>"$PAUSED_WEB_SERVERS"
+	fi
+	if [[ "$start_at_boot" == enabled ]]; then
+		systemctl disable --now "$unit" >>"$LOG_FILE" 2>&1 || die "Could not stop $unit. See: journalctl -u $unit"
+	else
+		systemctl stop "$unit" >>"$LOG_FILE" 2>&1 || die "Could not stop $unit. See: journalctl -u $unit"
+	fi
+}
+
+# offer_to_pause_web_servers — names every other program on port 80 or 443
+# and offers to pause the web servers among them. Returns 0 when the ports
+# are free afterwards.
+offer_to_pause_web_servers() {
+	local users program unit ports
+	users="$(web_port_users)"
+	[[ -n "$users" ]] || return 0
+	while read -r program unit ports; do
+		warn_port_user "$program" "$ports"
+		if [[ "$unit" == *.service ]] &&
+			confirm "Pause $program while streaming is on? Switching streaming off offers to start it again." y; then
+			pause_web_server "$unit"
+			ok "$program paused while streaming is on"
+		fi
+	done <<<"$users"
+	[[ -z "$(web_port_users)" ]]
+}
+
+# resume_web_servers ask|now — gives every paused web server back the state
+# it had, once Caddy has let go of ports 80 and 443: "ask" first when the
+# user switches streaming off or removes CryptBridge, "now" when Caddy cannot
+# have the ports after all. Afterwards they are forgotten; after a "no" the
+# user gets the command to start one later.
+resume_web_servers() {
+	local mode="$1" lines line unit start_at_boot program
+	local -a start_command
+	[[ -s "$PAUSED_WEB_SERVERS" ]] || return 0
+	mapfile -t lines <"$PAUSED_WEB_SERVERS"
+	for line in "${lines[@]}"; do
+		read -r unit start_at_boot <<<"$line"
+		# A unit name starting with "-" would reach systemctl as an option.
+		if [[ ! "$unit" =~ ^[[:alnum:]][[:alnum:]@._:-]*\.service$ || ! "$start_at_boot" =~ ^(enabled|disabled)$ ]]; then
+			warn "Skipped an unreadable line in $PAUSED_WEB_SERVERS: $line"
+			continue
+		fi
+		program="${unit%.service}"
+		start_command=(start)
+		[[ "$start_at_boot" == enabled ]] && start_command=(enable --now)
+		if [[ "$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" == not-found ]]; then
+			info "$program was paused for streaming, but it is not installed any more."
+			continue
+		fi
+		if [[ "$mode" == ask ]] && ! confirm "Start $program again (paused for streaming)?" y; then
+			info "$program stays off. Start it later with:  sudo systemctl ${start_command[*]} $unit"
+			continue
+		fi
+		if systemctl "${start_command[@]}" "$unit" >>"$LOG_FILE" 2>&1; then
+			ok "$program started again"
+		else
+			warn "$program did not start. See: journalctl -u $unit"
+		fi
+	done
+	rm -f "$PAUSED_WEB_SERVERS"
+}
+
+# give_ports_back — Caddy did not start after all: the paused web servers get
+# ports 80 and 443 back at once, and Caddy must not take them at the next boot.
+give_ports_back() {
+	[[ -s "$PAUSED_WEB_SERVERS" ]] || return 0
+	systemctl disable --now caddy >>"$LOG_FILE" 2>&1 || true
+	resume_web_servers now
+}
+
 # check_web_ports — HTTPS needs ports 80 and 443 for Caddy. Another web
-# server there (an old website, say) used to stop the setup halfway, before
-# the command and the desktop icons; now it is named at the start and the
-# user decides. Without the ports, everything else is still set up.
+# server there (a website, say) used to stop the setup halfway, before the
+# command and the desktop icons; now it is named at the start and the user
+# decides. Without the ports, everything else is still set up.
 check_web_ports() {
 	step "Ports for HTTPS"
 	if [[ "$CB_STREAMING" == "off" ]]; then
 		info "Streaming is switched off, so ports 80 and 443 stay with other programs (a website, say)."
 		return
 	fi
-	local users program unit ports
-	users="$(web_port_users)"
-	if [[ -z "$users" ]]; then
+	if offer_to_pause_web_servers; then
 		ok "Ports 80 and 443 are free for HTTPS"
 		return
 	fi
-	while read -r program unit ports; do
-		warn_port_user "$program" "$ports"
-		if [[ "$unit" == *.service ]] &&
-			confirm "Stop and disable $program ($unit)? Only if you do not need it any more, e.g. an old website." n; then
-			systemctl disable --now "$unit" >>"$LOG_FILE" 2>&1 || die "Could not stop $unit. See: journalctl -u $unit"
-			ok "$program stopped and disabled"
-		fi
-	done <<<"$users"
-	if [[ -n "$(web_port_users)" ]]; then
-		HTTPS_POSSIBLE=0
-		warn "The setup goes on without HTTPS: the vault folder, the 'cryptbridge' command and the desktop work,"
-		warn "video players cannot connect yet. Free the ports later, then run:  sudo cryptbridge setup"
-	else
-		ok "Ports 80 and 443 are free for HTTPS"
-	fi
+	# Pausing a web server is no use while another program keeps the ports.
+	resume_web_servers now
+	HTTPS_POSSIBLE=0
+	warn "The setup goes on without HTTPS: the vault folder, the 'cryptbridge' command and the desktop work,"
+	warn "video players cannot connect yet. Free the ports later, then run:  sudo cryptbridge setup"
 }
 
 public_ipv4() {
@@ -1621,6 +1716,7 @@ start_services() {
 		# one (command, desktop) must still run.
 		HTTPS_POSSIBLE=0
 		warn "Caddy did not start, so there is no HTTPS for now. See: journalctl -u caddy"
+		give_ports_back
 		return
 	fi
 	ok "Caddy configured for https://$CB_ADDRESS"
@@ -2012,6 +2108,8 @@ restart_services() {
 # players. Switched off, the ports are free for another web server (a test
 # website, say) while the vault folder keeps working. The choice is kept in
 # the settings, so it lasts through a reboot, "restart" and a new setup run.
+# A web server on the ports is paused for streaming and started again when
+# streaming is switched off (see pause_web_server).
 switch_streaming() {
 	local wanted="$1"
 	require_root streaming "$wanted"
@@ -2022,23 +2120,21 @@ switch_streaming() {
 		CB_STREAMING="off"
 		save_settings
 		ok "Streaming switched off: ports 80 and 443 are free, e.g. for a website."
+		resume_web_servers ask
 		info "The vault folder keeps working. Switch streaming on again in the menu or with:  sudo cryptbridge streaming on"
 		return
 	fi
 	# Without the setup's Caddyfile, Caddy would serve its own start page.
 	grep -qs "^$MARKER" "$CADDYFILE" || die "HTTPS has not been set up yet. Free ports 80 and 443, then run:  sudo cryptbridge setup"
-	local users program unit ports
-	users="$(web_port_users)"
-	if [[ -n "$users" ]]; then
-		while read -r program unit ports; do
-			warn_port_user "$program" "$ports"
-			if [[ "$unit" == *.service ]]; then
-				info "Stop it first with:  sudo systemctl stop $unit"
-			fi
-		done <<<"$users"
+	if ! offer_to_pause_web_servers; then
+		# Pausing a web server is no use while another program keeps the ports.
+		resume_web_servers now
 		die "Streaming stays off until ports 80 and 443 are free."
 	fi
-	systemctl enable --now caddy >>"$LOG_FILE" 2>&1 || die "Caddy did not start. See: journalctl -u caddy"
+	if ! systemctl enable --now caddy >>"$LOG_FILE" 2>&1; then
+		give_ports_back
+		die "Caddy did not start. See: journalctl -u caddy"
+	fi
 	CB_STREAMING="on"
 	save_settings
 	ok "Streaming switched on: https://$CB_ADDRESS"
@@ -2178,7 +2274,14 @@ uninstall() {
 	elif grep -qs "^$MARKER" "$CADDYFILE"; then
 		systemctl disable --now caddy >>"$LOG_FILE" 2>&1 || true
 	fi
-	if confirm "Close ports 80 and 443 in the firewall?" y; then
+	resume_web_servers ask
+	# A website on the ports needs them open for its visitors.
+	local close_ports=y
+	if [[ -n "$(web_port_users)" ]]; then
+		info "Another web server uses ports 80 and 443 (a website, say): keep them open for it."
+		close_ports=n
+	fi
+	if confirm "Close ports 80 and 443 in the firewall?" "$close_ports"; then
 		ufw delete allow 80/tcp >>"$LOG_FILE" 2>&1 || true
 		ufw delete allow 443/tcp >>"$LOG_FILE" 2>&1 || true
 	fi
@@ -2250,8 +2353,19 @@ setup() {
 	summary
 }
 
+# default_command — what runs without a command: the installed "cryptbridge"
+# opens the menu, as the texts and the desktop icon promise; the downloaded
+# setup.sh sets up (also when it is run again to update a server).
+default_command() {
+	if [[ "$(readlink -f "$0" 2>/dev/null || true)" == "$SELF_INSTALLED" ]]; then
+		echo menu
+	else
+		echo setup
+	fi
+}
+
 main() {
-	case "${1:-setup}" in
+	case "${1:-$(default_command)}" in
 	setup) setup ;;
 	menu) menu ;;
 	status) show_status ;;

@@ -368,12 +368,16 @@ ps() { # stand-in for "ps -o comm=|unit= -p PID"
 	unit=:30) echo session-3.scope ;;
 	esac
 }
-systemctl() { # stand-in: stopping nginx frees its ports
+systemctl() { # stand-in: nginx starts with the server; stopping it frees its ports
 	systemctl_calls+="$*;"
-	[[ "$*" == "disable --now nginx.service" && "$listening" == nginx ]] && listening=none
+	case "$*" in
+	"is-enabled nginx.service") echo enabled ;;
+	"show nginx.service -p LoadState --value") echo loaded ;;
+	"disable --now nginx.service") [[ "$listening" == nginx ]] && listening=none ;;
+	esac
 	return 0
 }
-confirm() { asked+="$1|"; [[ "$answer" == yes ]]; }
+confirm() { asked+="$1 [$2]|"; [[ "$answer" == yes ]]; }
 
 listening=all
 check "web_port_users: each program once with its ports, Caddy left out" \
@@ -381,17 +385,30 @@ check "web_port_users: each program once with its ports, Caddy left out" \
 for case in "nginx no 0 asked" "nginx yes 1 asked" "none yes 1 not-asked" "all yes 0 asked"; do
 	read -r users answer want_https want_asked <<<"$case"
 	listening="$users" HTTPS_POSSIBLE=1 asked="" systemctl_calls=""
+	rm -f "$PAUSED_WEB_SERVERS"
 	check_web_ports >/dev/null 2>&1 # may change $listening, as stopping would
 	name="ports used by $users, answer $answer"
 	check "$name: HTTPS possible" "$want_https" "$HTTPS_POSSIBLE"
 	[[ -n "$asked" ]] && r=asked || r=not-asked
-	check "$name: asked before stopping" "$want_asked" "$r"
-	[[ "$asked" == *python3* ]] && check "$name: no offer to stop a program without a service" none "$asked"
+	check "$name: asked before pausing" "$want_asked" "$r"
+	[[ "$asked" == *python3* ]] && check "$name: no offer to pause a program without a service" none "$asked"
+	[[ -n "$asked" ]] && check "$name: asks to pause for streaming, Enter = yes" \
+		"Pause nginx while streaming is on? Switching streaming off offers to start it again. [y]|" "$asked"
 	want=kept
-	[[ "$answer" == yes && "$users" != none ]] && want=stopped
-	[[ "$systemctl_calls" == *"disable --now nginx.service"* ]] && r=stopped || r=kept
-	check "$name: nginx stopped only when the user said yes" "$want" "$r"
+	[[ "$answer" == yes && "$users" != none ]] && want=paused
+	[[ "$systemctl_calls" == *"disable --now nginx.service"* ]] && r=paused || r=kept
+	check "$name: nginx paused only when the user said yes" "$want" "$r"
+	note="$(cat "$PAUSED_WEB_SERVERS" 2>/dev/null)"
+	if [[ "$users" == all ]]; then
+		# python3 keeps port 80, so pausing nginx was no use: it comes back.
+		[[ "$systemctl_calls" == *"enable --now nginx.service"* ]] && r=back || r=still-paused
+		check "$name: nginx started again at once, as it was" back "$r"
+		check "$name: nothing left noted" "" "$note"
+	elif [[ "$want" == paused ]]; then
+		check "$name: noted as paused, with its start at boot" "nginx.service enabled" "$note"
+	fi
 done
+rm -f "$PAUSED_WEB_SERVERS"
 unset -f ss ps systemctl confirm
 HTTPS_POSSIBLE=1
 
@@ -407,10 +424,20 @@ calls_file="$CB_TEST_ROOT/systemctl.calls"
 require_root() { :; }
 systemctl() { # stand-in: records the calls (also from subshells), all services run
 	printf '%s;' "$*" >>"$calls_file"
-	[[ "$1" == "is-active" ]] && echo active
+	case "$*" in
+	is-active*) echo active ;;
+	"is-enabled nginx.service") echo "$nginx_at_boot" ;;
+	"show nginx.service -p LoadState --value") echo "$nginx_installed" ;;
+	"disable --now nginx.service" | "stop nginx.service") # frees the ports it held
+		port_users="$(grep -v '^nginx ' <<<"$port_users" || true)" ;;
+	"enable --now caddy") [[ "$caddy_fails" == no ]] || return 1 ;;
+	esac
 	return 0
 }
-web_port_users() { [[ "$port_users" == none ]] || echo "$port_users"; }
+web_port_users() { [[ "$port_users" == none || -z "$port_users" ]] || echo "$port_users"; }
+confirm() { asked+="$1 [$2]|"; [[ "$answer" == yes ]]; }
+paused() { cat "$PAUSED_WEB_SERVERS" 2>/dev/null; }
+nginx_at_boot=enabled nginx_installed=loaded caddy_fails=no answer=yes
 calls() { cat "$calls_file" 2>/dev/null; : >"$calls_file"; }
 saved_streaming() { (CB_STREAMING="" && load_settings && echo "$CB_STREAMING"); }
 mkdir -p "$(dirname "$CADDYFILE")"
@@ -440,13 +467,99 @@ out="$( (switch_streaming on) 2>&1)"; status=$?
 check "streaming on without the setup's Caddyfile: refused" "1 " "$status $(calls)"
 check "streaming on without the setup's Caddyfile: still off" off "$(saved_streaming)"
 
+# A web server on the ports (nginx for a test website) is paused for
+# streaming and started again, as it was, when streaming is switched off.
+# The switch runs in a subshell, as "die" ends it; so the questions asked
+# go into a file, like the systemctl calls.
+asked_file="$CB_TEST_ROOT/confirm.asked"
+confirm() { printf '%s [%s]|' "$1" "$2" >>"$asked_file"; [[ "$answer" == yes ]]; }
+asked() { cat "$asked_file" 2>/dev/null; : >"$asked_file"; }
+try_switch() { out="$( (switch_streaming "$1") 2>&1)"; status=$?; }
+nginx="nginx nginx.service 80 and 443"
+pause_question="Pause nginx while streaming is on? Switching streaming off offers to start it again. [y]|"
 printf '%s\n' "$MARKER" >"$CADDYFILE"
-port_users="nginx nginx.service 80 and 443"
-out="$( (switch_streaming on) 2>&1)"; status=$?
-check "streaming on, nginx on the ports: refused, Caddy not started" "1 " "$status $(calls)"
-[[ "$out" == *"Ports 80 and 443 are used by nginx"* && "$out" == *"sudo systemctl stop nginx.service"* ]] && r=explained || r="unclear: $out"
-check "streaming on, nginx on the ports: names nginx and how to stop it" explained "$r"
-check "streaming on, nginx on the ports: still off" off "$(saved_streaming)"
+
+answer=no port_users="$nginx"
+try_switch on
+check "streaming on, nginx kept: refused, nginx and Caddy left alone" "1 " "$status $(calls)"
+[[ "$out" == *"Ports 80 and 443 are used by nginx"* ]] && r=named || r="unclear: $out"
+check "streaming on, nginx kept: names nginx" named "$r"
+check "streaming on, nginx kept: asked first, Enter = yes" "$pause_question" "$(asked)"
+check "streaming on, nginx kept: still off, nothing noted" "off " "$(saved_streaming) $(paused)"
+
+answer=yes port_users="$nginx"
+try_switch on
+check "streaming on, nginx paused: stopped, also for boot, then Caddy started" \
+	"0 is-enabled nginx.service;disable --now nginx.service;enable --now caddy;" "$status $(calls)"
+check "streaming on, nginx paused: noted with its start at boot" "nginx.service enabled" "$(paused)"
+check "streaming on, nginx paused: saved" on "$(saved_streaming)"
+asked >/dev/null
+
+try_switch off
+check "streaming off: Caddy stopped first, then nginx started as it was" \
+	"0 disable --now caddy;show nginx.service -p LoadState --value;enable --now nginx.service;" "$status $(calls)"
+check "streaming off: asked first, Enter = yes" "Start nginx again (paused for streaming)? [y]|" "$(asked)"
+check "streaming off: nginx forgotten" "" "$(paused)"
+
+try_switch off
+check "streaming off, nothing paused: no question, nothing started" "0 disable --now caddy;|" "$status $(calls)|$(asked)"
+
+nginx_at_boot=disabled port_users="$nginx"
+try_switch on
+check "nginx not started at boot: paused without disabling" \
+	"0 is-enabled nginx.service;stop nginx.service;enable --now caddy;" "$status $(calls)"
+check "nginx not started at boot: noted so" "nginx.service disabled" "$(paused)"
+asked >/dev/null
+answer=no
+try_switch off
+check "streaming off, answer no: nginx stays off" "0 disable --now caddy;show nginx.service -p LoadState --value;" "$status $(calls)"
+[[ "$out" == *"sudo systemctl start nginx.service"* ]] && r=named || r="missing: $out"
+check "streaming off, answer no: says how to start it later, as it was" named "$r"
+check "streaming off, answer no: nginx forgotten" "" "$(paused)"
+asked >/dev/null
+answer=yes nginx_at_boot=enabled
+
+port_users="$nginx"$'\n'"python3 session-3.scope 80"
+try_switch on
+check "nginx paused, python3 keeps port 80: refused, nginx back at once, no Caddy" \
+	"1 is-enabled nginx.service;disable --now nginx.service;show nginx.service -p LoadState --value;enable --now nginx.service;" \
+	"$status $(calls)"
+check "nginx paused, python3 keeps port 80: no offer for python3" "$pause_question" "$(asked)"
+check "nginx paused, python3 keeps port 80: still off, nothing noted" "off " "$(saved_streaming) $(paused)"
+
+caddy_fails=yes port_users="$nginx"
+try_switch on
+check "Caddy does not start: nginx gets the ports back, Caddy stays off at boot" \
+	"1 is-enabled nginx.service;disable --now nginx.service;enable --now caddy;disable --now caddy;show nginx.service -p LoadState --value;enable --now nginx.service;" \
+	"$status $(calls)"
+check "Caddy does not start: still off, nothing noted" "off " "$(saved_streaming) $(paused)"
+caddy_fails=no
+asked >/dev/null
+
+printf 'nginx.service enabled\n' >"$PAUSED_WEB_SERVERS"
+nginx_installed=not-found
+try_switch off
+check "paused nginx uninstalled meanwhile: not started, not asked" \
+	"0 disable --now caddy;show nginx.service -p LoadState --value;|" "$status $(calls)|$(asked)"
+[[ "$out" == *"not installed any more"* ]] && r=said || r="not said: $out"
+check "paused nginx uninstalled meanwhile: says so" said "$r"
+check "paused nginx uninstalled meanwhile: forgotten" "" "$(paused)"
+nginx_installed=loaded
+
+printf 'nginx.service enabled\n' >"$PAUSED_WEB_SERVERS"
+nginx_at_boot=disabled # as CryptBridge left it when it paused nginx before
+(pause_web_server nginx.service) >/dev/null 2>&1
+check "paused again: the first note stays, with the state from before" "nginx.service enabled" "$(paused)"
+nginx_at_boot=enabled
+calls >/dev/null
+
+printf '%s\n' "nginx.service enabled" "--force.service enabled" "broken" >"$PAUSED_WEB_SERVERS"
+out="$(resume_web_servers now 2>&1)"
+check "unreadable notes: skipped, nothing given to systemctl as an option" \
+	"show nginx.service -p LoadState --value;enable --now nginx.service;" "$(calls)"
+[[ "$(grep -c "Skipped an unreadable line" <<<"$out")" == 2 ]] && r=warned || r="not warned: $out"
+check "unreadable notes: each one named" warned "$r"
+check "unreadable notes: forgotten" "" "$(paused)"
 
 port_users=none
 switch_streaming on >/dev/null
@@ -454,7 +567,66 @@ check "streaming on, ports free: Caddy started and kept on" "enable --now caddy;
 check "streaming on: saved" on "$(saved_streaming)"
 restart_services >/dev/null
 check "streaming on: restart includes Caddy" "restart rclone-mount-1.service rclone-webdav.service caddy.service;" "$(calls)"
-unset -f require_root systemctl web_port_users calls saved_streaming
+check "streaming on, ports free: nothing asked" "" "$(asked)"
+unset -f require_root systemctl web_port_users confirm asked try_switch paused calls saved_streaming
+
+# --- uninstall: a paused web server is offered back, its ports stay open ----
+# A fresh test root each, so that removing CryptBridge spares the others.
+for answer in yes no; do
+	removed="$(CB_TEST_ROOT="$CB_TEST_ROOT/uninstall-$answer" answer="$answer" bash -s "$here/../setup.sh" 2>&1 <<'EOF'
+. "$1"
+set +e
+trap - ERR
+require_root() { :; }
+nginx_runs=no
+systemctl() {
+	printf '%s;' "$*" >>"$CB_TEST_ROOT/calls"
+	[[ "$*" == "show nginx.service -p LoadState --value" ]] && echo loaded
+	[[ "$*" == "enable --now nginx.service" ]] && nginx_runs=yes
+	return 0
+}
+web_port_users() { [[ "$nginx_runs" == no ]] || echo "nginx nginx.service 80 and 443"; }
+ufw() { printf 'ufw %s;' "$*" >>"$CB_TEST_ROOT/calls"; }
+confirm() { # removing: yes; starting nginx again: $answer; everything else: Enter
+	printf '%s [%s]|' "$1" "$2" >>"$CB_TEST_ROOT/asked"
+	case "$1" in
+	Remove*) return 0 ;;
+	Start*) [[ "$answer" == yes ]] ;;
+	*) [[ "$2" == y ]] ;;
+	esac
+}
+mkdir -p "$CONF_DIR" "$(dirname "$CADDYFILE")" "$(dirname "$LOG_FILE")" "$UNIT_DIR"
+printf '%s\n' "$MARKER" >"$CADDYFILE"
+printf 'nginx.service enabled\n' >"$PAUSED_WEB_SERVERS"
+uninstall >/dev/null 2>&1
+echo "calls=$(cat "$CB_TEST_ROOT/calls")"
+echo "asked=$(cat "$CB_TEST_ROOT/asked")"
+[[ -e "$PAUSED_WEB_SERVERS" ]] && echo "note=left" || echo "note=gone"
+EOF
+	)"
+	calls="$(grep '^calls=' <<<"$removed" | cut -d= -f2-)"
+	asked="$(grep '^asked=' <<<"$removed" | cut -d= -f2-)"
+	name="uninstall, start nginx again: $answer"
+	want=not-started
+	[[ "$answer" == yes ]] && want=started-after-caddy
+	if [[ "$calls" == *"disable --now caddy;"*"enable --now nginx.service;"* ]]; then
+		r=started-after-caddy
+	elif [[ "$calls" == *"enable --now nginx.service"* ]]; then
+		r=started-before-caddy
+	else
+		r=not-started
+	fi
+	check "$name: nginx" "$want" "$r"
+	[[ "$asked" == *"Start nginx again (paused for streaming)? [y]"* ]] && r=asked || r="not asked: $asked"
+	check "$name: asked, Enter = yes" asked "$r"
+	want="y closed"
+	[[ "$answer" == yes ]] && want="n open"
+	r="$(grep -o 'Close ports 80 and 443 in the firewall? \[.\]' <<<"$asked" | grep -o '\[.\]' | tr -d '[]')"
+	[[ "$calls" == *"ufw delete allow 80/tcp"*"ufw delete allow 443/tcp"* ]] && r+=" closed" || r+=" open"
+	check "$name: firewall question (Enter) keeps the ports open only for the website" "$want" "$r"
+	check "$name: nginx forgotten" gone "$(grep '^note=' <<<"$removed" | cut -d= -f2-)"
+done
+unset removed calls asked
 
 # --- choose_address: an IP address is explained and asked again ------------
 check "157.173.96.238 is an IP address" yes "$(is_ipv4_address 157.173.96.238 && echo yes || echo no)"
@@ -472,6 +644,36 @@ choose_address >/dev/null 2>&1
 check "IP kept when the user insists" "157.173.96.238 1" "$CB_ADDRESS $ADDRESS_IS_IP"
 unset -f ask confirm public_ipv4 public_dns_ipv4
 ADDRESS_IS_IP=0 CB_ADDRESS=""
+
+# --- choose_user: a number is no user name ----------------------------------
+# "id 2" takes the number as a user ID, so it used to pass; the services then
+# failed to find a user "2".
+r="$( (
+	typed=(2 "$(id -un)")
+	ask() { # types the next answer; ends the test instead of asking forever
+		((${#typed[@]})) || exit 3
+		printf -v "$1" '%s' "${typed[0]}"
+		typed=("${typed[@]:1}")
+	}
+	CB_MOUNT_DIR=/vaults
+	choose_user >/dev/null 2>"$CB_TEST_ROOT/choose_user.err"
+	echo "$CB_USER|$(grep -c "not a number" "$CB_TEST_ROOT/choose_user.err")"
+) )"
+check "choose_user: a number is refused with a hint, the name typed next is taken" "$(id -un)|1" "$r"
+
+# --- default_command: the installed command opens the menu ------------------
+# The texts say "run cryptbridge" for the menu; the downloaded setup.sh (run
+# again to update a server) must still set up.
+dispatch() { # dispatch NAME — what main runs without a command when started as NAME
+	bash -c '. "$1"; menu() { echo menu; }; setup() { echo setup; }; main' "$1" "$here/../setup.sh" 2>&1
+}
+mkdir -p "$(dirname "$SELF_INSTALLED")"
+: >"$SELF_INSTALLED"
+check "installed command without a command: menu" menu "$(dispatch "$SELF_INSTALLED")"
+check "downloaded setup.sh without a command: setup" setup "$(dispatch "$CB_TEST_ROOT/home/setup.sh")"
+check "setup.sh read from a pipe without a command: setup" setup "$(dispatch bash)"
+rm -f "$SELF_INSTALLED"
+unset -f dispatch
 
 # --- service_title -----------------------------------------------------------
 check "title of drive" "Google Drive" "$(CB_SERVICE=drive service_title)"
