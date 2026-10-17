@@ -269,6 +269,7 @@ h2 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .row input[type=text], .row input[type=password] { flex: 1; min-width: 200px; }
 .grid2 input[type=text], .grid2 select { width: 100%; }
+#login-code { flex: 0 0 120px; min-width: 0; } /* six digits */
 
 input[type=text], input[type=password], select {
   background: var(--panel-2);

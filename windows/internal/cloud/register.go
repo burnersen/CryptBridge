@@ -127,6 +127,19 @@ func Register(ctx context.Context, client *rcd.Client, name string, service Serv
 		}
 		maps.Copy(parameters, found)
 	}
+	return register(ctx, client, name, service, parameters, ask)
+}
+
+// RegisterSession creates the rclone remote name for an account of a
+// service with password sign-in, signed in with the session LogIn returned.
+// It returns the remote's settings like Register.
+func RegisterSession(ctx context.Context, client *rcd.Client, name string, service Service, session map[string]string) (map[string]string, error) {
+	return register(ctx, client, name, service, maps.Clone(session), nil)
+}
+
+// register adds the settings CryptBridge always sets to parameters and
+// creates the remote; on failure the remote is removed again.
+func register(ctx context.Context, client *rcd.Client, name string, service Service, parameters map[string]string, ask AskFunc) (map[string]string, error) {
 	maps.Copy(parameters, service.fixed)
 	params, err := registerRemote(ctx, client, name, service, parameters, ask)
 	if err != nil {
@@ -199,7 +212,7 @@ func answerQuestions(ctx context.Context, client *rcd.Client, name string, servi
 // added, so that accounts stored before a setting existed get it too.
 func Restore(ctx context.Context, client *rcd.Client, name string, params map[string]string) error {
 	serviceType := params["type"]
-	if serviceType == "" || params["token"] == "" {
+	if serviceType == "" || !HasSignIn(params) {
 		return errors.New("the cloud account is not signed in")
 	}
 	parameters := maps.Clone(params)

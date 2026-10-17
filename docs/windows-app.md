@@ -30,7 +30,7 @@ cache, vaults on your own disks, the app lock and moving files you already have 
   missing, CryptBridge downloads it for you from rclone.org (or from a copy of the same file on GitHub)
   and checks it against a checksum built into CryptBridge. After a CryptBridge update, the matching rclone
   is downloaded automatically.
-- For vaults in the cloud: an account at pCloud, Google Drive, OneDrive or Dropbox. Google Drive also
+- For vaults in the cloud: an account at pCloud, Google Drive, OneDrive, Dropbox or MEGA. Google Drive also
   needs [your own free Google app](google-drive-app.md).
 
 ## Getting started
@@ -40,8 +40,8 @@ cache, vaults on your own disks, the app lock and moving files you already have 
    CryptBridge lives in the system tray, the small icons at the bottom right next to the clock.
 2. **Add your cloud account** (only for vaults in the cloud): *Vaults tab > Add cloud account*, choose
    the service and click *Sign in*. Your browser opens the sign-in page of the service; sign in there and
-   allow the access. For Google Drive, set up your own Google app first: the guide is right there on
-   the page. See [Cloud accounts](cloud-accounts.md) for what each service needs.
+   allow the access. For MEGA, type your e-mail address and password right in CryptBridge instead. For
+   Google Drive, set up your own Google app first: the guide is right there on the page. See [Cloud accounts](cloud-accounts.md) for what each service needs.
 3. **Add a vault:** *Vaults tab > Add vault*. Choose where it is (**in one of your cloud accounts** or
    **on this PC or a USB drive**), then:
    - **Create a new vault:** CryptBridge makes up a strong password and salt for you.

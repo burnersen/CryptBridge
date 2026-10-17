@@ -208,7 +208,8 @@ func protectedFolders(paths appdir.Paths, cacheDir string) []string {
 
 // overlaps reports whether two folders are the same or one is inside the
 // other, ignoring upper and lower case. Windows, pCloud, OneDrive and Dropbox
-// ignore it too; Google Drive does not, where this is merely on the safe side.
+// ignore it too; Google Drive and MEGA do not, where this is merely on the
+// safe side.
 func overlaps(a, b, separator string) bool {
 	a = strings.TrimSuffix(strings.ToLower(a), separator)
 	b = strings.TrimSuffix(strings.ToLower(b), separator)

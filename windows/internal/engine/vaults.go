@@ -373,6 +373,7 @@ func (e *Engine) mountLocked(ctx context.Context, v settings.Vault, otherFolder 
 		CacheMaxSize:      cache.MaxSize,
 		CacheMinFreeSpace: cache.MinFreeSpace,
 		Local:             local,
+		NoChangeReports:   serviceOf(account).NoChangeReports,
 		Hide:              []string{vault.CheckFileName}, // it stays in the vault, but people took it for clutter
 	})
 	return folder, err

@@ -4,8 +4,8 @@
 
 ### Your cloud, locked with your own key. As easy to use as any other drive.
 
-CryptBridge encrypts your files on your own PC before they go to **pCloud, Google Drive, OneDrive or
-Dropbox**, and shows them in Windows as a normal drive. Free, open source, and nobody holds the key but
+CryptBridge encrypts your files on your own PC before they go to **pCloud, Google Drive, OneDrive,
+Dropbox or MEGA**, and shows them in Windows as a normal drive. Free, open source, and nobody holds the key but
 you.
 
 [![Latest release](https://img.shields.io/github/v/release/burnersen/CryptBridge?label=release&color=2ea043)](https://github.com/burnersen/CryptBridge/releases/latest)
@@ -37,8 +37,8 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 
 ## What you can do with it
 
-- 🔒 **Lock your cloud.** pCloud, Google Drive, OneDrive and Dropbox, also several accounts at once.
-  Tested with all four at the same time, films included.
+- 🔒 **Lock your cloud.** pCloud, Google Drive, OneDrive, Dropbox and MEGA, also several accounts at
+  once. Tested with all five at the same time.
 - 💽 **Use it like any other drive.** Every vault gets its own drive letter in Explorer, and several
   vaults can be open side by side.
 - 🔌 **Lock disks and USB sticks, too.** A vault can live on your PC, an external disk or a USB stick,
@@ -46,9 +46,22 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 - 📺 **Watch your films on the TV.** Share your drives in your home network with Infuse, Kodi and other
   video players: read-only for the TV, full access for devices you trust.
 - 🌍 **Stream from anywhere** *(optional, for advanced users)*. One script turns a rented Linux server
-  into an HTTPS streaming server for all your vaults, from all four clouds.
+  into an HTTPS streaming server for all your vaults, from all five clouds.
 - 🆓 **Free, open and without lock-in.** No ads, no tracking, no CryptBridge account. Every vault's
   emergency sheet shows how to open it with plain rclone, so your files never depend on CryptBridge.
+
+## See it in action
+
+<p align="center">
+  <img src="docs/images/windows-status.png" alt="CryptBridge's Status tab: five vaults in pCloud, OneDrive, Google Drive, Dropbox and MEGA, each connected as its own drive from Z: to V:, with the used and free space of every cloud" width="420"><br>
+  <sub><b>The Windows program:</b> five vaults in five clouds open at the same time, each one a drive of its own,
+  with the free space of every cloud and the share for your home network.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/linux-menu.png" alt="The menu of the CryptBridge Linux server in a terminal: vault, WebDAV, Caddy and fail2ban running, and choices for streaming, vaults, restart, log and uninstall" width="620"><br>
+  <sub><b>The optional Linux server:</b> one menu for streaming, your vaults and the log (check code hidden here).</sub>
+</p>
 
 ## 🚀 Quick start
 
@@ -61,7 +74,8 @@ After a CryptBridge update, the matching rclone is downloaded by itself.
    [latest release](https://github.com/burnersen/CryptBridge/releases/latest). There is no installer:
    CryptBridge lives in the system tray, next to the clock.
 2. **Add your cloud account** (skip this for vaults on your PC): *Vaults tab > Add cloud account*, choose
-   the service and sign in in your browser. Google Drive needs [your own free Google app](docs/google-drive-app.md)
+   the service and sign in in your browser (MEGA: with your e-mail address and password right in
+   CryptBridge). Google Drive needs [your own free Google app](docs/google-drive-app.md)
    first; the guide is in the program, too.
 3. **Add a vault:** *Vaults tab > Add vault*. Create a new one (CryptBridge makes up a strong password and
    salt) or open an existing one with its password and salt. Give it a name and a drive letter.
@@ -81,7 +95,7 @@ before you start. Everything else about the program: [Windows program](docs/wind
 
 ```mermaid
 flowchart TB
-    PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("Your cloud<br/>pCloud, Google Drive,<br/>OneDrive, Dropbox")]
+    PC["Your Windows PC<br/>vault as drive Z:"] <-->|locked| Cloud[("Your cloud<br/>pCloud, Google Drive,<br/>OneDrive, Dropbox, MEGA")]
     Cloud <-->|locked| Server["Your Linux server<br/>(optional)"]
     Server -->|secure connection| Player["Video player<br/>anywhere"]
     PC -->|"home network (optional)"| TV["TV, phone, tablet<br/>at home"]
@@ -102,6 +116,7 @@ flowchart TB
 | **Google Drive** | **required**: [your own Google app](docs/google-drive-app.md) (free, about 15 minutes, once) |
 | **OneDrive** | not needed (not possible with a personal Microsoft account) |
 | **Dropbox** | optional: [own Dropbox app](docs/dropbox-app.md) |
+| **MEGA** | not needed: you sign in with your e-mail address and password |
 
 **🔌 Vaults on your PC or a USB drive** · [guide](docs/windows-app.md#vaults-on-this-pc-or-a-usb-drive)
 - No cloud, no sign-in: the folder only ever holds locked files, so a copy of it is a locked backup.
@@ -118,7 +133,7 @@ flowchart TB
 
 **🌍 Linux server** *(optional)* · [guide](docs/linux-server.md)
 - One setup script for Ubuntu and Debian: rclone, Caddy with automatic HTTPS, firewall and fail2ban.
-- As many vaults as you like, from all four clouds, each one a folder of the same share and switched on or
+- As many vaults as you like, from all five clouds, each one a folder of the same share and switched on or
   off on its own.
 - Keys arrive in an encrypted **transfer block**; the same **check code** on PC and server proves they match.
 - Shares ports 80 and 443 with your website: CryptBridge pauses nginx or Apache while streaming is on and

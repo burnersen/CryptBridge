@@ -54,6 +54,11 @@ var (
 		"InvalidAuthenticationToken", // OneDrive
 		"invalid_access_token",       // Dropbox
 		"expired_access_token",       // Dropbox
+		// MEGA ended the session, e.g. after a password change (go-mega's
+		// text for MEGA's error -15; not measured).
+		"Invalid or expired user session",
+		// The stored session cannot be read (rclone 1.75.2, backend/mega).
+		"couldn't decode master key",
 	}
 )
 

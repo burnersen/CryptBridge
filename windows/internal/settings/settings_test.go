@@ -553,6 +553,24 @@ func TestCloneIsIndependent(t *testing.T) {
 	}
 }
 
+// A MEGA account holds a session instead of a token.
+func TestAccountSignedIn(t *testing.T) {
+	cases := []struct {
+		remote map[string]string
+		want   bool
+	}{
+		{nil, false},
+		{map[string]string{"type": cloud.Dropbox, "token": `{"access_token":"x"}`}, true},
+		{map[string]string{"type": cloud.Mega, "user": "name@example.com"}, false},
+		{map[string]string{"type": cloud.Mega, "session_id": "s", "master_key": "a2V5"}, true},
+	}
+	for _, c := range cases {
+		if got := (Account{Remote: c.remote}).SignedIn(); got != c.want {
+			t.Errorf("%v: got %v, want %v", c.remote, got, c.want)
+		}
+	}
+}
+
 func TestLoadRejectsForeignFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.dat")
 	if err := os.WriteFile(path, []byte("not a settings file"), 0o600); err != nil {

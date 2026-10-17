@@ -214,20 +214,21 @@ func (a *App) Services() []cloud.Service {
 	return a.core.Services()
 }
 
-// AddAccount signs in to a cloud service in the browser and adds the
-// account; it returns the new account's ID. See signInContext for what the
-// window gets meanwhile.
+// AddAccount signs in to a cloud service, in the browser or with the
+// credentials in req, and adds the account; it returns the new account's ID.
+// See signInContext for what the window gets meanwhile.
 func (a *App) AddAccount(req engine.NewAccount) (string, error) {
 	ctx, done := a.signInContext()
 	defer done()
 	return a.core.AddAccount(ctx, req, a.showSignInLink, a.askInWindow)
 }
 
-// SignIn signs in to an existing account again.
-func (a *App) SignIn(id string) error {
+// SignIn signs in to an existing account again. creds are needed for a
+// service with password sign-in only; the browser services ignore them.
+func (a *App) SignIn(id string, creds cloud.Credentials) error {
 	ctx, done := a.signInContext()
 	defer done()
-	return a.core.SignIn(ctx, id, a.showSignInLink, a.askInWindow)
+	return a.core.SignIn(ctx, id, creds, a.showSignInLink, a.askInWindow)
 }
 
 // signInContext starts a sign-in that CancelSignIn can stop. While it runs,

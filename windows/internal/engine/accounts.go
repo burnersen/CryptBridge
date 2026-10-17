@@ -46,6 +46,7 @@ type AccountSnapshot struct {
 	ClientID           string        `json:"clientId"`           // of the own app; not a secret, the client secret is never sent
 	SignedInWithOwnApp bool          `json:"signedInWithOwnApp"` // the current sign-in went through the own app
 	Region             string        `json:"region"`             // pCloud: "EU" or "US"
+	User               string        `json:"user"`               // password sign-in: the e-mail address signed in with
 	Usage              *cloud.Usage  `json:"usage"`
 	VaultCount         int           `json:"vaultCount"`
 }
@@ -93,6 +94,9 @@ func (e *Engine) accountSnapshotLocked(a settings.Account, s settings.Settings) 
 	case pcloud.HostUS:
 		snap.Region = "US"
 	}
+	if service.SignIn == cloud.SignInPassword {
+		snap.User = cloud.SessionUser(a.Remote)
+	}
 	for _, v := range s.Vaults {
 		if v.Kind == settings.KindCloud && v.Account == a.ID {
 			snap.VaultCount++
@@ -108,16 +112,18 @@ func (e *Engine) Services() []cloud.Service {
 
 // NewAccount is what the window sends to add a cloud account.
 type NewAccount struct {
-	Service      string `json:"service"` // rclone's backend name
-	Name         string `json:"name"`    // "" gives the service's name
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
+	Service      string            `json:"service"` // rclone's backend name
+	Name         string            `json:"name"`    // "" gives the service's name
+	ClientID     string            `json:"clientId"`
+	ClientSecret string            `json:"clientSecret"`
+	Credentials  cloud.Credentials `json:"credentials"` // services with password sign-in only
 }
 
-// AddAccount signs in to a cloud service in the browser and adds the
-// account. onLink receives the sign-in link in case the browser does not
-// open; ask gets the questions rclone asks that CryptBridge cannot answer
-// itself. It returns the ID of the new account.
+// AddAccount signs in to a cloud service and adds the account: in the
+// browser, or with req.Credentials for a service with password sign-in.
+// onLink receives the sign-in link in case the browser does not open; ask
+// gets the questions rclone asks that CryptBridge cannot answer itself. It
+// returns the ID of the new account.
 func (e *Engine) AddAccount(ctx context.Context, req NewAccount, onLink func(string), ask cloud.AskFunc) (string, error) {
 	service, err := cloud.ServiceOf(req.Service)
 	if err != nil {
@@ -150,7 +156,7 @@ func (e *Engine) AddAccount(ctx context.Context, req NewAccount, onLink func(str
 	}
 
 	account := settings.Account{ID: id, Service: service.Type, Name: name, App: app}
-	if account.Remote, err = e.signInLocked(ctx, client, account, onLink, ask); err != nil {
+	if account.Remote, err = e.signInLocked(ctx, client, account, req.Credentials, onLink, ask); err != nil {
 		return "", err
 	}
 	s.Accounts = append(s.Accounts, account)
@@ -166,9 +172,10 @@ func (e *Engine) AddAccount(ctx context.Context, req NewAccount, onLink func(str
 }
 
 // SignIn signs in to an account again, e.g. after the service ended the
-// sign-in or with a new own app. Its drives must be disconnected; the others
-// may stay.
-func (e *Engine) SignIn(ctx context.Context, id string, onLink func(string), ask cloud.AskFunc) error {
+// sign-in or with a new own app. creds are needed for a service with
+// password sign-in only. Its drives must be disconnected; the others may
+// stay.
+func (e *Engine) SignIn(ctx context.Context, id string, creds cloud.Credentials, onLink func(string), ask cloud.AskFunc) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
 	client, err := e.accountIdleClientLocked(ctx, id)
@@ -180,7 +187,7 @@ func (e *Engine) SignIn(ctx context.Context, id string, onLink func(string), ask
 	if index < 0 {
 		return errUnknownAccount
 	}
-	remote, err := e.signInLocked(ctx, client, updated.Accounts[index], onLink, ask)
+	remote, err := e.signInLocked(ctx, client, updated.Accounts[index], creds, onLink, ask)
 	if err != nil {
 		return err
 	}
@@ -209,24 +216,42 @@ func (e *Engine) SignIn(ctx context.Context, id string, onLink func(string), ask
 	return nil
 }
 
-// signInLocked runs the browser sign-in for an account and registers it
-// with rclone. It returns rclone's settings of the account.
-func (e *Engine) signInLocked(ctx context.Context, client *rcd.Client, a settings.Account, onLink func(string), ask cloud.AskFunc) (map[string]string, error) {
+// signInLocked runs the sign-in for an account, in the browser or with
+// creds, and registers it with rclone. It returns rclone's settings of the
+// account.
+func (e *Engine) signInLocked(ctx context.Context, client *rcd.Client, a settings.Account, creds cloud.Credentials, onLink func(string), ask cloud.AskFunc) (map[string]string, error) {
 	service, err := cloud.ServiceOf(a.Service)
 	if err != nil {
 		return nil, err
 	}
-	if service.App == cloud.AppRequired && !a.App.IsSet() {
-		return nil, fmt.Errorf("%s needs your own app: enter its client ID and client secret first", service.Title)
-	}
 	e.mu.Lock()
 	exe := e.rclone.Path
 	e.mu.Unlock()
+	if service.SignIn == cloud.SignInPassword {
+		return signInWithPassword(ctx, client, exe, remoteName(a.ID), service, creds)
+	}
+	if service.App == cloud.AppRequired && !a.App.IsSet() {
+		return nil, fmt.Errorf("%s needs your own app: enter its client ID and client secret first", service.Title)
+	}
 	token, err := cloud.Authorize(ctx, exe, service, a.App, onLink)
 	if err != nil {
 		return nil, err
 	}
 	return cloud.Register(ctx, client, remoteName(a.ID), service, token, a.App, ask)
+}
+
+// signInWithPassword checks what the user typed, signs in with it and
+// registers the new session as the remote name.
+func signInWithPassword(ctx context.Context, client *rcd.Client, exe, name string, service cloud.Service, typed cloud.Credentials) (map[string]string, error) {
+	creds, err := cloud.NewCredentials(typed.User, typed.Password, typed.Code)
+	if err != nil {
+		return nil, err
+	}
+	session, err := cloud.LogIn(ctx, exe, service, creds)
+	if err != nil {
+		return nil, err
+	}
+	return cloud.RegisterSession(ctx, client, name, service, session)
 }
 
 // SignOut forgets the sign-in of an account. The account with its own app

@@ -148,12 +148,12 @@ type Account struct {
 	Name    string `json:"name"`    // shown in the window
 	// The secrets, protected by the app lock:
 	App    cloud.App         `json:"app"`              // the user's own app; empty: rclone's
-	Remote map[string]string `json:"remote,omitempty"` // rclone's settings of the account, the token among them; empty while signed out
+	Remote map[string]string `json:"remote,omitempty"` // rclone's settings of the account, the token or session among them; empty while signed out
 }
 
 // SignedIn reports whether a sign-in is stored for the account.
 func (a Account) SignedIn() bool {
-	return a.Remote["token"] != ""
+	return cloud.HasSignIn(a.Remote)
 }
 
 // LANAccess is one way for the other devices of the home network into the

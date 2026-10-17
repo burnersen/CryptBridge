@@ -74,7 +74,7 @@
         <svg class="big-icon"><use href="#i-lock"/></svg>
         <h2>No vault yet</h2>
         <p class="muted">A vault is a folder whose files are encrypted. CryptBridge shows it as a drive letter —
-          from your cloud (pCloud, Google Drive, OneDrive, Dropbox) or from a folder on this PC or a USB drive.</p>
+          from your cloud (pCloud, Google Drive, OneDrive, Dropbox, MEGA) or from a folder on this PC or a USB drive.</p>
         <button class="primary" data-goto="vaults" data-page="add">Add a vault</button>
       </div>
 
@@ -132,6 +132,7 @@
                 <div class="bar"><div class="bar-fill" id="account-usage-fill"></div></div>
                 <div class="muted small" id="account-usage-text"></div>
               </div>
+              <div id="account-login-slot"></div>
               <div class="row">
                 <button class="primary" id="btn-signin">Sign in</button>
                 <button id="btn-signout" class="hidden">Sign out</button>
@@ -174,12 +175,41 @@
                 <label for="add-account-name">Name in CryptBridge</label>
                 <input id="add-account-name" type="text" maxlength="40" spellcheck="false">
               </div>
+              <div id="add-login-slot"></div>
               <p class="muted" id="add-account-text"></p>
               <div class="row">
                 <button class="primary" id="btn-add-account">Sign in</button>
               </div>
               <div id="add-account-result" class="notice hidden"></div>
             </div>
+          </div>
+
+          <!-- E-mail address, password and two-factor code of a service without browser sign-in (MEGA):
+               moved by app.js into the account page or the page for adding one. -->
+          <div class="hidden" id="login-fields">
+            <div class="grid2">
+              <div class="field">
+                <label for="login-user">E-mail address</label>
+                <div class="row">
+                  <input id="login-user" type="text" inputmode="email" maxlength="254" spellcheck="false" autocomplete="off">
+                </div>
+              </div>
+              <div class="field">
+                <label for="login-password">Password</label>
+                <div class="row">
+                  <input id="login-password" type="password" spellcheck="false" autocomplete="off">
+                  <button class="icon-btn" data-reveal="login-password" title="Show or hide">👁</button>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="login-code">Two-factor code (only if your account uses two-factor authentication)</label>
+              <div class="row">
+                <input id="login-code" type="text" inputmode="numeric" maxlength="7" spellcheck="false" autocomplete="off" placeholder="123456">
+              </div>
+            </div>
+            <p class="hint">CryptBridge stores neither your password nor the code. MEGA gives a session for the sign-in,
+              and CryptBridge keeps only that session: you do not need the code again until you sign in anew.</p>
           </div>
 
           <!-- The own app of an account: moved by app.js into the account page or the page for adding one. -->
@@ -433,7 +463,7 @@
                 <button class="choice" data-page="add-account" id="choice-new-account">
                   <svg class="choice-icon"><use href="#i-plus"/></svg>
                   <strong>In a cloud not added yet</strong>
-                  <span class="muted">Add your pCloud, Google Drive, OneDrive or Dropbox account first.</span>
+                  <span class="muted">Add your pCloud, Google Drive, OneDrive, Dropbox or MEGA account first.</span>
                 </button>
               </div>
               <div class="notice info hidden" id="add-signin-needed">

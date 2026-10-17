@@ -29,6 +29,10 @@ func TestClassify(t *testing.T) {
 		// Built like Go's network errors (measured offline with pCloud): a
 		// renewal without network is not a refused sign-in.
 		{Drive, `couldn't fetch token: Post "https://oauth2.googleapis.com/token": dial tcp: lookup oauth2.googleapis.com: no such host`, ErrUnreachable},
+		// Built from rclone 1.75.2's and go-mega's texts (not measured).
+		{Mega, "login with previous auth keys failed: Invalid or expired user session, please relogin", ErrSignInExpired},
+		{Mega, "couldn't decode master key: illegal base64 data at input byte 4", ErrSignInExpired},
+		{Mega, `login with previous auth keys failed: Post "https://g.api.mega.co.nz/cs?id=1": dial tcp: lookup g.api.mega.co.nz: no such host`, ErrUnreachable},
 	}
 	for _, c := range cases {
 		original := errors.New(c.message)

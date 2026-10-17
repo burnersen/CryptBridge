@@ -13,14 +13,21 @@ service, for example a private and a work Google Drive.
 | **[Google Drive](https://drive.google.com)** | in the browser | **required**: [your own Google app](google-drive-app.md) |
 | **[OneDrive](https://onedrive.live.com)** | in the browser with your Microsoft account | not possible with a personal Microsoft account, so rclone's access is used |
 | **[Dropbox](https://www.dropbox.com)** | in the browser | optional: [own Dropbox app](dropbox-app.md) |
+| **[MEGA](https://mega.io)** | in CryptBridge, with your e-mail address and password | not needed |
 
 ## Signing in
 
-Signing in works the same everywhere: CryptBridge opens the sign-in page of the service in your
+For pCloud, Google Drive, OneDrive and Dropbox, CryptBridge opens the sign-in page of the service in your
 browser, you sign in there and allow the access, and CryptBridge continues by itself. Your password for
 the cloud is typed only on the page of the service; CryptBridge never sees it. If the service has a
 question afterwards (OneDrive, for example, if your account has more than one drive), CryptBridge shows it
 in a small window. If you close the browser instead, click *Cancel* in CryptBridge.
+
+**MEGA** has no sign-in page for programs like this. You type your e-mail address and password into
+CryptBridge, and the six-digit code of your authenticator app if your account has two-factor
+authentication. CryptBridge signs in once and then keeps only the session MEGA hands out, never your
+password or the code. Should MEGA end the session (for example after you change your password),
+CryptBridge asks you to sign in again.
 
 **Sign-ins stay fresh.** Some clouds (Microsoft above all) hand out a new sign-in every time the old one
 is renewed. CryptBridge keeps the new one, so you do not have to sign in again every few months. If a
@@ -29,15 +36,22 @@ cloud refuses the sign-in, the Status tab says so and offers **Sign in to … ag
 ## Good to know
 
 - **Tested (October 2026)** with pCloud, Google Drive, OneDrive and Dropbox at the same time, including
-  films streamed from all of them.
+  films streamed from all of them; MEGA joined as the fifth in CryptBridge 0.11.
 - **OneDrive:** the *Personal Vault* of OneDrive and files *shared with you* cannot be used for a vault.
   Choose a normal folder.
 - **Dropbox:** CryptBridge uploads files to Dropbox one by one. Dropbox may slow this down a little when
   you copy very many small files at once; rclone then waits and carries on by itself.
 - **OneDrive and Dropbox** do not tell upper from lower case in file names, so vaults with *base64* file
   names are refused there.
-- **Linux server:** the [server setup](linux-server.md) works with vaults in all four clouds (since
-  CryptBridge 0.8).
+- **MEGA:**
+  - MEGA does not tell CryptBridge about changes made elsewhere, so files you add on another device or
+    at mega.nz show up in your drive after about a minute.
+  - MEGA blocks sign-ins for a while when there are very many in a short time; CryptBridge signs in only
+    when you add the account or sign in again.
+  - Free MEGA accounts may only download a certain amount at a time; a long film can then stop until
+    MEGA allows more.
+- **Linux server:** the [server setup](linux-server.md) works with vaults in all five clouds (pCloud,
+  Google Drive, OneDrive and Dropbox since CryptBridge 0.8, MEGA since 0.11).
 
 ## Updating from CryptBridge 0.6 or older
 

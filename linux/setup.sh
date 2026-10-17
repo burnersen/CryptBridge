@@ -6,8 +6,8 @@
 # CryptBridge Linux setup.
 #
 # Turns a fresh Ubuntu/Debian server into a streaming server for rclone-crypt
-# encrypted vaults in pCloud, Google Drive, OneDrive or Dropbox, one folder
-# per vault:
+# encrypted vaults in pCloud, Google Drive, OneDrive, Dropbox or MEGA, one
+# folder per vault:
 #
 #   cloud <-> rclone mount, one per vault (rclone-mount-N.service) -> ~/CryptBridge/NAME (read/write in the desktop)
 #   ~/CryptBridge -> rclone serve webdav (rclone-webdav.service, read-only) <- Caddy (HTTPS) <- video player
@@ -84,7 +84,7 @@ readonly OLD_CLOUD_REMOTE="cbpcloud" # up to CryptBridge 0.7
 readonly VAULT_REMOTE="cbvault"
 # The cloud services the setup can sign in to, by rclone's backend names, and
 # their titles; the same as in the Windows program.
-readonly -A SERVICE_TITLES=([pcloud]="pCloud" [drive]="Google Drive" [onedrive]="OneDrive" [dropbox]="Dropbox")
+readonly -A SERVICE_TITLES=([pcloud]="pCloud" [drive]="Google Drive" [onedrive]="OneDrive" [dropbox]="Dropbox" [mega]="MEGA")
 readonly WEBDAV_ADDR="127.0.0.1:8080"
 readonly CHECK_FILE=".cryptbridge-vault"
 # A vault's name is the name of its folder; see valid_vault_name.
@@ -113,6 +113,10 @@ readonly CACHE_MODE="full"
 readonly READ_AHEAD="128M"
 readonly DIR_CACHE_TIME="24h"
 readonly POLL_INTERVAL="1m"
+# MEGA tells rclone about no changes made elsewhere, so its mount looks at
+# the folders again after a minute instead of a day. rclone keeps MEGA's
+# folder tree in memory and up to date, so that costs no network.
+readonly QUIET_DIR_CACHE_TIME="1m"
 readonly DEFAULT_CACHE_MAX_GB=20
 
 # bcrypt cost of the streaming password; see choose_webdav_account.
@@ -464,14 +468,16 @@ reset_keys() {
 }
 reset_keys
 
-# A valid cloud sign-in in a transfer block: a service name, and settings
+# A valid cloud sign-in in a transfer block: a service name, the settings
+# that hold the sign-in (MEGA: a session, the others: a token), and settings
 # that can only become "key = value" lines of the rclone configuration —
 # a line break in a value could add settings or remotes of its own.
 # shellcheck disable=SC2016 # jq's code, not the shell's
 readonly VALID_CLOUD_SIGN_IN='
 	(.service | type == "string" and test("^[a-z0-9]+$"))
 	and (.settings | type == "object")
-	and (.settings.token | type == "string" and length > 0)
+	and ((if .service == "mega" then ["session_id", "master_key"] else ["token"] end) as $signIn
+		| .settings as $s | $signIn | all($s[.] | type == "string" and length > 0))
 	and (.settings | to_entries | all(
 		(.key | test("^[a-z0-9_]+$")) and .key != "type"
 		and (.value | type == "string" and (test("[\r\n]") | not))))'
@@ -609,7 +615,7 @@ take_cloud_sign_in() {
 read_keys_by_hand() {
 	info "pCloud sign-in: on a PC with a browser run   rclone authorize \"pcloud\"   ,"
 	info "sign in, and paste the line that starts with {\"access_token\" here."
-	info "(Google Drive, OneDrive and Dropbox: please use the transfer block.)"
+	info "(Google Drive, OneDrive, Dropbox and MEGA: please use the transfer block.)"
 	ask_secret PCLOUD_TOKEN "pCloud token"
 	[[ "$PCLOUD_TOKEN" == '{"access_token"'* ]] || die "That does not look like an rclone pCloud token."
 	CB_SERVICE="pcloud"
@@ -740,7 +746,7 @@ check_cloud_access() {
 
 # reach_cloud — asks the cloud of RCLONE_CONF for its free space and prints
 # it; if the cloud does not answer, prints why in words and fails. The parts
-# of rclone's messages are the ones the Windows program measured (see
+# of rclone's messages are the ones the Windows program uses (see
 # windows/internal/cloud/problem.go and pcloud.go); a missing network comes
 # first, as a token renewal can fail for want of it too.
 reach_cloud() {
@@ -753,7 +759,8 @@ reach_cloud() {
 	case "$out" in
 	*"dial tcp"* | *"i/o timeout"* | *"TLS handshake timeout"*)
 		printf '%s cannot be reached. Please check the internet connection of this server: %s' "$title" "$out" ;;
-	*"(2094)"* | *"(2095)"* | *invalid_grant* | *"Error 401"* | *InvalidAuthenticationToken* | *invalid_access_token* | *expired_access_token*)
+	*"(2094)"* | *"(2095)"* | *invalid_grant* | *"Error 401"* | *InvalidAuthenticationToken* | *invalid_access_token* | *expired_access_token* | \
+		*"Invalid or expired user session"* | *"couldn't decode master key"*)
 		printf '%s no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again.' "$title" ;;
 	*invalid_client* | *unauthorized_client*)
 		printf '%s does not accept your own app. Check its client ID and secret in the Windows program and bring the keys again.' "$title" ;;
@@ -1604,6 +1611,16 @@ write_units() {
 	ok "Services written: rclone-webdav.service and one ${VAULT_UNIT_PREFIX}NUMBER.service per vault"
 }
 
+# dir_cache_time — how long the mount of the selected vault keeps folder
+# listings; see QUIET_DIR_CACHE_TIME.
+dir_cache_time() {
+	if [[ "$CB_SERVICE" == "mega" ]]; then
+		printf '%s' "$QUIET_DIR_CACHE_TIME"
+	else
+		printf '%s' "$DIR_CACHE_TIME"
+	fi
+}
+
 # write_vault_unit — the mount service of the selected vault. Its folder is
 # written in quotes, as the name may hold spaces; valid_vault_name keeps out
 # the characters that systemd reads differently in quotes.
@@ -1641,7 +1658,7 @@ ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: "$dir" \\
   --vfs-read-chunk-size $CHUNK_SIZE \\
   --vfs-read-chunk-size-limit $CHUNK_SIZE_LIMIT \\
   --vfs-read-ahead $READ_AHEAD \\
-  --dir-cache-time $DIR_CACHE_TIME \\
+  --dir-cache-time $(dir_cache_time) \\
   --poll-interval $POLL_INTERVAL \\
   --umask 022 \\
   --log-level INFO

@@ -738,9 +738,11 @@ function renderAccount(s) {
   const a = currentAccount();
   if (!a) return;
   $("acc-title").textContent = longName(a);
+  const password = usesPassword(serviceByType(a.service));
   const region = a.region ? ` (pCloud ${a.region} region)` : "";
   const via = a.signedInWithOwnApp ? "your own app" : "rclone's shared access";
-  $("account-state").textContent = a.signedIn ? `Signed in${region} through ${via}.` : "Not signed in.";
+  const signedInText = password ? `Signed in as ${a.user}.` : `Signed in${region} through ${via}.`;
+  $("account-state").textContent = a.signedIn ? signedInText : "Not signed in.";
   $("btn-signin").textContent = a.signedIn ? "Sign in again" : `Sign in to ${a.serviceTitle}`;
   show($("btn-signout"), a.signedIn);
   const usage = a.signedIn && a.usage && a.usage.total > 0;
@@ -758,13 +760,16 @@ function renderAccount(s) {
     "CryptBridge forgets the sign-in and your own app. Your files in the cloud are not touched.";
   if (filledAccount !== a.id) {
     filledAccount = a.id;
+    loginAsked = "";
     $("acc-name").value = a.name;
     $("acc-rename-result").textContent = "";
     show($("account-result"), false);
     placeAppCard(serviceByType(a.service), "account");
     loadAppFields(a);
+    clearLoginFields(a.user);
   }
   renderApp(a);
+  placeLoginFields("account", password && (!a.signedIn || !!a.signInProblem || loginAsked === a.id));
 }
 
 // accountDrivesOff disconnects the connected drives of an account (asking
@@ -779,25 +784,41 @@ async function accountDrivesOff(id) {
   return ids;
 }
 
-// signIn runs the browser sign-in for an account again. A mounted drive
-// keeps using the old sign-in, so the account's connected drives are
-// disconnected first and connected again afterwards — also when the
-// sign-in fails or is cancelled, so that nothing is left worse than before.
+// signIn runs the sign-in for an account again. A mounted drive keeps using
+// the old sign-in, so the account's connected drives are disconnected first
+// and connected again afterwards — also when the sign-in fails or is
+// cancelled, so that nothing is left worse than before. For a service with
+// password sign-in, the first call only shows the fields if no password has
+// been typed yet.
 async function signIn(id) {
   openTab("vaults", "account:" + id);
   const a = accountByID(id);
   if (!a) return;
+  const password = usesPassword(serviceByType(a.service));
+  if (password && $("login-password").value === "") {
+    loginAsked = id;
+    renderAccount(snapshot);
+    $("login-password").focus();
+    setNotice($("account-result"), "info", `Enter the password of ${a.name}, then click “${$("btn-signin").textContent}”.`);
+    return;
+  }
+  const creds = password ? typedLogin() : {};
   const reconnect = await accountDrivesOff(id);
   if (reconnect === null) return;
 
   let failure = null;
   startSignInWaiting(a.service, a.ownApp);
   try {
-    await api.SignIn(id);
+    await api.SignIn(id, creds);
+    if (password) {
+      loginAsked = "";
+      clearLoginFields($("login-user").value);
+    }
   } catch (err) {
     failure = err;
   } finally {
     stopSignInWaiting();
+    $("login-code").value = ""; // a code works only once
   }
   for (const vid of reconnect) {
     try {
@@ -812,10 +833,12 @@ async function signIn(id) {
 }
 
 // startSignInWaiting tells the user to sign in in the browser, with the
-// hints that fit the service and the app.
+// hints that fit the service and the app, or that CryptBridge is signing in
+// with the typed password.
 function startSignInWaiting(serviceType, ownApp) {
   const service = serviceByType(serviceType);
-  $("signin-waiting-text").textContent =
+  $("signin-waiting-text").textContent = usesPassword(service) ?
+    `Signing in to ${service.title}… With many files in the account, this can take a minute.` :
     `Please sign in to ${service ? service.title : "the cloud"} in the browser window that has just opened.`;
   show($("signin-link-row"), false);
   document.querySelectorAll("#signin-waiting [data-hint-service], #signin-waiting [data-hint-app]").forEach((hint) => {
@@ -860,6 +883,39 @@ $("btn-acc-remove").addEventListener("click", () => run($("account-result"), asy
   openPage(snapshot.accounts.length > 0 ? "account:" + snapshot.accounts[0].id : "add-account");
   setNotice($("vaults-notice"), "good", `${a.name} was removed from CryptBridge. Your files in the cloud are untouched.`);
 }));
+
+// ---------- sign-in with e-mail address and password (MEGA) ----------
+
+let loginAsked = ""; // the account whose "Sign in again" asked for the password
+
+// usesPassword reports whether a service signs in with e-mail address and
+// password typed here instead of in the browser.
+function usesPassword(service) {
+  return !!service && service.signIn === "password";
+}
+
+// placeLoginFields shows the fields in a page ("account" or "add"), or hides
+// them. They are moved only when they change pages: moving them takes the
+// focus away from a field being typed in.
+function placeLoginFields(where, visible) {
+  const fields = $("login-fields");
+  const slot = $(where === "account" ? "account-login-slot" : "add-login-slot");
+  if (visible && fields.parentElement !== slot) slot.append(fields);
+  show(fields, visible);
+}
+
+// clearLoginFields empties the fields, except for the e-mail address given.
+function clearLoginFields(user) {
+  $("login-user").value = user || "";
+  $("login-password").value = "";
+  $("login-password").type = "password";
+  $("login-code").value = "";
+}
+
+// typedLogin returns what the user typed, as the engine expects it.
+function typedLogin() {
+  return { user: $("login-user").value, password: $("login-password").value, code: $("login-code").value };
+}
 
 // ---------- own app of an account ----------
 
@@ -963,6 +1019,7 @@ const SERVICE_NOTES = {
   drive: "Needs your own free Google app — the guide shows how (about 15 minutes, once).",
   onedrive: "Sign in in the browser with your Microsoft account.",
   dropbox: "Sign in in the browser. Your own Dropbox app is optional.",
+  mega: "Sign in with your MEGA e-mail address and password.",
 };
 
 function prepareAddAccount() {
@@ -976,7 +1033,10 @@ function prepareAddAccount() {
       box.append(choice);
     }
   }
-  if (addService) placeAppCard(serviceByType(addService), "add");
+  if (addService) {
+    placeAppCard(serviceByType(addService), "add");
+    placeLoginFields("add", usesPassword(serviceByType(addService)));
+  }
 }
 
 function setAddService(type) {
@@ -985,14 +1045,19 @@ function setAddService(type) {
   const changed = type !== addService;
   addService = type;
   document.querySelectorAll("#service-choices .choice").forEach((c) => c.classList.toggle("active", c.dataset.service === type));
+  const password = usesPassword(service);
   placeAppCard(service, "add");
+  placeLoginFields("add", password);
   if (changed) {
     loadAppFields(null);
+    clearLoginFields("");
     $("add-account-name").value = "";
   }
   $("add-account-name").placeholder = service.title;
   $("add-account-step").textContent = service.app === "none" ? "2" : "3";
-  $("add-account-text").textContent = `A browser window opens with the sign-in page of ${service.title}. ` +
+  $("add-account-text").textContent = password ?
+    `CryptBridge signs in to ${service.title} with your e-mail address and password.` :
+    `A browser window opens with the sign-in page of ${service.title}. ` +
     "Sign in there and allow the access; CryptBridge waits and continues by itself." +
     (type === "onedrive" ? " CryptBridge uses rclone's access to OneDrive: personal Microsoft accounts cannot have an app of their own." : "");
   show($("add-account-signin"), true);
@@ -1012,11 +1077,14 @@ $("btn-add-account").addEventListener("click", () => run($("add-account-result")
       name: $("add-account-name").value,
       clientId: clientId,
       clientSecret: $("app-client-secret").value,
+      credentials: usesPassword(service) ? typedLogin() : undefined,
     });
   } finally {
     stopSignInWaiting();
+    $("login-code").value = ""; // a code works only once
   }
   loadAppFields(null);
+  clearLoginFields("");
   $("add-account-name").value = "";
   render(await api.GetSnapshot());
   openPage("account:" + id);
@@ -1507,6 +1575,11 @@ function rcloneCommands(d) {
       "    (a browser opens: sign in to pCloud)",
       `rclone config create cbvault crypt remote="cbpcloud:${d.vaultPath}" ${keys}`,
     ];
+  } else if (d.service === "mega") {
+    lines = [
+      `rclone config create cbcloud mega user="YOUR-E-MAIL" pass="YOUR-MEGA-PASSWORD" --obscure`,
+      `rclone config create cbvault crypt remote="cbcloud:${d.vaultPath}" ${keys}`,
+    ];
   } else {
     const ownApp = d.service === "drive" ? " client_id=YOUR-CLIENT-ID client_secret=YOUR-CLIENT-SECRET" : "";
     lines = [`rclone config create cbcloud ${d.service}${ownApp}`];
@@ -1515,6 +1588,11 @@ function rcloneCommands(d) {
       `rclone config create cbvault crypt remote="cbcloud:${d.vaultPath}" ${keys}`);
   }
   lines.push("    (keep --obscure: without it rclone may store the password wrongly)", "rclone ls cbvault:");
+  if (d.service === "mega") {
+    // rclone signs in to MEGA on first use and keeps a session from then
+    // on, so a two-factor code is needed with the first reading command only.
+    lines.push("    (with two-factor authentication: rclone ls cbvault: --mega-2fa CODE, with the code shown right now)");
+  }
   return lines.join("\n");
 }
 

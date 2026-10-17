@@ -56,6 +56,11 @@ func TestVfsOptions(t *testing.T) {
 	if cloud["CacheMode"] != CacheMode || cloud["ChunkSize"] != ChunkSize || cloud["DirCacheTime"] != DirCacheTime || cloud["CacheMaxAge"] != nil {
 		t.Fatalf("pCloud options: %v", cloud)
 	}
+	// MEGA: the same streaming values, but folders are looked at again soon.
+	quiet := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G", NoChangeReports: true}.vfsOptions()
+	if quiet["DirCacheTime"] != QuietDirCacheTime || quiet["CacheMode"] != CacheMode || quiet["ChunkSize"] != ChunkSize {
+		t.Fatalf("options without change reports: %v", quiet)
+	}
 }
 
 // Hidden names apply to the top folder only and are taken literally, even

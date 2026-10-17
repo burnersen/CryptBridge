@@ -27,6 +27,12 @@ const (
 	PollInterval   = "1m"   // ask pCloud for changes every minute
 )
 
+// QuietDirCacheTime replaces DirCacheTime for clouds that report no changes
+// to rclone, such as MEGA: changes made elsewhere show after this time
+// instead of a day. rclone keeps MEGA's folder tree in memory and up to
+// date, so looking again costs no network (rclone 1.75.2, backend/mega).
+const QuietDirCacheTime = "1m"
+
 // Values for a vault in a folder of this PC. Reading from a local disk is
 // fast, so only files being written pass through the cache, and they leave
 // it soon after: the cache holds them decrypted.
@@ -38,12 +44,13 @@ const (
 
 // Settings describe one drive.
 type Settings struct {
-	Remote            string // rclone remote of the vault, e.g. "cbvault:"
-	Letter            string // drive letter without colon, e.g. "Z"
-	VolumeName        string // name shown in Explorer
-	CacheMaxSize      string // e.g. "20G"; a soft limit, files in use stay
+	Remote            string   // rclone remote of the vault, e.g. "cbvault:"
+	Letter            string   // drive letter without colon, e.g. "Z"
+	VolumeName        string   // name shown in Explorer
+	CacheMaxSize      string   // e.g. "20G"; a soft limit, files in use stay
 	CacheMinFreeSpace string   // emergency brake: keep this much disk space free
 	Local             bool     // the vault is a folder of this PC, not in pCloud
+	NoChangeReports   bool     // the cloud does not report changes made elsewhere
 	Hide              []string // names in the top folder that the drive does not show
 }
 
@@ -83,6 +90,10 @@ func (s Settings) vfsOptions() map[string]any {
 			"DirCacheTime":      LocalDirCacheTime,
 		}
 	}
+	dirCacheTime := DirCacheTime
+	if s.NoChangeReports {
+		dirCacheTime = QuietDirCacheTime
+	}
 	return map[string]any{
 		"CacheMode":         CacheMode,
 		"CacheMaxSize":      s.CacheMaxSize,
@@ -90,7 +101,7 @@ func (s Settings) vfsOptions() map[string]any {
 		"ChunkSize":         ChunkSize,
 		"ChunkSizeLimit":    ChunkSizeLimit,
 		"ReadAhead":         ReadAhead,
-		"DirCacheTime":      DirCacheTime,
+		"DirCacheTime":      dirCacheTime,
 		"PollInterval":      PollInterval,
 	}
 }

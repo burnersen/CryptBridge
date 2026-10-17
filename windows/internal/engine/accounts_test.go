@@ -193,3 +193,59 @@ func TestKeepRenewedSignIn(t *testing.T) {
 		t.Fatalf("stored token %q; want the renewed one", a.Remote["token"])
 	}
 }
+
+// A MEGA account is signed in with what the user typed, not in the browser.
+// A mistyped e-mail address stops the sign-in before MEGA is asked.
+func TestMegaSignInChecksWhatWasTyped(t *testing.T) {
+	e := accountEngine(t, settings.Defaults(`C:\cache`))
+	useTestRclone(t, e.paths)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	t.Cleanup(func() {
+		if client := clientOf(e); client != nil {
+			_ = rcd.Stop(context.Background(), client, e.paths.StateFile)
+		}
+	})
+
+	req := NewAccount{Service: cloud.Mega, Credentials: cloud.Credentials{User: "name.example.com", Password: "secret"}}
+	if _, err := e.AddAccount(ctx, req, nil, nil); err == nil || !strings.Contains(err.Error(), "e-mail address") {
+		t.Fatalf("got %v; want the e-mail address refused", err)
+	}
+	if accounts := e.currentSettings().Accounts; len(accounts) != 0 {
+		t.Fatalf("accounts %+v; want none after a failed sign-in", accounts)
+	}
+}
+
+// A stored MEGA session is registered again when rclone starts, like a
+// token. rclone stores it without signing in, so MEGA is not asked.
+func TestMegaSessionIsRestored(t *testing.T) {
+	session := map[string]string{
+		"type": cloud.Mega, "user": "name@example.com (session 01020304)",
+		"session_id": "fake-session", "master_key": "a2V5",
+	}
+	s := settings.Defaults(`C:\cache`)
+	s.Accounts = []settings.Account{{ID: "amega", Service: cloud.Mega, Name: "MEGA", Remote: session}}
+	e := accountEngine(t, s)
+	useTestRclone(t, e.paths)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	e.actionMu.Lock()
+	defer e.actionMu.Unlock()
+	if err := e.prepareLocked(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client := clientOf(e)
+	t.Cleanup(func() { _ = rcd.Stop(context.Background(), client, e.paths.StateFile) })
+
+	registered, err := cloud.ReadParams(ctx, client, remoteName("amega"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered["session_id"] != "fake-session" || registered["master_key"] != "a2V5" || registered["pass"] != "" {
+		t.Fatalf("registered %v", registered)
+	}
+	if snap := accountOf(e, "amega"); !snap.SignedIn || snap.User != "name@example.com" {
+		t.Fatalf("snapshot %+v; want signed in as name@example.com", snap)
+	}
+}

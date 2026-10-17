@@ -194,6 +194,13 @@ save_settings
 	check "vault unit: the folder is quoted" quoted "$r"
 	[[ "$unit" == *"--config $RCLONE_DIR/1.conf "* && "$unit" == *"--cache-dir $CACHE_DIR/1 "* ]] && r=own || r="$unit"
 	check "vault unit: keys and cache of its own" own "$r"
+	[[ "$unit" == *"--dir-cache-time $DIR_CACHE_TIME "* ]] && r=day || r="$unit"
+	check "vault unit: folders kept a day where the cloud reports changes" day "$r"
+	CB_SERVICE="mega" # not saved
+	write_vault_unit
+	unit="$(<"$UNIT_DIR/rclone-mount-1.service")"
+	[[ "$unit" == *"--dir-cache-time $QUIET_DIR_CACHE_TIME "* && "$unit" == *"in MEGA"* ]] && r=minute || r="$unit"
+	check "vault unit: MEGA reports no changes, folders kept a minute" minute "$r"
 	write_webdav_unit
 	unit="$(<"$WEBDAV_UNIT")"
 	[[ "$unit" == *"serve webdav \"$CB_MOUNT_DIR\""* && "$unit" == *'--config ""'* && "$unit" != *BindsTo* ]] && r=folder || r="$unit"
@@ -724,6 +731,32 @@ unset -f dispatch
 check "title of drive" "Google Drive" "$(CB_SERVICE=drive service_title)"
 check "title when no service is known" "the cloud" "$(CB_SERVICE="" service_title)"
 check "title of a service the setup does not know" "the cloud" "$(CB_SERVICE=s3 service_title)"
+check "title of mega" "MEGA" "$(CB_SERVICE=mega service_title)"
+
+# --- reach_cloud: rclone's answers in words ----------------------------------
+# reached ANSWER — runs reach_cloud against an rclone that fails with ANSWER
+# (or answers it, with "ok:" in front); prints "status output". It runs in
+# a subshell of its own, so the stand-in rc stays there.
+reached() {
+	local out status
+	rc() {
+		if [[ "$answer" == ok:* ]]; then printf '%s\n' "${answer#ok:}"; else printf '%s\n' "$answer" >&2; return 1; fi
+	}
+	out="$( (CB_SERVICE=mega reach_cloud) 2>&1)"; status=$?
+	printf '%s %s' "$status" "$out"
+}
+answer=$'ok:Total:   20 GiB\nUsed:    5 GiB\nFree:    15 GiB'
+check "reach_cloud: free space of MEGA" "0 15 GiB" "$(reached)"
+answer='Failed to create file system for "cbcloud:": login with previous auth keys failed: Invalid or expired user session, please relogin'
+check "reach_cloud: MEGA ended the session" "1 MEGA no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again." "$(reached)"
+answer='Failed to create file system for "cbcloud:": couldn'"'"'t decode master key: illegal base64 data at input byte 4'
+check "reach_cloud: a broken MEGA key means signing in again" "1 MEGA no longer accepts this sign-in. Sign in again (in the Windows program) and bring the keys again." "$(reached)"
+answer='Failed to create file system for "cbcloud:": dial tcp: lookup g.api.mega.co.nz: no such host'
+r="$(reached)"
+[[ "$r" == "1 MEGA cannot be reached. Please check the internet connection"* ]] && r=offline
+check "reach_cloud: no network comes first" offline "$r"
+unset -f reached
+unset answer
 
 # --- rclone configuration: written, read back, moved from CryptBridge 0.7 ---
 as_user() { "$@"; }                       # the tests run as one user
@@ -746,6 +779,14 @@ CB_SERVICE="" CB_VAULT_PATH="" VAULT_ENCRYPTION="" VAULT_DIRNAMES=""
 read_kept_keys
 check "kept keys are read back" "onedrive|Films|obfuscate|false" \
 	"$CB_SERVICE|$CB_VAULT_PATH|$VAULT_ENCRYPTION|$VAULT_DIRNAMES"
+# The Windows program marks MEGA's e-mail address with the session
+# (cloud.sessionOf): spaces and brackets in a value.
+CB_SERVICE="mega" CB_VAULT_PATH="Films"
+CLOUD_SETTINGS=$'user = me@example.com (session 1a2b3c4d)\nsession_id = S-1_x\nmaster_key = K=='
+write_rclone_conf
+check "conf: MEGA's e-mail address with its session mark is read back whole" "me@example.com (session 1a2b3c4d)" \
+	"$(conf_value "$CLOUD_REMOTE" user)"
+check "conf: MEGA's master key keeps its '='" "K==" "$(conf_value "$CLOUD_REMOTE" master_key)"
 
 rm -f "$RCLONE_CONF"
 # CryptBridge 0.7 to 0.8 (update_single_vault then makes it a vault of its own).
@@ -803,6 +844,11 @@ if command -v jq >/dev/null; then
 	r="$(taken '{"format":"cryptbridge-transfer-1","pcloud":{"hostname":"eapi.pcloud.com","token":"{\"access_token\":\"P\"}"},'"$vault_json"'}')"
 	check "format 1 (CryptBridge 0.7): pCloud sign-in taken" \
 		$'ok pcloud|hostname = eapi.pcloud.com\ntoken = {"access_token":"P"}' "$r"
+	# MEGA signs in with a session instead of a token; Go writes the keys in order.
+	mega_session='"master_key":"K==","session_id":"S-1_x","user":"me@example.com (session 1a2b3c4d)"'
+	r="$(taken "$(block2 '{"service":"mega","settings":{'"$mega_session"'}}')")"
+	check "format 2: MEGA session taken" \
+		$'ok mega|master_key = K==\nsession_id = S-1_x\nuser = me@example.com (session 1a2b3c4d)' "$r"
 
 	r="$(taken '{"format":"cryptbridge-transfer-3"}')"
 	[[ "$r" == "stopped "*"newer CryptBridge"* ]] && r=newer
@@ -825,7 +871,18 @@ if command -v jq >/dev/null; then
 	check "a value that is no text is refused" refused "$(refused '{"service":"drive","settings":{"token":"T","n":1}}')"
 	check "a sign-in without token is refused" refused "$(refused '{"service":"drive","settings":{"client_id":"x"}}')"
 	check "a service name with odd characters is refused" refused "$(refused '{"service":"drive]","settings":{"token":"T"}}')"
+	check "a MEGA sign-in without session is refused" refused \
+		"$(refused '{"service":"mega","settings":{"master_key":"K==","user":"me@example.com"}}')"
+	check "a MEGA sign-in without master key is refused" refused \
+		"$(refused '{"service":"mega","settings":{"session_id":"S","user":"me@example.com"}}')"
+	check "a MEGA sign-in with an empty session is refused" refused \
+		"$(refused '{"service":"mega","settings":{"master_key":"K==","session_id":"","user":"me@example.com"}}')"
+	check "a token does not stand in for MEGA's session" refused \
+		"$(refused '{"service":"mega","settings":{"token":"T","user":"me@example.com"}}')"
+	check "a line break in MEGA's settings is refused" refused \
+		"$(refused '{"service":"mega","settings":{'"$mega_session"',"x":"y\n[evil]"}}')"
 	unset -f block2 taken refused
+	unset mega_session
 
 	check "a copied code loses case, dashes and invisible characters" K7Q2MABCDEFGHJKLMNPQRSTUV \
 		"$(normalise_code $'\xc2\xa0k7q2m-ABCDE\xe2\x80\x8b fghjk\tLMNPQ-rstuv\r')"

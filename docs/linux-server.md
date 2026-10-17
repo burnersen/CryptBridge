@@ -4,12 +4,17 @@
 
 *Optional, for advanced users.* Want to watch your films anywhere, without your PC at home running? Rent
 a small Linux server (a VPS) and let one setup script turn it into a streaming server for your vaults in
-pCloud, Google Drive, OneDrive or Dropbox, as many as you like and in different clouds. Your video
-player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from it over a secure
-connection (HTTPS). On the server itself, every vault is a folder in `~/CryptBridge`.
+pCloud, Google Drive, OneDrive, Dropbox or MEGA, as many as you like and in different clouds. Your
+video player, for example **Infuse** on Apple TV, iPhone or iPad, then plays straight from it over a
+secure connection (HTTPS). On the server itself, every vault is a folder in `~/CryptBridge`.
+
+<p align="center">
+  <img src="images/linux-menu.png" alt="The menu of the CryptBridge Linux server in a terminal: vault, WebDAV, Caddy and fail2ban running, and choices for streaming, vaults, restart, log and uninstall" width="620"><br>
+  <sub>The menu of the server, opened with <code>cryptbridge</code> (check code hidden here).</sub>
+</p>
 
 Tested on **Ubuntu 26.04 with an XFCE desktop**, on a server that already had its own firewall rules,
-fail2ban jails and third-party package sources, with vaults in all four clouds. Made for Ubuntu 24.04 and
+fail2ban jails and third-party package sources, with vaults in all five clouds. Made for Ubuntu 24.04 and
 Debian 12 and 13 as well (not tested there yet), with or without a desktop.
 
 - [Before you start](#before-you-start)
@@ -151,7 +156,7 @@ Your files stay in the cloud the whole time; the servers only pass them through.
 | Step | What happens |
 |---|---|
 | Packages | exactly the tested rclone 1.75.2 (checked against a checksum built into the setup; another version is replaced), Caddy from Ubuntu/Debian, fuse3, ufw, fail2ban, apache2-utils |
-| Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, one file per vault, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour) |
+| Keys | paste the transfer block and type its code, or enter everything by hand (pCloud only); the sign-in is kept in `/etc/cryptbridge/rclone/`, one file per vault, where rclone may renew it (Google Drive, OneDrive and Dropbox do so about every hour; MEGA's sign-in is a session that needs no renewal) |
 | Check | keys tested against your vault; the check code must equal the one in the Windows program |
 | Vaults | each mounted at `~/CryptBridge/NAME` for your desktop user, with a service (`rclone-mount-1.service`, `-2` ...) and a cache of its own, so one vault can be off or fail while the others keep running |
 | Streaming | WebDAV for your video player serves `~/CryptBridge`, read-only (`rclone-webdav.service`), behind Caddy with HTTPS; if rclone crashes, the service comes back by itself |

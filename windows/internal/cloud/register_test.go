@@ -140,10 +140,48 @@ func TestRegisterRemovesTheRemoteWhenCancelled(t *testing.T) {
 	}
 }
 
+// rclone stores a MEGA account without signing in (measured 2026-10-17), so
+// a made-up session reaches no service either.
+func TestRegisterMegaSessionAndRestore(t *testing.T) {
+	ctx, client := startRclone(t)
+	session := map[string]string{
+		megaUser:      "name@example.com (session 01020304)",
+		megaSessionID: "fake-session",
+		megaMasterKey: "a2V5",
+	}
+	params, err := RegisterSession(ctx, client, "cbtest", mustService(t, Mega), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range session {
+		if params[key] != value {
+			t.Fatalf("params = %v; want %s = %q", params, key, value)
+		}
+	}
+	if params["type"] != Mega || params[megaPassword] != "" || params[megaCode] != "" || !HasSignIn(params) {
+		t.Fatalf("params = %v", params)
+	}
+
+	removeRemote(ctx, client, "cbtest")
+	if err := Restore(ctx, client, "cbtest", params); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := ReadParams(ctx, client, "cbtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored[megaSessionID] != "fake-session" || restored[megaMasterKey] != "a2V5" || restored[megaUser] != session[megaUser] {
+		t.Fatalf("restored = %v", restored)
+	}
+}
+
 func TestRestoreNeedsASignIn(t *testing.T) {
 	ctx, client := startRclone(t)
 	if err := Restore(ctx, client, "cbtest", map[string]string{"type": Dropbox}); err == nil {
 		t.Fatal("restored an account without token")
+	}
+	if err := Restore(ctx, client, "cbtest", map[string]string{"type": Mega, megaUser: "name@example.com"}); err == nil {
+		t.Fatal("restored a MEGA account without session")
 	}
 	if _, err := ReadParams(ctx, client, "cbmissing"); err == nil {
 		t.Fatal("read the settings of a missing remote")
