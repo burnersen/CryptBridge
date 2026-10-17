@@ -482,6 +482,12 @@ settings for your player, restarts the services or runs the setup again. `cryptb
 the settings for your player directly. `sudo cryptbridge uninstall` removes everything except your files
 in the cloud.
 
+**Need ports 80 and 443 for something else for a while,** for example a test website with nginx or
+Apache? Choose *Switch streaming off* in the `cryptbridge` menu (or run `sudo cryptbridge streaming off`).
+The vault folder keeps working, only video players cannot connect. Streaming stays off, also after a
+restart of the server, until you choose *Switch streaming on* (or run `sudo cryptbridge streaming on`).
+Stop the other web server first: if it still uses the ports, CryptBridge names it and waits.
+
 <details>
 <summary><b>Technical details: what the setup does</b></summary>
 

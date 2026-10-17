@@ -150,6 +150,67 @@ done
 unset -f ss ps systemctl confirm
 HTTPS_POSSIBLE=1
 
+# --- switch_streaming: Caddy off frees 80/443 for a website, and stays off ---
+# Settings of CryptBridge 0.8.2 do not mention streaming: it must count as on.
+old_root="$CB_TEST_ROOT/old-0.8.2"
+mkdir -p "$old_root/etc/cryptbridge" # CONF_DIR of a setup.sh with CB_TEST_ROOT=$old_root
+grep -v '^CB_STREAMING=' "$SETTINGS_FILE" >"$old_root/etc/cryptbridge/settings"
+r="$(CB_TEST_ROOT="$old_root" bash -c '. "$1"; load_settings; echo "$CB_STREAMING"' _ "$here/../setup.sh")"
+check "streaming: settings without it count as on" on "$r"
+
+calls_file="$CB_TEST_ROOT/systemctl.calls"
+require_root() { :; }
+systemctl() { # stand-in: records the calls (also from subshells), all services run
+	printf '%s;' "$*" >>"$calls_file"
+	[[ "$1" == "is-active" ]] && echo active
+	return 0
+}
+web_port_users() { [[ "$port_users" == none ]] || echo "$port_users"; }
+calls() { cat "$calls_file" 2>/dev/null; : >"$calls_file"; }
+saved_streaming() { (CB_STREAMING="" && load_settings && echo "$CB_STREAMING"); }
+mkdir -p "$(dirname "$CADDYFILE")"
+port_users=none
+
+calls >/dev/null
+switch_streaming off >/dev/null
+check "streaming off: Caddy stopped and kept off after a reboot" "disable --now caddy;" "$(calls)"
+check "streaming off: saved" off "$(saved_streaming)"
+check "streaming off: other settings kept" host.example "$(load_settings && echo "$CB_ADDRESS")"
+
+out="$(show_status 2>&1)"
+[[ "$out" == *"caddy: switched off"* ]] && r=shown || r="not shown: $out"
+check "streaming off: status says switched off, no warning" shown "$r"
+[[ "$(calls)" == *"is-active caddy"* ]] && r=asked || r=not-asked
+check "streaming off: status does not ask Caddy" not-asked "$r"
+
+restart_services >/dev/null
+check "streaming off: restart leaves Caddy off" "restart rclone-mount.service rclone-webdav.service;" "$(calls)"
+
+out="$(check_web_ports 2>&1)"
+[[ "$out" == *"switched off"* && "$HTTPS_POSSIBLE" == 1 ]] && r=skipped || r="checked: $out"
+check "streaming off: setup leaves ports 80 and 443 alone" skipped "$r"
+
+printf 'not ours\n' >"$CADDYFILE"
+out="$( (switch_streaming on) 2>&1)"; status=$?
+check "streaming on without the setup's Caddyfile: refused" "1 " "$status $(calls)"
+check "streaming on without the setup's Caddyfile: still off" off "$(saved_streaming)"
+
+printf '%s\n' "$MARKER" >"$CADDYFILE"
+port_users="nginx nginx.service 80 and 443"
+out="$( (switch_streaming on) 2>&1)"; status=$?
+check "streaming on, nginx on the ports: refused, Caddy not started" "1 " "$status $(calls)"
+[[ "$out" == *"Ports 80 and 443 are used by nginx"* && "$out" == *"sudo systemctl stop nginx.service"* ]] && r=explained || r="unclear: $out"
+check "streaming on, nginx on the ports: names nginx and how to stop it" explained "$r"
+check "streaming on, nginx on the ports: still off" off "$(saved_streaming)"
+
+port_users=none
+switch_streaming on >/dev/null
+check "streaming on, ports free: Caddy started and kept on" "enable --now caddy;" "$(calls)"
+check "streaming on: saved" on "$(saved_streaming)"
+restart_services >/dev/null
+check "streaming on: restart includes Caddy" "restart rclone-mount.service rclone-webdav.service caddy.service;" "$(calls)"
+unset -f require_root systemctl web_port_users calls saved_streaming
+
 # --- choose_address: an IP address is explained and asked again ------------
 check "157.173.96.238 is an IP address" yes "$(is_ipv4_address 157.173.96.238 && echo yes || echo no)"
 check "myvault.duckdns.org is no IP address" no "$(is_ipv4_address myvault.duckdns.org && echo yes || echo no)"

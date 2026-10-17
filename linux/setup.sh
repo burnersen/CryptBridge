@@ -22,7 +22,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.8.2"
+readonly CRYPTBRIDGE_VERSION="0.8.3"
 readonly MIN_RCLONE="1.75.0"
 
 # --- Files and folders ---------------------------------------------------
@@ -199,6 +199,10 @@ check_system() {
 	ok "System: $system ($ARCH)"
 }
 
+# Streaming (Caddy on ports 80 and 443) is on unless it was switched off in
+# the menu; settings files up to CryptBridge 0.8.2 do not mention it.
+CB_STREAMING="on"
+
 load_settings() {
 	# Non-secret settings of an earlier run (user, address, sizes ...).
 	if [[ -r "$SETTINGS_FILE" ]]; then
@@ -212,9 +216,9 @@ save_settings() {
 	# a folder name with special characters can never run as a command.
 	# No secrets in here, so the desktop user may read it (for "cryptbridge").
 	{
-		echo "$MARKER — settings of the last setup run (no secrets here)"
+		echo "$MARKER — settings of the last setup run and of the menu (no secrets here)"
 		local name
-		for name in CB_USER CB_MOUNT_DIR CB_VAULT_PATH CB_ADDRESS CB_WEBDAV_USER CB_CACHE_MAX CB_CACHE_MIN_FREE CB_FINGERPRINT; do
+		for name in CB_USER CB_MOUNT_DIR CB_VAULT_PATH CB_ADDRESS CB_WEBDAV_USER CB_CACHE_MAX CB_CACHE_MIN_FREE CB_FINGERPRINT CB_STREAMING; do
 			printf '%s=%q\n' "$name" "${!name}"
 		done
 	} >"$SETTINGS_FILE"
@@ -875,12 +879,26 @@ web_port_users() {
 			END { for (key in ports) print key, ports[key] }'
 }
 
+# warn_port_user PROGRAM PORTS — one line of web_port_users in words, e.g.
+# "Ports 80 and 443 are used by nginx."
+warn_port_user() {
+	if [[ "$2" == *" and "* ]]; then
+		warn "Ports $2 are used by $1."
+	else
+		warn "Port $2 is used by $1."
+	fi
+}
+
 # check_web_ports — HTTPS needs ports 80 and 443 for Caddy. Another web
 # server there (an old website, say) used to stop the setup halfway, before
 # the command and the desktop icons; now it is named at the start and the
 # user decides. Without the ports, everything else is still set up.
 check_web_ports() {
 	step "Ports for HTTPS"
+	if [[ "$CB_STREAMING" == "off" ]]; then
+		info "Streaming is switched off, so ports 80 and 443 stay with other programs (a website, say)."
+		return
+	fi
 	local users program unit ports
 	users="$(web_port_users)"
 	if [[ -z "$users" ]]; then
@@ -888,11 +906,7 @@ check_web_ports() {
 		return
 	fi
 	while read -r program unit ports; do
-		if [[ "$ports" == *" and "* ]]; then
-			warn "Ports $ports are used by $program."
-		else
-			warn "Port $ports is used by $program."
-		fi
+		warn_port_user "$program" "$ports"
 		if [[ "$unit" == *.service ]] &&
 			confirm "Stop and disable $program ($unit)? Only if you do not need it any more, e.g. an old website." n; then
 			systemctl disable --now "$unit" >>"$LOG_FILE" 2>&1 || die "Could not stop $unit. See: journalctl -u $unit"
@@ -1100,6 +1114,14 @@ start_services() {
 	wait_for "vault mounted at $CB_MOUNT_DIR" 60 is_mounted
 	systemctl restart rclone-webdav.service >>"$LOG_FILE" 2>&1 || die "WebDAV did not start. See: journalctl -u rclone-webdav"
 	wait_for "WebDAV answering" 30 webdav_answers
+	if [[ "$CB_STREAMING" == "off" ]]; then
+		# Ready for "streaming on" with the new settings, but not started:
+		# the ports may belong to another web server now.
+		write_caddyfile
+		systemctl disable --now caddy >>"$LOG_FILE" 2>&1 || warn "Could not stop Caddy. See: journalctl -u caddy"
+		info "HTTPS (Caddy) prepared but not started: streaming is switched off."
+		return
+	fi
 	if ((HTTPS_POSSIBLE == 0)); then
 		info "HTTPS (Caddy) skipped: port 80 or 443 is in use by another program (see the start of the setup)."
 		return
@@ -1167,6 +1189,11 @@ explain_certificate_problem() {
 }
 
 check_https() {
+	if [[ "$CB_STREAMING" == "off" ]]; then
+		step "Checking HTTPS"
+		info "Skipped: streaming is switched off."
+		return
+	fi
 	if ((HTTPS_POSSIBLE == 0)); then
 		step "Checking HTTPS"
 		warn "Skipped: there is no HTTPS yet. Once ports 80 and 443 are free, run:  sudo cryptbridge setup"
@@ -1396,6 +1423,9 @@ show_streaming_settings() {
 	printf '    Password:  the streaming password you chose during setup\n'
 	printf '    Infuse (Apple TV / iPhone): Settings -> Shares -> Add share -> WebDAV.\n'
 	printf '    Tip for Infuse: Settings -> Playback/Streaming -> Buffer: "Generous".\n'
+	if [[ "$CB_STREAMING" == "off" ]]; then
+		warn "Streaming is switched off at the moment. Switch it on in the menu (cryptbridge) or with:  sudo cryptbridge streaming on"
+	fi
 }
 
 show_status() {
@@ -1403,6 +1433,10 @@ show_status() {
 	local unit state
 	printf '\n%sCryptBridge %s%s\n' "$BOLD" "$CRYPTBRIDGE_VERSION" "$RESET"
 	for unit in rclone-mount rclone-webdav caddy fail2ban; do
+		if [[ "$unit" == "caddy" && "$CB_STREAMING" == "off" ]]; then
+			info "caddy: switched off (streaming is off, ports 80 and 443 are free)"
+			continue
+		fi
 		state="$(systemctl is-active "$unit" 2>/dev/null || true)"
 		if [[ "$state" == "active" ]]; then ok "$unit: running"; else warn "$unit: $state"; fi
 	done
@@ -1415,28 +1449,77 @@ show_status() {
 }
 
 restart_services() {
-	systemctl restart rclone-mount.service rclone-webdav.service caddy.service
+	load_settings
+	local units=(rclone-mount.service rclone-webdav.service)
+	# Switched off, Caddy stays off: it would take ports 80 and 443 back.
+	[[ "$CB_STREAMING" == "off" ]] || units+=(caddy.service)
+	systemctl restart "${units[@]}"
 	ok "Restarted"
 }
 
+# switch_streaming on|off — Caddy alone holds ports 80 and 443 for the video
+# players. Switched off, the ports are free for another web server (a test
+# website, say) while the vault folder keeps working. The choice is kept in
+# the settings, so it lasts through a reboot, "restart" and a new setup run.
+switch_streaming() {
+	local wanted="$1"
+	require_root streaming "$wanted"
+	[[ -r "$SETTINGS_FILE" ]] || die "CryptBridge is not set up yet. Run:  sudo cryptbridge setup"
+	load_settings
+	if [[ "$wanted" == "off" ]]; then
+		systemctl disable --now caddy >>"$LOG_FILE" 2>&1 || die "Could not stop Caddy. See: journalctl -u caddy"
+		CB_STREAMING="off"
+		save_settings
+		ok "Streaming switched off: ports 80 and 443 are free, e.g. for a website."
+		info "The vault folder keeps working. Switch streaming on again in the menu or with:  sudo cryptbridge streaming on"
+		return
+	fi
+	# Without the setup's Caddyfile, Caddy would serve its own start page.
+	grep -qs "^$MARKER" "$CADDYFILE" || die "HTTPS has not been set up yet. Free ports 80 and 443, then run:  sudo cryptbridge setup"
+	local users program unit ports
+	users="$(web_port_users)"
+	if [[ -n "$users" ]]; then
+		while read -r program unit ports; do
+			warn_port_user "$program" "$ports"
+			if [[ "$unit" == *.service ]]; then
+				info "Stop it first with:  sudo systemctl stop $unit"
+			fi
+		done <<<"$users"
+		die "Streaming stays off until ports 80 and 443 are free."
+	fi
+	systemctl enable --now caddy >>"$LOG_FILE" 2>&1 || die "Caddy did not start. See: journalctl -u caddy"
+	CB_STREAMING="on"
+	save_settings
+	ok "Streaming switched on: https://$CB_ADDRESS"
+}
+
 menu() {
-	local choice
+	local choice streaming_item next_streaming
 	while true; do
 		show_status
+		if [[ "$CB_STREAMING" == "off" ]]; then
+			streaming_item="Switch streaming on" next_streaming="on"
+		else
+			streaming_item="Switch streaming off (frees ports 80 and 443, e.g. for a website)" next_streaming="off"
+		fi
 		printf '\n'
 		info "1) Streaming settings"
-		info "2) Restart CryptBridge"
-		info "3) Recent log of the vault"
-		info "4) Run the setup again (change keys or settings)"
-		info "5) Uninstall"
+		info "2) $streaming_item"
+		info "3) Restart CryptBridge"
+		info "4) Recent log of the vault"
+		info "5) Run the setup again (change keys or settings)"
+		info "6) Uninstall"
 		info "0) Close"
 		ask choice "Choice" "0"
 		case "$choice" in
 		1) show_streaming_settings ;;
-		2) sudo "$SELF_INSTALLED" restart ;;
-		3) journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager || sudo journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager ;;
-		4) sudo "$SELF_INSTALLED" setup ;;
-		5) sudo "$SELF_INSTALLED" uninstall ;;
+		# "|| true": a refusal (a port in use) is explained already and must
+		# not end the menu.
+		2) sudo "$SELF_INSTALLED" streaming "$next_streaming" || true ;;
+		3) sudo "$SELF_INSTALLED" restart ;;
+		4) journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager || sudo journalctl -u rclone-mount -u rclone-webdav -n 40 --no-pager ;;
+		5) sudo "$SELF_INSTALLED" setup ;;
+		6) sudo "$SELF_INSTALLED" uninstall ;;
 		0 | "") return ;;
 		esac
 		read -r -p "    Press Enter …" _ <"$TTY"
@@ -1537,14 +1620,21 @@ main() {
 	setup) setup ;;
 	menu) menu ;;
 	status) show_status ;;
-	streaming | infuse) show_streaming_settings ;; # "infuse": its name up to CryptBridge 0.5
+	streaming)
+		case "${2:-}" in
+		"") show_streaming_settings ;;
+		on | off) switch_streaming "$2" ;;
+		*) die "Unknown choice '$2'. Use: cryptbridge streaming (shows the settings), or: sudo cryptbridge streaming on|off" ;;
+		esac
+		;;
+	infuse) show_streaming_settings ;; # the name of "streaming" up to CryptBridge 0.5
 	restart)
 		require_root restart
 		restart_services
 		;;
 	uninstall) uninstall ;;
 	version) echo "$CRYPTBRIDGE_VERSION" ;;
-	*) die "Unknown command '$1'. Use: setup, menu, status, streaming, restart, uninstall, version" ;;
+	*) die "Unknown command '$1'. Use: setup, menu, status, streaming [on|off], restart, uninstall, version" ;;
 	esac
 }
 
