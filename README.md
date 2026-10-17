@@ -50,38 +50,6 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 - 🆓 **Free, open and without lock-in.** No ads, no tracking, no CryptBridge account. Every vault's
   emergency sheet shows how to open it with plain rclone, so your files never depend on CryptBridge.
 
-## See it in action
-
-<!-- GIF: docs/images/demo.gif (about 1280x720, 10-20 s): Vaults tab > Add vault, choose a cloud,
-     open an existing vault, drive Z: appears in Explorer, a film starts playing. -->
-<p align="center">
-  <img src="docs/images/demo.gif" alt="Adding a vault in CryptBridge: drive Z: appears in Explorer and a film starts playing" width="820">
-</p>
-
-<!-- Screenshots: see docs/images/README.md for what each one should show. -->
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/status.png" alt="Status tab with several drives from different clouds"><br>
-      <sub><b>Status tab:</b> every drive at a glance, with free space, size and running uploads.</sub>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/vault-page.png" alt="Page of a vault with check code and emergency sheet"><br>
-      <sub><b>A page per vault:</b> check code, emergency sheet and the transfer to your server.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/lan-access.png" alt="LAN access settings with streaming and full access"><br>
-      <sub><b>LAN access:</b> your films on the TV, with a read-only access for players.</sub>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/tray.png" alt="Tray icon with its menu"><br>
-      <sub><b>Tray icon:</b> green, amber, red or grey tells you how your drives are doing.</sub>
-    </td>
-  </tr>
-</table>
-
 ## 🚀 Quick start
 
 **You need** Windows 11 (64-bit) and [WinFsp](https://winfsp.dev/rel/), a free helper that lets Windows
