@@ -24,7 +24,7 @@ set -Eeuo pipefail
 # Tool output is parsed below; it must not depend on the system language.
 export LC_ALL=C
 
-readonly CRYPTBRIDGE_VERSION="0.10.1"
+readonly CRYPTBRIDGE_VERSION="0.11.0"
 # The one rclone CryptBridge uses: everything is tested with exactly this
 # version, and the Windows program pins the same one. The checksums are those
 # of rclone's official ZIP files, from rclone's PGP-signed SHA256SUMS list.
