@@ -14,7 +14,9 @@ you.
 ![Ubuntu / Debian](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Debian-E95420)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/burnersen)
 
-**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
+**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[🌐 Website](https://tech.burnersen.de/en/tools/cryptbridge-en/)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
+
+<sub>🇩🇪 Auf Deutsch: [tech.burnersen.de/tools/cryptbridge](https://tech.burnersen.de/tools/cryptbridge/)</sub>
 
 </div>
 
