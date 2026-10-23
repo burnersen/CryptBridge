@@ -12,9 +12,8 @@ you.
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4)
 ![Ubuntu / Debian](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Debian-E95420)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/burnersen)
 
-**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[🌐 Website](https://tech.burnersen.de/en/tools/cryptbridge-en/)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
+**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[🌐 Website](https://tech.burnersen.de/en/tools/cryptbridge-en/)**
 
 <sub>🇩🇪 Auf Deutsch: [tech.burnersen.de/tools/cryptbridge](https://tech.burnersen.de/tools/cryptbridge/)</sub>
 
@@ -275,12 +274,3 @@ compatible with the GPLv3:
 Their copyright notices and full license texts are in the repositories linked above.
 
 </details>
-
----
-
-## ☕ Support
-
-CryptBridge is free and made in my spare time, on my own hardware and electricity bill. If it keeps your
-files safe and your films playing and you'd like to say thanks, you can
-[buy me a coffee on Ko-fi](https://ko-fi.com/burnersen). Completely optional, and either way: thank you
-for using it!
