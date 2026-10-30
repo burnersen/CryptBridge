@@ -449,12 +449,22 @@ func (e *Engine) VaultSecrets(id string) (settings.Vault, error) {
 
 // Options are the settings the user can change on the Settings page.
 type Options struct {
-	CacheDir          string `json:"cacheDir"`
-	CacheMaxSize      string `json:"cacheMaxSize"`
-	CacheMinFreeSpace string `json:"cacheMinFreeSpace"`
-	AutoReconnect     bool   `json:"autoReconnect"`
-	Theme             string `json:"theme"`
+	CacheDir          string  `json:"cacheDir"`
+	CacheMaxSize      string  `json:"cacheMaxSize"`
+	CacheMinFreeSpace string  `json:"cacheMinFreeSpace"`
+	AutoReconnect     bool    `json:"autoReconnect"`
+	Theme             string  `json:"theme"`
+	UploadsParallel   int     `json:"uploadsParallel"` // files uploaded at the same time
+	UploadMaxMBps     float64 `json:"uploadMaxMBps"`   // upload speed limit in MB/s; 0: no limit
 }
+
+// Limits of the upload settings. More than 16 uploads at once only crowd the
+// line; below 0.1 MB/s, uploading a film would take days.
+const (
+	maxUploadsParallel = 16
+	minUploadMBps      = 0.1
+	maxUploadMBps      = 10000
+)
 
 // sizePattern accepts sizes like "20G", "512M" or "100".
 var sizePattern = regexp.MustCompile(`^[1-9][0-9]*[KMGT]?$`)
@@ -479,6 +489,13 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 		return fmt.Errorf("unknown theme %q", o.Theme)
 	}
 
+	if o.UploadsParallel < 1 || o.UploadsParallel > maxUploadsParallel {
+		return fmt.Errorf("uploads at the same time must be between 1 and %d", maxUploadsParallel)
+	}
+	if o.UploadMaxMBps != 0 && (o.UploadMaxMBps < minUploadMBps || o.UploadMaxMBps > maxUploadMBps) {
+		return fmt.Errorf("the upload speed must be between %g and %g MB/s, or empty for no limit", minUploadMBps, float64(maxUploadMBps))
+	}
+
 	old := e.currentSettings()
 	cache := settings.Cache{Dir: filepath.Clean(o.CacheDir), MaxSize: o.CacheMaxSize, MinFreeSpace: o.CacheMinFreeSpace}
 	if cache != old.Cache && e.anyDriveBusy() {
@@ -490,16 +507,28 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 		}
 	}
 
+	uploads := settings.Uploads{Parallel: o.UploadsParallel, MaxMBps: o.UploadMaxMBps}
+	e.mu.Lock()
+	client := e.client
+	e.mu.Unlock()
+	// A running rclone takes the new limits at once. Without one, the next
+	// rclone starts with them.
+	if uploads != old.Uploads && client != nil {
+		if err := uploadsOf(uploads).Apply(ctx, client); err != nil {
+			return err
+		}
+	}
+
 	updated := old.Clone()
 	updated.Cache = cache
 	updated.AutoReconnect = o.AutoReconnect
 	updated.Theme = o.Theme
+	updated.Uploads = uploads
 	if err := e.saveSettings(updated); err != nil {
 		return err
 	}
 	e.mu.Lock()
 	e.settings = updated
-	client := e.client
 	e.mu.Unlock()
 
 	// rclone fixes its cache folder when it starts: stop it, the next

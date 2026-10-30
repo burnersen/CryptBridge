@@ -87,10 +87,12 @@ type Snapshot struct {
 	CacheMaxSize      string            `json:"cacheMaxSize"`
 	CacheMinFreeSpace string            `json:"cacheMinFreeSpace"`
 	Theme             string            `json:"theme"`
-	AppLock           bool              `json:"appLock"`        // an app password is set
-	LockOffered       bool              `json:"lockOffered"`    // the app password was offered once
-	Locked            bool              `json:"locked"`         // the app password is needed first
-	UnlockConnects    []string          `json:"unlockConnects"` // letters of the drives that connect after unlocking
+	UploadsParallel   int               `json:"uploadsParallel"` // files uploaded at the same time
+	UploadMaxMBps     float64           `json:"uploadMaxMBps"`   // upload speed limit in MB/s; 0: no limit
+	AppLock           bool              `json:"appLock"`         // an app password is set
+	LockOffered       bool              `json:"lockOffered"`     // the app password was offered once
+	Locked            bool              `json:"locked"`          // the app password is needed first
+	UnlockConnects    []string          `json:"unlockConnects"`  // letters of the drives that connect after unlocking
 	LAN               LANStatus         `json:"lan"`
 }
 
@@ -211,6 +213,8 @@ func (e *Engine) snapshotLocked() Snapshot {
 		CacheMaxSize:      s.Cache.MaxSize,
 		CacheMinFreeSpace: s.Cache.MinFreeSpace,
 		Theme:             s.Theme,
+		UploadsParallel:   s.Uploads.Parallel,
+		UploadMaxMBps:     s.Uploads.MaxMBps,
 		AppLock:           s.AppLock,
 		LockOffered:       s.LockOffered,
 		Locked:            e.locked,
@@ -402,6 +406,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	client := e.client
 	exe := e.rclone.Path
 	cacheDir := e.settings.Cache.Dir
+	uploads := uploadsOf(e.settings.Uploads)
 	logLevel := "" // rclone's default for CryptBridge: INFO
 	if e.settings.AppLock {
 		logLevel = lockedLogLevel
@@ -413,6 +418,10 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	}
 	if attached, err := rcd.Attach(ctx, e.paths.StateFile); err == nil {
 		client = attached
+		// It kept the limits it had; set them again in case they were
+		// changed while it could not be reached. Failing here costs only
+		// the limits, never the drives.
+		_ = uploads.Apply(ctx, client)
 	} else {
 		rotateLog(e.paths.RcloneLog)
 		client, err = rcd.Start(ctx, rcd.Options{
@@ -422,7 +431,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 			LogLevel:   logLevel,
 			CacheDir:   cacheDir,
 			ConfigFile: "NUL", // keep the configuration in memory only
-			ExtraArgs:  []string{"--buffer-size", drive.BufferSize},
+			ExtraArgs:  append([]string{"--buffer-size", drive.BufferSize}, uploads.Args()...),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("could not start rclone: %w", err)
@@ -590,6 +599,11 @@ func (e *Engine) checkOnce(ctx context.Context) {
 	e.refreshUsage(ctx, client, s)
 	e.syncLANLocked(ctx, "")
 	e.publish()
+}
+
+// uploadsOf turns the stored upload settings into rclone's limits.
+func uploadsOf(u settings.Uploads) drive.Uploads {
+	return drive.Uploads{Parallel: u.Parallel, MaxMBps: u.MaxMBps}
 }
 
 // rotateLog moves an oversized log aside so that it cannot grow forever.

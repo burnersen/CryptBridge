@@ -3,13 +3,15 @@
 [← Back to the README](../README.md)
 
 Everything about CryptBridge on Windows: getting started, the tray icon, your vaults and settings, the
-cache, vaults on your own disks, the app lock and moving files you already have into a vault.
+cache, the upload speed, vaults on your own disks, the app lock and moving files you already have into a
+vault.
 
 - [What you need](#what-you-need)
 - [Getting started](#getting-started)
 - [The tray icon](#the-tray-icon)
 - [Your vaults and settings](#your-vaults-and-settings)
 - [The cache](#the-cache)
+- [Upload speed](#upload-speed)
 - [Vaults on this PC or a USB drive](#vaults-on-this-pc-or-a-usb-drive)
 - [App lock (recommended)](#app-lock-recommended)
 - [Moving your existing files into a vault](#moving-your-existing-files-into-a-vault)
@@ -82,8 +84,8 @@ vault, the password, the salt, the advanced settings and the check code. It also
 key: anyone who has it, and access to the vault's folder, can read your vault.
 
 On the **Settings tab**: light or dark look (or *automatic*, like Windows), *start with Windows*,
-*reconnect automatically*, the [app lock](#app-lock-recommended), the [LAN access](lan-access.md)
-and the **cache**.
+*reconnect automatically*, the [app lock](#app-lock-recommended), the [LAN access](lan-access.md),
+the **cache** and the [upload speed](#upload-speed).
 
 ## The cache
 
@@ -94,6 +96,22 @@ needs room for the largest file you copy at once.
 > [!IMPORTANT]
 > The cache holds **readable copies** of your files. Turn on **BitLocker** (Windows' own disk
 > encryption) for the disk with the cache folder.
+
+## Upload speed
+
+Uploads in the background can fill your whole internet line, above all with DSL, where uploading is
+much slower than downloading. Games then lag and video calls stutter. Under *Settings > Uploads* you
+choose:
+
+- **Files uploaded at the same time**, 1 to 16. The default is 4, as in rclone.
+- **Upload speed limit** in MB/s; empty means no limit, which is the default. Set it a little below
+  your upload speed. A speed test shows it in Mbit/s: divide by 8 for MB/s, so 40 Mbit/s is 5 MB/s
+  and a limit of 4 leaves room for everything else.
+
+Both count for all drives and clouds together. A change takes effect at once, also for uploads that
+are already running. **Downloads are never limited**: opening files and streaming films, also over the
+[LAN access](lan-access.md), always run at full speed. Vaults on this PC or a USB drive are not
+slowed down either; the limit applies only on the way to the cloud.
 
 ---
 
