@@ -210,7 +210,7 @@ The most common messages. All of them, sorted by topic: [Troubleshooting](docs/t
 |---|---|
 | "These keys do NOT open the vault" | Password, salt, folder or an advanced setting does not match. Nothing was changed. Check them against your emergency sheet. |
 | A cloud drive does not appear, "could not be checked in …" | The cloud cannot be reached right now (no internet?). The drive appears by itself once the cloud answers. |
-| "… no longer accepts the sign-in" | Click **Sign in to … again** on the Status tab. Google Drive: publish your Google app, or Google ends every sign-in after 7 days. |
+| "… no longer accepts the sign-in" | Click **Sign in to … again** on the Status tab. Google Drive: publish your Google app, or Google ends every sign-in after 7 days, then sign in again once. |
 | pCloud: "Invalid 'client_id'" or error 2095 | Often a passing problem at pCloud; CryptBridge reconnects by itself. For good: your [own pCloud app](docs/pcloud-app.md). |
 | Drive letter in use | Choose another letter on the page of the vault (while it is disconnected). |
 | A device at home cannot reach the LAN access | *Settings > LAN access* shows the firewall state. Windows must count your network as *private*. |

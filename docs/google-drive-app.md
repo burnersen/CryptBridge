@@ -23,6 +23,13 @@ CryptBridge on the page for adding a Google Drive account, with Copy buttons.
    policy first, enter them under **Branding**, for example `https://github.com/burnersen/CryptBridge`.
 
    > ⚠️ **Important:** while the app stays in *Testing*, Google ends every sign-in after 7 days. Publish it.
+   > Done when *Publishing status* on the Audience page says **In production**. A sign-in made while the
+   > app was in *Testing* still runs out: sign in again once after publishing.
+
+   > 💡 **No verification needed.** Do not upload a logo and do not ask Google to check or verify your
+   > branding: that is meant for apps that strangers use. If Google still reports that the homepage is not
+   > registered to you or the privacy policy has too little content, ignore it and click nothing there. The
+   > app works anyway, Google just shows the "not verified" warning of step 8.
 
 6. Open **[Clients](https://console.cloud.google.com/auth/clients)**, click **Create client**, choose the
    application type **Desktop app**, name it `CryptBridge` and click **Create**.
