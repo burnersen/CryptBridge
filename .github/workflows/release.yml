@@ -1,0 +1,84 @@
+# CryptBridge (https://github.com/burnersen/CryptBridge)
+# Copyright (C) 2026 burnersen
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Publishes a release when a tag like v0.12.0 is pushed. On a fresh Windows
+# machine it collects the backup copies (windows\release-assets.ps1, every
+# file checked against its known SHA-256), tests and builds CryptBridge.exe
+# (windows\build.ps1, the tests run with exactly the pinned rclone) and
+# publishes everything together. Nothing is published if any step fails.
+#
+# The release text is the backup part written by release-assets.ps1,
+# followed by .github/release-notes/<version>.md (what's new).
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag against VERSION and the release text
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+              throw "tag $env:GITHUB_REF_NAME does not match VERSION $version"
+          }
+          $notes = ".github/release-notes/$version.md"
+          if (-not (Test-Path $notes)) { throw "$notes is missing" }
+          "VERSION=$version" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: windows/go.mod
+          cache-dependency-path: windows/go.sum
+
+      - name: Collect the backup copies
+        run: ./windows/release-assets.ps1
+
+      - name: Use the pinned rclone for the tests
+        run: |
+          $zip = Get-ChildItem windows/build/bin/release -Filter 'rclone-v*-windows-amd64.zip' | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP 'rclone'
+          Expand-Archive $zip.FullName -DestinationPath $dir
+          $exe = Get-ChildItem $dir -Recurse -Filter rclone.exe | Select-Object -First 1
+          "CRYPTBRIDGE_TEST_RCLONE=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Test and build CryptBridge.exe
+        run: ./windows/build.ps1
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = 'windows/build/bin/release'
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $text = [IO.File]::ReadAllText("$release/release-notes.md") + "`n" +
+              [IO.File]::ReadAllText(".github/release-notes/$env:VERSION.md")
+          [IO.File]::WriteAllText($notes, $text, [Text.UTF8Encoding]::new($false))
+
+          $files = @('windows/build/bin/CryptBridge.exe', 'linux/setup.sh')
+          $files += Get-ChildItem $release | Where-Object Name -ne 'release-notes.md' | ForEach-Object FullName
+          gh release create $env:GITHUB_REF_NAME --verify-tag --title "CryptBridge $env:VERSION" --notes-file $notes @files
+          if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+
+          Write-Host ''
+          foreach ($file in $files) {
+              $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+              Write-Host ("{0,-40} {1}" -f (Split-Path $file -Leaf), $hash)
+          }
