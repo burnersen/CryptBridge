@@ -55,8 +55,9 @@ pwsh -File windows\build.ps1
 The version lives in one place, the file `VERSION`; the build script writes it into the program, its file
 properties and `linux/setup.sh`. Tests: `go test ./...` in `windows/`, `bash linux/tests/functions_test.sh`.
 
-Releases are built by GitHub: pushing a tag such as `v0.12.0` (equal to `VERSION`) starts
-`.github/workflows/release.yml`. On a fresh Windows machine it collects the backup copies
+Releases are built by GitHub with `.github/workflows/release.yml`: push a tag such as `v0.12.0` (equal
+to `VERSION`), or start it on `main` under *Actions > Release > Run workflow*, which makes the tag from
+`VERSION`. On a fresh Windows machine it collects the backup copies
 (`windows/release-assets.ps1`), runs the tests with exactly the pinned rclone, builds `CryptBridge.exe`
 (`windows/build.ps1`) and publishes the release. Its text is the backup part followed by
 `.github/release-notes/<version>.md`, which has to be in the tagged commit. If any step fails, nothing
