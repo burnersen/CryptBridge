@@ -610,6 +610,24 @@
           decrypted; with the app lock on, it is deleted whenever CryptBridge locks.</p>
       </div>
       <div class="card">
+        <h2>Uploads</h2>
+        <p class="muted">How fast files copied to the drives go up into the clouds, for all drives together.
+          Downloads and streaming always run at full speed.</p>
+        <div class="grid2">
+          <div class="field">
+            <label for="opt-uploads-parallel">Files uploaded at the same time (1 to 16)</label>
+            <input id="opt-uploads-parallel" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="opt-upload-limit">Upload speed limit in MB/s (empty: no limit)</label>
+            <input id="opt-upload-limit" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" placeholder="no limit">
+          </div>
+        </div>
+        <p class="hint">With DSL, uploads can fill the whole line and make games and video calls lag. Set the limit
+          a little below your upload speed: a speed test shows it in Mbit/s, divide it by 8 for MB/s (40 Mbit/s
+          is 5 MB/s). Changes take effect at once, also for uploads already running.</p>
+      </div>
+      <div class="card">
         <h2>Behaviour</h2>
         <label class="check"><input id="opt-autostart" type="checkbox"> Start CryptBridge with Windows</label>
         <label class="check"><input id="opt-autoreconnect" type="checkbox"> Reconnect automatically after a problem</label>

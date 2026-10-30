@@ -66,6 +66,10 @@ const (
 	DefaultFullUser      = "full"
 )
 
+// DefaultUploadsParallel is how many files the drives upload at the same
+// time unless the user chooses otherwise: rclone's own default (--transfers).
+const DefaultUploadsParallel = 4
+
 // Where a vault lives.
 const (
 	KindCloud = "cloud" // a folder in one of the cloud accounts
@@ -104,6 +108,13 @@ type Cache struct {
 	Dir          string `json:"dir"`
 	MaxSize      string `json:"maxSize"`      // per drive; a soft limit, files in use stay
 	MinFreeSpace string `json:"minFreeSpace"` // emergency brake: keep this much disk space free
+}
+
+// Uploads holds how the drives write into the clouds. Downloads are never
+// limited. Both values count for all drives together: they share one rclone.
+type Uploads struct {
+	Parallel int     `json:"parallel"` // files uploaded at the same time
+	MaxMBps  float64 `json:"maxMBps"`  // upload speed limit in MB/s (1 MB = 1,000,000 bytes); 0: no limit
 }
 
 // SizeRecord is the last measured size of a vault, kept because measuring a
@@ -245,6 +256,7 @@ type Settings struct {
 	AppLock       bool      `json:"appLock"`       // the secrets are sealed with the app password
 	LockOffered   bool      `json:"lockOffered"`   // the app password was offered once (set up or declined)
 	LAN           LAN       `json:"lan"`
+	Uploads       Uploads   `json:"uploads"`
 }
 
 // Clone returns a copy that can be changed without changing s: the account
@@ -463,6 +475,7 @@ func Defaults(cacheDir string) Settings {
 		AutoReconnect: true,
 		Theme:         ThemeAuto,
 		LAN:           defaultLAN(),
+		Uploads:       Uploads{Parallel: DefaultUploadsParallel},
 	}
 }
 
@@ -686,6 +699,7 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 		AppLock:       old.AppLock,
 		LockOffered:   old.LockOffered,
 		LAN:           defaults.LAN,
+		Uploads:       defaults.Uploads,
 	}
 	migrated := Vault{
 		ID:          MigratedVaultID,

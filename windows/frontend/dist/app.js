@@ -1653,6 +1653,8 @@ async function loadSettings() {
   $("opt-cache-max").value = snapshot.cacheMaxSize;
   $("opt-cache-free").value = snapshot.cacheMinFreeSpace;
   $("opt-autoreconnect").checked = snapshot.autoReconnect;
+  $("opt-uploads-parallel").value = snapshot.uploadsParallel || 4;
+  $("opt-upload-limit").value = snapshot.uploadMaxMBps ? String(snapshot.uploadMaxMBps) : "";
   $("opt-autostart").checked = await api.AutostartEnabled();
   $("settings-result").textContent = "";
   loadAppFields();
@@ -1677,12 +1679,33 @@ document.querySelectorAll("input[name=theme]").forEach((radio) => radio.addEvent
       cacheMinFreeSpace: snapshot.cacheMinFreeSpace,
       autoReconnect: snapshot.autoReconnect,
       theme: radio.value,
+      uploadsParallel: snapshot.uploadsParallel || 4,
+      uploadMaxMBps: snapshot.uploadMaxMBps || 0,
     });
     render(await api.GetSnapshot());
   } catch (err) {
     result.textContent = errorText(err);
   }
 })));
+
+// uploadLimitValue reads the upload speed field: empty means no limit (0).
+// A decimal comma is taken like a point; the engine checks the range.
+function uploadLimitValue() {
+  const text = $("opt-upload-limit").value.trim().replace(",", ".");
+  if (text === "") return 0;
+  const value = Number(text);
+  if (!Number.isFinite(value)) throw new Error("The upload speed must be a number such as 5 or 2.5, or empty for no limit.");
+  return value;
+}
+
+// uploadsParallelValue reads the number of uploads at the same time; the
+// engine checks the range.
+function uploadsParallelValue() {
+  const text = $("opt-uploads-parallel").value.trim();
+  const value = text === "" ? NaN : Number(text);
+  if (!Number.isInteger(value)) throw new Error("Files uploaded at the same time must be a whole number from 1 to 16.");
+  return value;
+}
 
 $("btn-save-settings").addEventListener("click", () => run(null, async () => {
   const result = $("settings-result");
@@ -1693,6 +1716,8 @@ $("btn-save-settings").addEventListener("click", () => run(null, async () => {
       cacheMinFreeSpace: $("opt-cache-free").value.trim(),
       autoReconnect: $("opt-autoreconnect").checked,
       theme: snapshot.theme,
+      uploadsParallel: uploadsParallelValue(),
+      uploadMaxMBps: uploadLimitValue(),
     });
     await api.SetAutostart($("opt-autostart").checked);
     result.textContent = "Saved.";

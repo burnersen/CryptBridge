@@ -108,6 +108,8 @@ flowchart TB
 - Fast copying through a local cache; uploads continue in the background, and CryptBridge warns you
   before you quit while they run.
 - Status tab with free space, vault size and uploads; a tray icon that shows the state in colour.
+- Upload speed limit and number of uploads at once, so games and video calls keep their line; downloads
+  always run at full speed.
 - App lock with a password of your own, light or dark look, start with Windows, automatic reconnect.
 
 **☁️ Clouds** · [guide](docs/cloud-accounts.md)

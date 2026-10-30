@@ -38,6 +38,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if s.LAN != want {
 		t.Fatalf("LAN defaults: %+v; want %+v (both off)", s.LAN, want)
 	}
+	if s.Uploads != (Uploads{Parallel: 4}) {
+		t.Fatalf("upload defaults: %+v; want 4 at the same time, no speed limit", s.Uploads)
+	}
 }
 
 // twoVaults returns settings with two accounts, a cloud and a local vault,
@@ -82,6 +85,7 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.dat")
 	want := twoVaults()
 	want.Theme = ThemeLight
+	want.Uploads = Uploads{Parallel: 2, MaxMBps: 4.5}
 
 	if err := Save(path, want, nil); err != nil {
 		t.Fatal(err)
@@ -280,7 +284,8 @@ func TestConvertVersion1File(t *testing.T) {
 		t.Fatalf("converted accounts %+v", got.Accounts)
 	}
 	if got.Cache != (Cache{Dir: `D:\Cache`, MaxSize: "30G", MinFreeSpace: "5G"}) ||
-		!got.AutoReconnect || got.Theme != ThemeAuto || got.LAN != Defaults(`C:\cache`).LAN {
+		!got.AutoReconnect || got.Theme != ThemeAuto || got.LAN != Defaults(`C:\cache`).LAN ||
+		got.Uploads != Defaults(`C:\cache`).Uploads {
 		t.Fatalf("converted settings: %+v", got)
 	}
 
@@ -610,6 +615,9 @@ func TestLoadFileWithoutLANSettings(t *testing.T) {
 	}
 	if got.LAN != defaultLAN() {
 		t.Fatalf("LAN %+v; want the defaults", got.LAN)
+	}
+	if got.Uploads != (Uploads{Parallel: DefaultUploadsParallel}) {
+		t.Fatalf("uploads %+v; want the defaults", got.Uploads)
 	}
 	if len(got.Vaults) != 1 || got.Vaults[0].Kind != KindCloud || got.Cache.MaxSize != "30G" || got.AutoReconnect || got.Theme != ThemeDark {
 		t.Fatalf("the other settings changed: %+v", got)
