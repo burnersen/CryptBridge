@@ -20,6 +20,12 @@ you.
 
 </div>
 
+> 💜 **Using CryptBridge and happy with it?** A ⭐ on GitHub is the easiest way to let me know,
+> and it does more than you'd think: stars are how small projects like this one qualify for
+> free code signing, which makes the Windows warning go away for everyone. Or
+> [tell me what you use it for](https://github.com/burnersen/CryptBridge/issues/new), I read every message.
+> Thanks for being here!
+
 ---
 
 ## Why CryptBridge?
