@@ -61,6 +61,10 @@ to `VERSION`), or start it on `main` under *Actions > Release > Run workflow*, w
 (`windows/release-assets.ps1`), runs the tests with exactly the pinned rclone, builds `CryptBridge.exe`
 (`windows/build.ps1`) and publishes the release. Its text is the backup part followed by
 `.github/release-notes/<version>.md`, which has to be in the tagged commit. If any step fails, nothing
-is published.
+is published. Ticking *dry run* (any branch) runs all of it without signing, tagging or publishing.
+
+Code signing through the SignPath Foundation is prepared in the same workflow and stays off until it is
+set up: [`.signpath/README.md`](../.signpath/README.md). Only `CryptBridge.exe` is ever signed; the
+policy is [CODE_SIGNING.md](../CODE_SIGNING.md).
 
 What the Linux setup installs and changes is listed in [Linux server](linux-server.md#what-the-setup-does).

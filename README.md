@@ -14,7 +14,7 @@ you.
 ![Ubuntu / Debian](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Debian-E95420)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/burnersen)
 
-**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[🌐 Website](https://tech.burnersen.de/en/tools/cryptbridge-en/)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
+**[⬇️ Download for Windows](https://github.com/burnersen/CryptBridge/releases/latest)** · **[🚀 Quick start](#-quick-start)** · **[🌐 Website](https://tech.burnersen.de/en/tools/cryptbridge-en/)** · **[🔏 Code signing policy](CODE_SIGNING.md)** · **[☕ Buy me a coffee](https://ko-fi.com/burnersen)**
 
 <sub>🇩🇪 Auf Deutsch: [tech.burnersen.de/tools/cryptbridge](https://tech.burnersen.de/tools/cryptbridge/)</sub>
 
@@ -186,6 +186,8 @@ No copy and paste at hand? Save the block as a file and read it from there; the
   hiccup.
 
 All details, including the small check file `.cryptbridge-vault` in every vault: [Security](docs/security.md).
+What CryptBridge sends where (only to the cloud services you add, and the rclone download), and what it
+changes on your system: the privacy policy in the [code signing policy](CODE_SIGNING.md#privacy-policy).
 
 ---
 
@@ -233,6 +235,19 @@ Log files: Windows `%LOCALAPPDATA%\CryptBridge\logs\rclone.log` · server
   ```
 
 The [release notes](https://github.com/burnersen/CryptBridge/releases) say what changed in each version.
+
+> **Windows SmartScreen** may warn because `CryptBridge.exe` is not code signed yet. Choose *More info* >
+> *Run anyway*. Every release is built by GitHub Actions from this repository, and free code signing
+> through the [SignPath Foundation](https://signpath.org) is applied for: see the
+> [code signing policy](CODE_SIGNING.md).
+
+## Uninstalling
+
+- **Windows:** let all uploads finish, turn off *start with Windows* and the LAN access on the Settings
+  tab, *Quit* CryptBridge in the tray menu and delete `CryptBridge.exe`. Then delete the folders
+  `%APPDATA%\CryptBridge` and `%LOCALAPPDATA%\CryptBridge`, and uninstall WinFsp in *Settings > Apps* if
+  nothing else needs it. Your encrypted files stay in your cloud; keep the emergency sheet.
+- **Linux server:** `sudo cryptbridge uninstall` (keeps your files in the cloud).
 
 ---
 

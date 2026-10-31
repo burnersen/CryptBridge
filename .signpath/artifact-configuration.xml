@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for CryptBridge (see
+  ../.github/workflows/release.yml). Copy it into the SignPath project as
+  its default artifact configuration.
+
+  The workflow uploads CryptBridge.exe alone as a ZIP. Only this file is
+  signed, and only if its file properties name CryptBridge and the version
+  of the release. The rclone and WinFsp copies of a release are never sent
+  to SignPath: they stay the unchanged originals of their projects.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <!-- The version of the release, e.g. 0.12.0 (the file VERSION). -->
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="CryptBridge.exe" product-name="CryptBridge" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
