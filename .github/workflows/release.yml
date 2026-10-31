@@ -11,7 +11,21 @@
 # publishes everything together. Nothing is published if any step fails.
 #
 # The release text is the backup part written by release-assets.ps1,
-# followed by .github/release-notes/<version>.md (what's new).
+# followed by .github/release-notes/<version>.md (what's new) and a line
+# that links the code signing policy.
+#
+# Dry run: tick "dry run" when starting it by hand (any branch). Everything
+# is collected, tested, built and checked, CryptBridge.exe stays on the run
+# page as a workflow artifact, nothing is signed, tagged or published. Pull
+# requests that change this workflow, the build scripts or .signpath/ get a
+# dry run by themselves.
+#
+# Code signing (SignPath Foundation) is prepared but off until the
+# repository has the variable SIGNPATH_ORGANIZATION_ID and the secret
+# SIGNPATH_API_TOKEN; see .signpath/README.md. Without them CryptBridge.exe
+# is released unsigned, exactly as before. Only CryptBridge.exe is ever
+# signed: the rclone and WinFsp copies stay exactly as their projects
+# published them.
 
 name: Release
 
@@ -19,17 +33,34 @@ on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: build and check only, sign and publish nothing'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.signpath/**'
+      - 'windows/build.ps1'
+      - 'windows/release-assets.ps1'
 
 permissions:
   contents: write
+  actions: read
+
+env:
+  DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry_run == true }}
 
 concurrency:
-  group: release
+  # Dry runs never wait for (or hold up) a real release.
+  group: ${{ (github.event_name == 'pull_request' || inputs.dry_run == true) && format('release-dry-run-{0}', github.ref) || 'release' }}
 
 jobs:
   release:
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Includes up to one hour of waiting for the signing approval.
+    timeout-minutes: 120
     defaults:
       run:
         shell: pwsh
@@ -42,16 +73,22 @@ jobs:
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           $tag = "v$version"
+          $dryRun = $env:DRY_RUN -eq 'true'
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
               if ($tag -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match VERSION $version" }
-          } elseif ($env:GITHUB_REF_NAME -ne 'main') {
+          } elseif ($env:GITHUB_REF_NAME -ne 'main' -and -not $dryRun) {
               throw "a release is made from main only, not from $env:GITHUB_REF_NAME"
           }
-          gh release view $tag 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) { throw "release $tag exists already: raise VERSION first" }
+          if (-not $dryRun) {
+              gh release view $tag 2>$null | Out-Null
+              if ($LASTEXITCODE -eq 0) { throw "release $tag exists already: raise VERSION first" }
+          }
           $global:LASTEXITCODE = 0
           $notes = ".github/release-notes/$version.md"
-          if (-not (Test-Path $notes)) { throw "$notes is missing" }
+          if (-not (Test-Path $notes)) {
+              if (-not $dryRun) { throw "$notes is missing" }
+              Write-Host "::warning::$notes is missing (fine for a dry run)"
+          }
           "VERSION=$version" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "TAG=$tag" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -74,14 +111,94 @@ jobs:
       - name: Test and build CryptBridge.exe
         run: ./windows/build.ps1
 
+      # SignPath only signs an exe whose file properties name CryptBridge
+      # and the version of the release (build.ps1 writes both from VERSION).
+      - name: Check the file properties
+        run: ./.signpath/check-files.ps1 -ProductName CryptBridge -ProductVersion $env:VERSION -Path windows/build/bin/CryptBridge.exe
+
+      # --- code signing ------------------------------------------------------
+      - name: 'code signing: on or off?'
+        id: signing
+        env:
+          ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        run: |
+          $hasOrganization = -not [string]::IsNullOrWhiteSpace($env:ORGANIZATION_ID)
+          $hasToken = $env:HAS_TOKEN -eq 'true'
+          if ($env:DRY_RUN -eq 'true') {
+              $on = $false
+              Write-Host 'Dry run: nothing is signed.'
+          } elseif ($hasOrganization -ne $hasToken) {
+              throw 'Code signing is half set up: SIGNPATH_ORGANIZATION_ID and SIGNPATH_API_TOKEN must both be set, or neither (see .signpath/README.md).'
+          } else {
+              $on = $hasOrganization -and $hasToken
+              Write-Host ($(if ($on) { 'Code signing is on.' } else { 'Code signing is off: this release is unsigned.' }))
+          }
+          "enabled=$($on.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: 'code signing: collect the exe'
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          New-Item -ItemType Directory sign/unsigned -Force | Out-Null
+          Copy-Item windows/build/bin/CryptBridge.exe sign/unsigned/
+
+      - name: 'code signing: upload the exe'
+        id: unsigned
+        if: steps.signing.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned
+          path: sign/unsigned
+          if-no-files-found: error
+
+      - name: 'code signing: sign (approve the request in SignPath)'
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'CryptBridge' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: sign/signed
+          parameters: |
+            version: "${{ env.VERSION }}"
+
+      - name: 'code signing: take over the signed exe'
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          Copy-Item sign/signed/CryptBridge.exe windows/build/bin/CryptBridge.exe -Force
+          ./.signpath/check-files.ps1 -ProductName CryptBridge -ProductVersion $env:VERSION -Path windows/build/bin/CryptBridge.exe -Signed
+
+      - name: 'dry run: keep the exe on the run page'
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run
+          path: windows/build/bin/CryptBridge.exe
+          retention-days: 7
+
       - name: Publish the release
+        if: env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.signing.outputs.enabled }}
         run: |
           $release = 'windows/build/bin/release'
           $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          # The release page is the download page, so it links the code
+          # signing policy and says whether CryptBridge.exe is signed.
+          $policy = "https://github.com/$env:GITHUB_REPOSITORY/blob/main/CODE_SIGNING.md"
+          if ($env:SIGNED -eq 'true') {
+              $footer = "CryptBridge.exe is signed. Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org). The rclone and WinFsp copies are unchanged originals. [Code signing policy]($policy)"
+          } else {
+              $footer = "CryptBridge.exe is not code signed, so Windows SmartScreen may warn. [Code signing policy]($policy)"
+          }
           $text = [IO.File]::ReadAllText("$release/release-notes.md") + "`n" +
-              [IO.File]::ReadAllText(".github/release-notes/$env:VERSION.md")
+              [IO.File]::ReadAllText(".github/release-notes/$env:VERSION.md").TrimEnd() + "`n`n---`n`n$footer`n"
           [IO.File]::WriteAllText($notes, $text, [Text.UTF8Encoding]::new($false))
 
           $files = @('windows/build/bin/CryptBridge.exe', 'linux/setup.sh')
