@@ -244,8 +244,8 @@ The [release notes](https://github.com/burnersen/CryptBridge/releases) say what 
 
 > **Windows SmartScreen** may warn because `CryptBridge.exe` is not code signed yet. Choose *More info* >
 > *Run anyway*. Every release is built by GitHub Actions from this repository, and free code signing
-> through the [SignPath Foundation](https://signpath.org) is applied for: see the
-> [code signing policy](CODE_SIGNING.md).
+> through the [SignPath Foundation](https://signpath.org) is planned as soon as CryptBridge is known well
+> enough to qualify: see the [code signing policy](CODE_SIGNING.md).
 
 ## Uninstalling
 
