@@ -4,7 +4,11 @@
 
 package drive
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
+)
 
 func TestNormaliseLetter(t *testing.T) {
 	good := map[string]string{"z": "Z", "Z:": "Z", `Z:\`: "Z", " d ": "D", "x:": "X"}
@@ -52,13 +56,29 @@ func TestVfsOptions(t *testing.T) {
 	if local["CacheMode"] != LocalCacheMode || local["CacheMaxAge"] != LocalCacheMaxAge || local["ChunkSize"] != nil {
 		t.Fatalf("local options: %v", local)
 	}
-	cloud := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G"}.vfsOptions()
-	if cloud["CacheMode"] != CacheMode || cloud["ChunkSize"] != ChunkSize || cloud["DirCacheTime"] != DirCacheTime || cloud["CacheMaxAge"] != nil {
+	films := tuning.Of(tuning.Films, tuning.Values{})
+	cloud := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G", Tuning: films}.vfsOptions()
+	if cloud["CacheMode"] != CacheMode || cloud["ChunkSize"] != "64M" || cloud["ChunkSizeLimit"] != "1G" ||
+		cloud["ReadAhead"] != "128M" || cloud["DirCacheTime"] != DirCacheTime {
 		t.Fatalf("pCloud options: %v", cloud)
 	}
+	// The values rclone uses by itself, now written out.
+	if cloud["WriteBack"] != "5s" || cloud["CacheMaxAge"] != "1h" || cloud["ChunkStreams"] != 0 {
+		t.Fatalf("pCloud options no longer match rclone's defaults: %v", cloud)
+	}
+	// A vault for documents gets its own values, a local vault never.
+	documents := tuning.Of(tuning.Documents, tuning.Values{})
+	own := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G", Tuning: documents}.vfsOptions()
+	if own["ChunkSize"] != documents.ChunkSize || own["WriteBack"] != documents.WriteBack || own["CacheMaxAge"] != documents.CacheMaxAge {
+		t.Fatalf("options of a documents vault: %v", own)
+	}
+	localTuned := Settings{Local: true, Tuning: documents}.vfsOptions()
+	if localTuned["CacheMaxAge"] != LocalCacheMaxAge || localTuned["WriteBack"] != nil || localTuned["ChunkSize"] != nil {
+		t.Fatalf("a local vault took the tuning: %v", localTuned)
+	}
 	// MEGA: the same streaming values, but folders are looked at again soon.
-	quiet := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G", NoChangeReports: true}.vfsOptions()
-	if quiet["DirCacheTime"] != QuietDirCacheTime || quiet["CacheMode"] != CacheMode || quiet["ChunkSize"] != ChunkSize {
+	quiet := Settings{CacheMaxSize: "20G", CacheMinFreeSpace: "10G", NoChangeReports: true, Tuning: films}.vfsOptions()
+	if quiet["DirCacheTime"] != QuietDirCacheTime || quiet["CacheMode"] != CacheMode || quiet["ChunkSize"] != "64M" {
 		t.Fatalf("options without change reports: %v", quiet)
 	}
 }

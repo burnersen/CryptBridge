@@ -24,6 +24,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 )
 
 const (
@@ -89,6 +90,7 @@ type Snapshot struct {
 	Theme             string            `json:"theme"`
 	UploadsParallel   int               `json:"uploadsParallel"` // files uploaded at the same time
 	UploadMaxMBps     float64           `json:"uploadMaxMBps"`   // upload speed limit in MB/s; 0: no limit
+	BufferSize        string            `json:"bufferSize"`      // memory buffer per open file, for all drives
 	AppLock           bool              `json:"appLock"`         // an app password is set
 	LockOffered       bool              `json:"lockOffered"`     // the app password was offered once
 	Locked            bool              `json:"locked"`          // the app password is needed first
@@ -215,6 +217,7 @@ func (e *Engine) snapshotLocked() Snapshot {
 		Theme:             s.Theme,
 		UploadsParallel:   s.Uploads.Parallel,
 		UploadMaxMBps:     s.Uploads.MaxMBps,
+		BufferSize:        bufferOf(s),
 		AppLock:           s.AppLock,
 		LockOffered:       s.LockOffered,
 		Locked:            e.locked,
@@ -407,6 +410,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 	exe := e.rclone.Path
 	cacheDir := e.settings.Cache.Dir
 	uploads := uploadsOf(e.settings.Uploads)
+	buffer := bufferOf(e.settings)
 	logLevel := "" // rclone's default for CryptBridge: INFO
 	if e.settings.AppLock {
 		logLevel = lockedLogLevel
@@ -431,7 +435,7 @@ func (e *Engine) ensureDaemonLocked(ctx context.Context) (*rcd.Client, error) {
 			LogLevel:   logLevel,
 			CacheDir:   cacheDir,
 			ConfigFile: "NUL", // keep the configuration in memory only
-			ExtraArgs:  append([]string{"--buffer-size", drive.BufferSize}, uploads.Args()...),
+			ExtraArgs:  append([]string{"--buffer-size", buffer}, uploads.Args()...),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("could not start rclone: %w", err)
@@ -602,6 +606,15 @@ func (e *Engine) checkOnce(ctx context.Context) {
 }
 
 // uploadsOf turns the stored upload settings into rclone's limits.
+// bufferOf returns rclone's memory buffer per open file. Settings that were
+// never saved with one use the default.
+func bufferOf(s settings.Settings) string {
+	if s.BufferSize == "" {
+		return tuning.DefaultBufferSize
+	}
+	return s.BufferSize
+}
+
 func uploadsOf(u settings.Uploads) drive.Uploads {
 	return drive.Uploads{Parallel: u.Parallel, MaxMBps: u.MaxMBps}
 }

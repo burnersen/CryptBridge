@@ -21,6 +21,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/engine"
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -339,7 +340,13 @@ func (a *App) AddVault(req engine.NewVault) (engine.VaultCheck, error) {
 	return a.core.AddVault(a.coreCtx, req)
 }
 
-// UpdateVault changes name, drive letter and "connect on start" of a vault.
+// TuningProfiles lists the profiles a cloud vault can use, with their values.
+func (a *App) TuningProfiles() []tuning.Profile {
+	return tuning.Profiles()
+}
+
+// UpdateVault changes name, drive letter, "connect on start" and the
+// profile of a vault.
 func (a *App) UpdateVault(id string, change engine.VaultChange) error {
 	return a.core.UpdateVault(id, change)
 }

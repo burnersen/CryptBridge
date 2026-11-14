@@ -18,6 +18,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -80,6 +81,8 @@ type VaultSnapshot struct {
 	Counting    *SizeProgress        `json:"counting"`
 	SizeError   string               `json:"sizeError"`
 	OtherFolder bool                 `json:"otherFolder"` // see Engine.UseFolder
+	Profile     string               `json:"profile"`     // cloud vaults: what the vault is used for, see package tuning
+	Tuning      tuning.Values        `json:"tuning"`      // cloud vaults: the values of the profile
 }
 
 // runtimeLocked returns the runtime state of a vault; the caller holds mu.
@@ -126,6 +129,8 @@ func (e *Engine) vaultSnapshotLocked(v settings.Vault) VaultSnapshot {
 		Counting:    rt.counting,
 		SizeError:   rt.sizeError,
 		OtherFolder: rt.otherFolder,
+		Profile:     profileOf(v),
+		Tuning:      v.Tuning(),
 	}
 	if snap.Drive.Transfers == nil {
 		snap.Drive.Transfers = []drive.Transfer{}
@@ -138,6 +143,15 @@ func (e *Engine) vaultSnapshotLocked(v settings.Vault) VaultSnapshot {
 		}
 	}
 	return snap
+}
+
+// profileOf names the profile a vault uses: Films unless another one the
+// program knows is stored.
+func profileOf(v settings.Vault) string {
+	if tuning.Known(v.Profile) {
+		return v.Profile
+	}
+	return tuning.Films
 }
 
 // errFolderMissing: the folder of a local vault is not there, usually
@@ -372,6 +386,7 @@ func (e *Engine) mountLocked(ctx context.Context, v settings.Vault, otherFolder 
 		VolumeName:        volumePrefix + v.Name,
 		CacheMaxSize:      cache.MaxSize,
 		CacheMinFreeSpace: cache.MinFreeSpace,
+		Tuning:            v.Tuning(),
 		Local:             local,
 		NoChangeReports:   serviceOf(account).NoChangeReports,
 		Hide:              []string{vault.CheckFileName}, // it stays in the vault, but people took it for clutter

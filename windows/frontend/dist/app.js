@@ -655,7 +655,78 @@ async function fillVaultForm(v) {
   filledVault = v.id;
   $("v-edit-name").value = v.name;
   $("v-edit-auto").checked = v.autoConnect;
+  await fillProfile(v);
   await fillLetters($("v-edit-letter"), v.id, v.letter);
+}
+
+// ---------- what a vault is used for (profiles) ----------
+
+// The fields of a profile, as the engine names them (tuning.Values).
+const tuningFields = ["chunkSize", "chunkSizeLimit", "readAhead", "chunkStreams", "writeBack", "cacheMaxAge"];
+let profiles = null; // the fixed profiles with their values, read once
+
+async function loadProfiles() {
+  if (!profiles) profiles = await api.TuningProfiles();
+  return profiles;
+}
+
+// fillProfile shows the profile of a cloud vault and its values. A vault on
+// this PC reads from a disk and has no profile.
+async function fillProfile(v) {
+  show($("v-profile-box"), v.kind === "cloud");
+  if (v.kind !== "cloud") return;
+  const list = await loadProfiles();
+  const select = $("v-edit-profile");
+  select.replaceChildren();
+  for (const p of list) {
+    const option = el("option", "", p.name);
+    option.value = p.id;
+    select.append(option);
+  }
+  const own = el("option", "", "Own values");
+  own.value = "custom";
+  select.append(own);
+  select.value = v.profile || "films";
+  for (const key of tuningFields) {
+    $("v-rec-" + key).textContent = "Recommended: " + list.map((p) => `${p.name} ${p.values[key]}`).join(" · ");
+  }
+  setTuningFields(v.tuning);
+  $("v-tuning").open = v.profile === "custom";
+  showProfile();
+}
+
+function setTuningFields(values) {
+  for (const key of tuningFields) $("v-tune-" + key).value = String(values[key]);
+}
+
+// showProfile says what the chosen profile is good for. The fields can be
+// typed in only with "Own values"; otherwise they show the profile's values.
+function showProfile() {
+  const id = $("v-edit-profile").value;
+  const custom = id === "custom";
+  const profile = (profiles || []).find((p) => p.id === id);
+  $("v-profile-use").textContent = custom ?
+    "You set every value yourself. They start with the values of the profile you had chosen before." :
+    profile ? profile.use : "";
+  $("v-tuning-summary").textContent = custom ? "Your values" : "Show the values of this profile";
+  for (const key of tuningFields) $("v-tune-" + key).disabled = !custom;
+}
+
+$("v-edit-profile").addEventListener("change", () => {
+  const profile = (profiles || []).find((p) => p.id === $("v-edit-profile").value);
+  if (profile) setTuningFields(profile.values);
+  else $("v-tuning").open = true; // own values: show the fields, filled as they were
+  showProfile();
+});
+
+// customTuning reads the fields of "Own values"; the engine checks them.
+function customTuning() {
+  const values = {};
+  for (const key of tuningFields) values[key] = $("v-tune-" + key).value.trim();
+  const streams = values.chunkStreams === "" ? NaN : Number(values.chunkStreams);
+  if (!Number.isInteger(streams)) throw new Error("Parallel downloads per file must be a whole number from 0 to 16.");
+  values.chunkStreams = streams;
+  return values;
 }
 
 async function fillLetters(select, id, wanted) {
@@ -685,11 +756,19 @@ $("btn-v-count-cancel").addEventListener("click", () => run($("v-result"), () =>
 $("btn-v-save").addEventListener("click", () => run($("v-result"), async () => {
   const id = currentPage;
   $("v-save-result").textContent = "";
-  await api.UpdateVault(id, {
+  const edited = vaultByID(id);
+  const change = {
     name: $("v-edit-name").value,
     letter: $("v-edit-letter").value,
     autoConnect: $("v-edit-auto").checked,
-  });
+    profile: "",
+    custom: { chunkSize: "", chunkSizeLimit: "", readAhead: "", chunkStreams: 0, writeBack: "", cacheMaxAge: "" },
+  };
+  if (edited && edited.kind === "cloud") {
+    change.profile = $("v-edit-profile").value;
+    if (change.profile === "custom") change.custom = customTuning();
+  }
+  await api.UpdateVault(id, change);
   render(await api.GetSnapshot()); // the snapshot event may arrive only after this
   const v = vaultByID(id);
   if (v) await fillVaultForm(v);
@@ -1655,6 +1734,7 @@ async function loadSettings() {
   $("opt-autoreconnect").checked = snapshot.autoReconnect;
   $("opt-uploads-parallel").value = snapshot.uploadsParallel || 4;
   $("opt-upload-limit").value = snapshot.uploadMaxMBps ? String(snapshot.uploadMaxMBps) : "";
+  $("opt-buffer").value = snapshot.bufferSize;
   $("opt-autostart").checked = await api.AutostartEnabled();
   $("settings-result").textContent = "";
   loadAppFields();
@@ -1681,6 +1761,7 @@ document.querySelectorAll("input[name=theme]").forEach((radio) => radio.addEvent
       theme: radio.value,
       uploadsParallel: snapshot.uploadsParallel || 4,
       uploadMaxMBps: snapshot.uploadMaxMBps || 0,
+      bufferSize: snapshot.bufferSize,
     });
     render(await api.GetSnapshot());
   } catch (err) {
@@ -1718,6 +1799,7 @@ $("btn-save-settings").addEventListener("click", () => run(null, async () => {
       theme: snapshot.theme,
       uploadsParallel: uploadsParallelValue(),
       uploadMaxMBps: uploadLimitValue(),
+      bufferSize: $("opt-buffer").value.trim(),
     });
     await api.SetAutostart($("opt-autostart").checked);
     result.textContent = "Saved.";

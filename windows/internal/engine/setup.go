@@ -19,6 +19,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/prereq"
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
 	"github.com/burnersen/CryptBridge/windows/internal/settings"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -322,11 +323,16 @@ type VaultChange struct {
 	Name        string `json:"name"`
 	Letter      string `json:"letter"`
 	AutoConnect bool   `json:"autoConnect"`
+
+	// Cloud vaults: what the vault is used for. Empty is tuning.Films;
+	// Custom is read with the profile tuning.Custom only.
+	Profile string        `json:"profile"`
+	Custom  tuning.Values `json:"custom"`
 }
 
-// UpdateVault changes name, drive letter and "connect on start" of a vault.
-// The letter can only change while the drive is disconnected; a new name
-// shows in Explorer from the next connect.
+// UpdateVault changes name, drive letter, "connect on start" and the
+// profile of a vault. The letter can only change while the drive is
+// disconnected; a new name and a new profile count from the next connect.
 func (e *Engine) UpdateVault(id string, change VaultChange) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
@@ -347,6 +353,10 @@ func (e *Engine) UpdateVault(id string, change VaultChange) error {
 		return err
 	}
 	v := &s.Vaults[index]
+	profile, custom, err := checkProfile(*v, change)
+	if err != nil {
+		return err
+	}
 	if letter != v.Letter {
 		e.mu.Lock()
 		rt := e.runtimeLocked(id)
@@ -362,6 +372,7 @@ func (e *Engine) UpdateVault(id string, change VaultChange) error {
 		}
 	}
 	v.Name, v.Letter, v.AutoConnect = name, letter, change.AutoConnect
+	v.Profile, v.Custom = profile, custom
 	if err := e.saveSettings(s); err != nil {
 		return err
 	}
@@ -370,6 +381,31 @@ func (e *Engine) UpdateVault(id string, change VaultChange) error {
 	e.mu.Unlock()
 	e.publish()
 	return nil
+}
+
+// checkProfile returns the profile and the own values to store for a vault.
+// Films is stored as no profile, and own values only with the profile
+// Custom. A vault on this PC has no profile: its drive reads from a disk.
+func checkProfile(v settings.Vault, change VaultChange) (string, tuning.Values, error) {
+	if v.Kind == settings.KindLocal {
+		return "", tuning.Values{}, nil
+	}
+	switch {
+	case change.Profile == "" || change.Profile == tuning.Films:
+		return "", tuning.Values{}, nil
+	case change.Profile == tuning.Custom:
+		custom := change.Custom
+		for _, text := range []*string{&custom.ChunkSize, &custom.ChunkSizeLimit, &custom.ReadAhead, &custom.WriteBack, &custom.CacheMaxAge} {
+			*text = strings.TrimSpace(*text)
+		}
+		if err := custom.Check(); err != nil {
+			return "", tuning.Values{}, err
+		}
+		return tuning.Custom, custom, nil
+	case tuning.Known(change.Profile):
+		return change.Profile, tuning.Values{}, nil
+	}
+	return "", tuning.Values{}, fmt.Errorf("unknown profile %q", change.Profile)
 }
 
 // RemoveVault makes CryptBridge forget a vault: its keys and its drive.
@@ -456,6 +492,7 @@ type Options struct {
 	Theme             string  `json:"theme"`
 	UploadsParallel   int     `json:"uploadsParallel"` // files uploaded at the same time
 	UploadMaxMBps     float64 `json:"uploadMaxMBps"`   // upload speed limit in MB/s; 0: no limit
+	BufferSize        string  `json:"bufferSize"`      // memory buffer per open file; empty: as it is
 }
 
 // Limits of the upload settings. More than 16 uploads at once only crowd the
@@ -469,8 +506,8 @@ const (
 // sizePattern accepts sizes like "20G", "512M" or "100".
 var sizePattern = regexp.MustCompile(`^[1-9][0-9]*[KMGT]?$`)
 
-// UpdateOptions validates and stores the options. The cache can only change
-// while every drive is disconnected.
+// UpdateOptions validates and stores the options. The cache and the memory
+// buffer can only change while every drive is disconnected.
 func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
@@ -497,6 +534,16 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	}
 
 	old := e.currentSettings()
+	buffer := strings.TrimSpace(o.BufferSize)
+	if buffer == "" {
+		buffer = bufferOf(old)
+	}
+	if err := tuning.CheckBufferSize(buffer); err != nil {
+		return err
+	}
+	if buffer != bufferOf(old) && e.anyDriveBusy() {
+		return errors.New("disconnect all drives before you change the memory buffer")
+	}
 	cache := settings.Cache{Dir: filepath.Clean(o.CacheDir), MaxSize: o.CacheMaxSize, MinFreeSpace: o.CacheMinFreeSpace}
 	if cache != old.Cache && e.anyDriveBusy() {
 		return errors.New("disconnect all drives before you change the cache")
@@ -524,6 +571,7 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	updated.AutoReconnect = o.AutoReconnect
 	updated.Theme = o.Theme
 	updated.Uploads = uploads
+	updated.BufferSize = buffer
 	if err := e.saveSettings(updated); err != nil {
 		return err
 	}
@@ -531,9 +579,9 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	e.settings = updated
 	e.mu.Unlock()
 
-	// rclone fixes its cache folder when it starts: stop it, the next
-	// connect starts a fresh one with the new folder.
-	if cache.Dir != old.Cache.Dir && client != nil {
+	// rclone fixes its cache folder and its memory buffer when it starts:
+	// stop it, the next connect starts a fresh one with the new values.
+	if (cache.Dir != old.Cache.Dir || buffer != bufferOf(old)) && client != nil {
 		e.mu.Lock()
 		e.client = nil
 		e.mu.Unlock()

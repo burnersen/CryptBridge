@@ -398,12 +398,62 @@
                 </div>
               </div>
               <label class="check"><input id="v-edit-auto" type="checkbox"> <span id="v-edit-auto-label">Connect when CryptBridge starts</span></label>
+              <div id="v-profile-box">
+                <div class="field">
+                  <label for="v-edit-profile">What you use this vault for</label>
+                  <select id="v-edit-profile"></select>
+                </div>
+                <p class="hint" id="v-profile-use"></p>
+                <details id="v-tuning">
+                  <summary id="v-tuning-summary">Show the values</summary>
+                  <p class="hint">Sizes are written like 64M or 1G, times like 30s, 5m, 24h or 7d. To change a value, choose
+                    <strong>Own values</strong> above. Under every field you see what the profiles use.</p>
+                  <div class="grid2">
+                  <div class="field">
+                    <label for="v-tune-chunkSize">First read size</label>
+                    <input id="v-tune-chunkSize" type="text" spellcheck="false" autocomplete="off">
+                    <p class="hint">How much the drive asks the cloud for when a file is opened. Large: a film starts and seeks fast. Small: less is fetched when a program only looks into a file.</p>
+                    <p class="hint recommend" id="v-rec-chunkSize"></p>
+                  </div>
+                  <div class="field">
+                    <label for="v-tune-chunkSizeLimit">Largest read size</label>
+                    <input id="v-tune-chunkSizeLimit" type="text" spellcheck="false" autocomplete="off">
+                    <p class="hint">While a file is read on, the requests double from the first size up to this one. Large: fewer requests for long films and big copies.</p>
+                    <p class="hint recommend" id="v-rec-chunkSizeLimit"></p>
+                  </div>
+                  <div class="field">
+                    <label for="v-tune-readAhead">Read ahead</label>
+                    <input id="v-tune-readAhead" type="text" spellcheck="false" autocomplete="off">
+                    <p class="hint">How far the drive reads ahead of the program, into the cache on disk. Large: smooth playback. Small: saves download volume and cache when files are only opened briefly. 0 turns it off.</p>
+                    <p class="hint recommend" id="v-rec-readAhead"></p>
+                  </div>
+                  <div class="field">
+                    <label for="v-tune-chunkStreams">Parallel downloads per file</label>
+                    <input id="v-tune-chunkStreams" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+                    <p class="hint">0: one download per file, best for streaming. 2 to 8 fetch a large file in several parts at once, which can speed up copying big files out of the vault on a fast line. The parts are held in memory (this number times the first read size, 512M at most), and the read size no longer grows.</p>
+                    <p class="hint recommend" id="v-rec-chunkStreams"></p>
+                  </div>
+                  <div class="field">
+                    <label for="v-tune-writeBack">Wait before uploading</label>
+                    <input id="v-tune-writeBack" type="text" spellcheck="false" autocomplete="off">
+                    <p class="hint">How long after the last save the upload starts. Short: files are in the cloud sooner. Longer: a document saved several times in a row is uploaded once.</p>
+                    <p class="hint recommend" id="v-rec-writeBack"></p>
+                  </div>
+                  <div class="field">
+                    <label for="v-tune-cacheMaxAge">Keep used files in the cache</label>
+                    <input id="v-tune-cacheMaxAge" type="text" spellcheck="false" autocomplete="off">
+                    <p class="hint">How long a file stays on this PC after its last use, so that it opens at once. Long suits documents. The cache size on the Settings tab still counts.</p>
+                    <p class="hint recommend" id="v-rec-cacheMaxAge"></p>
+                  </div>
+                  </div>
+                </details>
+              </div>
               <div class="row">
                 <button class="primary" id="btn-v-save">Save</button>
                 <span class="muted" id="v-save-result"></span>
               </div>
               <p class="hint">The drive letter can only change while the drive is disconnected. A new name shows in
-                Explorer from the next connect.</p>
+                Explorer from the next connect, and a new use counts from then on, too.</p>
             </div>
 
             <div class="card" id="v-linux">
@@ -626,6 +676,22 @@
         <p class="hint">With DSL, uploads can fill the whole line and make games and video calls lag. Set the limit
           a little below your upload speed: a speed test shows it in Mbit/s, divide it by 8 for MB/s (40 Mbit/s
           is 5 MB/s). Changes take effect at once, also for uploads already running.</p>
+      </div>
+      <div class="card">
+        <h2>Memory</h2>
+        <p class="muted">rclone keeps a part of every open file in the PC's memory (RAM), to bridge short hiccups of
+          the network. For all drives together.</p>
+        <div class="grid2">
+          <div class="field">
+            <label for="opt-buffer">Memory buffer per open file</label>
+            <input id="opt-buffer" type="text" spellcheck="false" autocomplete="off">
+          </div>
+        </div>
+        <p class="hint"><strong>Recommended:</strong> 128M if you stream films from any of your drives. 32M if you
+          only work with documents, photos and other small files, or if the PC has 8 GB of memory or less. 16M is
+          what rclone uses by itself; 0 turns the buffer off. Can only be changed while all drives are disconnected.
+          How a single drive reads and uploads is set for each vault on its page, under <em>What you use this vault
+          for</em>.</p>
       </div>
       <div class="card">
         <h2>Behaviour</h2>

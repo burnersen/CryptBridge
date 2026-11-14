@@ -16,6 +16,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -40,6 +41,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	}
 	if s.Uploads != (Uploads{Parallel: 4}) {
 		t.Fatalf("upload defaults: %+v; want 4 at the same time, no speed limit", s.Uploads)
+	}
+	if s.BufferSize != "128M" {
+		t.Fatalf("memory buffer: %q; want 128M, as before it could be set", s.BufferSize)
 	}
 }
 
@@ -86,6 +90,9 @@ func TestSaveLoadRoundTripIsEncrypted(t *testing.T) {
 	want := twoVaults()
 	want.Theme = ThemeLight
 	want.Uploads = Uploads{Parallel: 2, MaxMBps: 4.5}
+	want.BufferSize = "32M"
+	want.Vaults[0].Profile = tuning.Custom
+	want.Vaults[0].Custom = tuning.Values{ChunkSize: "4M", ChunkSizeLimit: "64M", ReadAhead: "0", ChunkStreams: 4, WriteBack: "1m", CacheMaxAge: "7d"}
 
 	if err := Save(path, want, nil); err != nil {
 		t.Fatal(err)
