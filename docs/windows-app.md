@@ -12,6 +12,7 @@ vault.
 - [Your vaults and settings](#your-vaults-and-settings)
 - [The cache](#the-cache)
 - [Upload speed](#upload-speed)
+- [What a vault is used for](#what-a-vault-is-used-for)
 - [Vaults on this PC or a USB drive](#vaults-on-this-pc-or-a-usb-drive)
 - [App lock (recommended)](#app-lock-recommended)
 - [Moving your existing files into a vault](#moving-your-existing-files-into-a-vault)
@@ -74,7 +75,7 @@ CryptBridge running; **Quit** is in the tray menu.
 ## Your vaults and settings
 
 Every vault has its own page on the **Vaults tab**. There you find its details and its check code, can
-change its name, drive letter and *connect on start*, print its **emergency sheet**, bring it to a
+change its name, drive letter, *connect on start* and [what it is used for](#what-a-vault-is-used-for), print its **emergency sheet**, bring it to a
 [Linux server](linux-server.md) (vaults in the cloud), or *Remove from CryptBridge*. Removing asks for the
 vault's name to be sure, and never touches the files in the vault.
 
@@ -114,6 +115,37 @@ are already running. **Downloads are never limited**: opening files and streamin
 slowed down either; the limit applies only on the way to the cloud.
 
 ---
+
+## What a vault is used for
+
+A drive for films should read far ahead; a drive for documents should not fetch more than a program asks
+for. So every cloud vault has a **use**, set on its page under *Drive > What you use this vault for*:
+
+| Use | Good for |
+|---|---|
+| **Films and large files** | Streaming, also in 4K, and large files read from start to end. The default: the values every drive has always used. |
+| **Mixed** | A bit of everything: photos, music, documents and a film now and then. |
+| **Documents and small files** | Texts, spreadsheets and photos you open and save often. Fetches little ahead, waits for the last save before uploading, keeps used files on the PC for a week. |
+| **Own values** | You set every value yourself. |
+
+*Show the values* lists what a use sets, and under every field what each use recommends:
+
+| Field | Films | Mixed | Documents | What it does |
+|---|---|---|---|---|
+| First read size | 64M | 32M | 8M | How much the drive asks the cloud for when a file is opened. |
+| Largest read size | 1G | 512M | 128M | Requests double up to this size while a file is read on. |
+| Read ahead | 128M | 32M | 8M | How far the drive reads ahead into the cache. |
+| Parallel downloads per file | 0 | 0 | 0 | 2 to 8 can speed up copying big files out of a vault on a fast line; needs memory. |
+| Wait before uploading | 5s | 15s | 30s | A document saved several times in a row is uploaded once. |
+| Keep used files in the cache | 1h | 24h | 7d | Used files open at once for this long. |
+
+A new use counts from the next time the drive is connected. Vaults on this PC have no use: they read
+straight from the disk.
+
+One more value counts for all drives together and is on the **Settings** tab under *Memory*: the **memory
+buffer per open file**. 128M is right if you stream films from any drive; 32M is enough for documents and
+small files, or on a PC with 8 GB of memory or less. It can only be changed while all drives are
+disconnected.
 
 ## Vaults on this PC or a USB drive
 

@@ -13,18 +13,15 @@ import (
 	"strings"
 
 	"github.com/burnersen/CryptBridge/windows/internal/rcd"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 )
 
-// Streaming defaults for stutter-free 4K playback. They are the project's
-// required values and are shared with the Linux server setup.
+// Values of every cloud drive. How a drive reads, caches and uploads depends
+// on what the vault is used for: those values are its tuning.Values.
 const (
-	BufferSize     = "128M" // RAM buffer per open file (global rclone flag)
-	ChunkSize      = "64M"  // first read request: fast start of a film
-	ChunkSizeLimit = "1G"   // read requests grow up to this size
-	CacheMode      = "full" // cache reads and writes on disk
-	ReadAhead      = "128M" // read ahead of the player in full cache mode
-	DirCacheTime   = "24h"  // keep folder listings; pCloud reports changes
-	PollInterval   = "1m"   // ask pCloud for changes every minute
+	CacheMode    = "full" // cache reads and writes on disk
+	DirCacheTime = "24h"  // keep folder listings; pCloud reports changes
+	PollInterval = "1m"   // ask pCloud for changes every minute
 )
 
 // QuietDirCacheTime replaces DirCacheTime for clouds that report no changes
@@ -44,14 +41,15 @@ const (
 
 // Settings describe one drive.
 type Settings struct {
-	Remote            string   // rclone remote of the vault, e.g. "cbvault:"
-	Letter            string   // drive letter without colon, e.g. "Z"
-	VolumeName        string   // name shown in Explorer
-	CacheMaxSize      string   // e.g. "20G"; a soft limit, files in use stay
-	CacheMinFreeSpace string   // emergency brake: keep this much disk space free
-	Local             bool     // the vault is a folder of this PC, not in pCloud
-	NoChangeReports   bool     // the cloud does not report changes made elsewhere
-	Hide              []string // names in the top folder that the drive does not show
+	Remote            string        // rclone remote of the vault, e.g. "cbvault:"
+	Letter            string        // drive letter without colon, e.g. "Z"
+	VolumeName        string        // name shown in Explorer
+	CacheMaxSize      string        // e.g. "20G"; a soft limit, files in use stay
+	CacheMinFreeSpace string        // emergency brake: keep this much disk space free
+	Tuning            tuning.Values // cloud drives: how the drive reads, caches and uploads
+	Local             bool          // the vault is a folder of this PC, not in pCloud
+	NoChangeReports   bool          // the cloud does not report changes made elsewhere
+	Hide              []string      // names in the top folder that the drive does not show
 }
 
 // hideFilter returns rclone's filter that hides the names of Hide in the top
@@ -98,9 +96,12 @@ func (s Settings) vfsOptions() map[string]any {
 		"CacheMode":         CacheMode,
 		"CacheMaxSize":      s.CacheMaxSize,
 		"CacheMinFreeSpace": s.CacheMinFreeSpace,
-		"ChunkSize":         ChunkSize,
-		"ChunkSizeLimit":    ChunkSizeLimit,
-		"ReadAhead":         ReadAhead,
+		"CacheMaxAge":       s.Tuning.CacheMaxAge,
+		"ChunkSize":         s.Tuning.ChunkSize,
+		"ChunkSizeLimit":    s.Tuning.ChunkSizeLimit,
+		"ChunkStreams":      s.Tuning.ChunkStreams,
+		"ReadAhead":         s.Tuning.ReadAhead,
+		"WriteBack":         s.Tuning.WriteBack,
 		"DirCacheTime":      dirCacheTime,
 		"PollInterval":      PollInterval,
 	}

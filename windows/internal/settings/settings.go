@@ -26,6 +26,7 @@ import (
 	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
 	"github.com/burnersen/CryptBridge/windows/internal/pcloud"
+	"github.com/burnersen/CryptBridge/windows/internal/tuning"
 	"github.com/burnersen/CryptBridge/windows/internal/vault"
 )
 
@@ -144,6 +145,16 @@ type Vault struct {
 	Folder      *FolderMark  `json:"folder,omitempty"`  // local: the folder the drive was last connected to
 	LastSize    *SizeRecord  `json:"lastSize,omitempty"`
 	Config      vault.Config `json:"config"` // location and keys: protected by the app lock
+
+	// What the vault is used for decides how its drive reads, caches and
+	// uploads. Only cloud vaults have a profile; none means tuning.Films.
+	Profile string        `json:"profile,omitempty"`
+	Custom  tuning.Values `json:"custom,omitzero"` // the user's own values, with the profile tuning.Custom
+}
+
+// Tuning returns the rclone values the drive of the vault connects with.
+func (v Vault) Tuning() tuning.Values {
+	return tuning.Of(v.Profile, v.Custom)
 }
 
 // HasKeys reports whether the location and keys of the vault are known.
@@ -257,6 +268,7 @@ type Settings struct {
 	LockOffered   bool      `json:"lockOffered"`   // the app password was offered once (set up or declined)
 	LAN           LAN       `json:"lan"`
 	Uploads       Uploads   `json:"uploads"`
+	BufferSize    string    `json:"bufferSize"` // rclone's memory buffer per open file, for all drives
 }
 
 // Clone returns a copy that can be changed without changing s: the account
@@ -476,6 +488,7 @@ func Defaults(cacheDir string) Settings {
 		Theme:         ThemeAuto,
 		LAN:           defaultLAN(),
 		Uploads:       Uploads{Parallel: DefaultUploadsParallel},
+		BufferSize:    tuning.DefaultBufferSize,
 	}
 }
 
@@ -700,6 +713,7 @@ func fromVersion1(plain []byte, defaultCacheDir string) (fileFormat, error) {
 		LockOffered:   old.LockOffered,
 		LAN:           defaults.LAN,
 		Uploads:       defaults.Uploads,
+		BufferSize:    defaults.BufferSize,
 	}
 	migrated := Vault{
 		ID:          MigratedVaultID,

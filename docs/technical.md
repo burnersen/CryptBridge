@@ -22,17 +22,23 @@ official download pages come first; install the WinFsp copy only if WinFsp is no
 
 ## Streaming settings (rclone options)
 
-Used by the Windows drive and by the server mount (the server's WebDAV reads from that mount):
+Used by the server mount (the server's WebDAV reads from that mount) and by a Windows drive with the use
+*Films and large files*, the default:
 
 | rclone option | Value | Why |
 |---|---|---|
-| `--buffer-size` | 128M | absorbs network hiccups in memory |
+| `--buffer-size` | 128M (Windows: Settings > Memory) | absorbs network hiccups in memory |
 | `--vfs-read-chunk-size` / `-limit` | 64M / 1G | fast start of a film, then large reads |
 | `--vfs-cache-mode` | full | reads and writes go through a disk cache |
 | `--vfs-cache-max-size` | 20G (server: half the free space at most) | keeps the disk from filling up |
 | `--vfs-cache-min-free-space` | 10G Windows / 5G server | emergency brake for the disk |
 | `--vfs-read-ahead` | 128M | reads ahead of the player |
 | `--dir-cache-time` / `--poll-interval` | 24h / 1m | fast browsing; the cloud reports changes every minute |
+
+In the Windows program, every cloud vault has a use that sets `--vfs-read-chunk-size`, `-limit`,
+`--vfs-read-ahead`, `--vfs-read-chunk-streams`, `--vfs-write-back` and `--vfs-cache-max-age`:
+[What a vault is used for](windows-app.md#what-a-vault-is-used-for). The values live in
+`windows/internal/tuning`. The server always uses the film values.
 
 `--no-modtime` is used for the server's WebDAV only. The drives keep real file dates: the clouds deliver
 them with every folder listing, so they cost nothing, and you can sort by date.

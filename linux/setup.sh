@@ -1404,7 +1404,9 @@ web_port_users() {
 			done
 		done |
 		awk '$2 != "caddy"' | sort -u | sort -n |
-		awk '{ key = $2 " " $3; ports[key] = (key in ports) ? ports[key] " and " $1 : $1 }
+		# "if", not "?:": mawk (Debian, Ubuntu) creates ports[key] before it
+		# looks at the right side, and the list would start with " and ".
+		awk '{ key = $2 " " $3; if (key in ports) ports[key] = ports[key] " and " $1; else ports[key] = $1 }
 			END { for (key in ports) print key, ports[key] }'
 }
 

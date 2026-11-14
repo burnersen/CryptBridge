@@ -700,8 +700,11 @@ ADDRESS_IS_IP=0 CB_ADDRESS=""
 # --- choose_user: a number is no user name ----------------------------------
 # "id 2" takes the number as a user ID, so it used to pass; the services then
 # failed to find a user "2".
+# root is refused as the desktop user, so a test run as root types another user.
+desktop_user="$(id -un)"
+[[ "$desktop_user" == root ]] && desktop_user=nobody
 r="$( (
-	typed=(2 "$(id -un)")
+	typed=(2 "$desktop_user")
 	ask() { # types the next answer; ends the test instead of asking forever
 		((${#typed[@]})) || exit 3
 		printf -v "$1" '%s' "${typed[0]}"
@@ -711,7 +714,7 @@ r="$( (
 	choose_user >/dev/null 2>"$CB_TEST_ROOT/choose_user.err"
 	echo "$CB_USER|$(grep -c "not a number" "$CB_TEST_ROOT/choose_user.err")"
 ) )"
-check "choose_user: a number is refused with a hint, the name typed next is taken" "$(id -un)|1" "$r"
+check "choose_user: a number is refused with a hint, the name typed next is taken" "$desktop_user|1" "$r"
 
 # --- default_command: the installed command opens the menu ------------------
 # The texts say "run cryptbridge" for the menu; the downloaded setup.sh (run

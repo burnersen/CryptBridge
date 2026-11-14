@@ -22,6 +22,7 @@ func optionsOf(s Snapshot) Options {
 		Theme:             s.Theme,
 		UploadsParallel:   s.UploadsParallel,
 		UploadMaxMBps:     s.UploadMaxMBps,
+		BufferSize:        s.BufferSize,
 	}
 }
 

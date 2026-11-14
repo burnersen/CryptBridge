@@ -336,6 +336,9 @@ button.danger-btn:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
 details { margin: 10px 0; }
 summary { cursor: pointer; color: var(--muted); }
+.field > .hint { margin-top: 4px; }
+.hint.recommend { color: var(--text); }
+input:disabled { opacity: 0.7; }
 ul.plain { padding-left: 18px; }
 ul.plain li { margin-bottom: 6px; }
 
