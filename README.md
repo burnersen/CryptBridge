@@ -61,9 +61,9 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 ## See it in action
 
 <p align="center">
-  <img src="docs/images/windows-status.png" alt="CryptBridge's Status tab: five vaults in pCloud, OneDrive, Google Drive, Dropbox and MEGA, each connected as its own drive from Z: to V:, with the used and free space of every cloud" width="420"><br>
-  <sub><b>The Windows program:</b> five vaults in five clouds open at the same time, each one a drive of its own,
-  with the free space of every cloud and the share for your home network.</sub>
+  <img src="docs/images/windows-status.png" alt="CryptBridge's Status tab (version 0.13.0): five vaults, four in the clouds pCloud, OneDrive, Google Drive and Dropbox and one on a USB drive, each as its own drive letter from Z: to V:, with the used and free space, the vault size and the files still being uploaded" width="420"><br>
+  <sub><b>The Windows program:</b> several vaults open at the same time, each one a drive of its own, in the cloud or on a USB drive,
+  with the free space of every cloud, the upload status and the share for your home network. The window itself (its real page) with made-up sample vaults.</sub>
 </p>
 
 <p align="center">
