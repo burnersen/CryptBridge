@@ -303,7 +303,4 @@ Their copyright notices and full license texts are in the repositories linked ab
 
 ## ☕ Support
 
-CryptBridge is free and made in my spare time, on my own hardware and electricity bill. If it keeps your
-files safe and your films playing and you'd like to say thanks, you can
-[buy me a coffee on Ko-fi](https://ko-fi.com/burnersen). Completely optional, and either way: thank you
-for using it!
+CryptBridge is free and made in my spare time, on my own hardware and electricity bill. If it keeps your files safe and your films playing and you'd like to say thanks, you can [drop a little something in the tip jar on Ko-fi](https://ko-fi.com/burnersen), it keeps motivation and coffee flowing. ☕ Completely optional, and either way: thank you for using it!
