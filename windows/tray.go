@@ -281,9 +281,10 @@ func stateWord(v engine.VaultSnapshot) string {
 func trayState(s engine.Snapshot) (string, icon.Colour) {
 	busy, connected := false, false
 	for _, v := range s.Vaults {
-		switch v.State {
-		case engine.StateError:
+		if v.State == engine.StateError || cacheProblem(v) {
 			return "failed", icon.Failed
+		}
+		switch v.State {
 		case engine.StateConnecting, engine.StateReconnecting:
 			busy = true
 		case engine.StateConnected:
@@ -302,6 +303,11 @@ func trayState(s engine.Snapshot) (string, icon.Colour) {
 }
 
 // trayText is the one-line status for tooltip and menu.
+// cacheProblem: the cache of the drive is full, or files failed to upload.
+func cacheProblem(v engine.VaultSnapshot) bool {
+	return v.Drive.CacheOutOfSpace || v.Drive.CacheErroredFiles > 0
+}
+
 func trayText(s engine.Snapshot) string {
 	uploads := ""
 	if n := s.PendingUploads(); n > 0 {
@@ -321,7 +327,7 @@ func trayText(s engine.Snapshot) string {
 		return "Locked"
 	}
 	for _, v := range s.Vaults {
-		if v.State == engine.StateError {
+		if v.State == engine.StateError || cacheProblem(v) {
 			return fmt.Sprintf("Problem with %s (%s:) – open CryptBridge", v.Name, v.Letter)
 		}
 	}

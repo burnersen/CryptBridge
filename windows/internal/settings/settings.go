@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/burnersen/CryptBridge/windows/internal/cloud"
 	"github.com/burnersen/CryptBridge/windows/internal/passlock"
@@ -497,6 +498,11 @@ func Defaults(cacheDir string) Settings {
 // result has no secrets; Unlock opens them.
 func Load(path, defaultCacheDir string) (Settings, error) {
 	stored, err := readFile(path, defaultCacheDir)
+	if err != nil {
+		if fromBackup, backupErr := restoreBackup(path, defaultCacheDir); backupErr == nil {
+			stored, err = fromBackup, &RestoredError{Cause: err}
+		}
+	}
 	if stored.AppLock {
 		// A locked file holds no readable secrets anyway; this keeps the
 		// promise even for a damaged one.
@@ -519,6 +525,21 @@ func Unlock(path, defaultCacheDir, password string) (Settings, *passlock.Key, er
 		return Settings{}, nil, errors.New("the locked settings are damaged")
 	}
 	plain, key, err := passlock.Open(*stored.Sealed, password)
+	if errors.Is(err, passlock.ErrWrongPassword) {
+		// AES-GCM cannot tell a wrong password from a damaged file. If the
+		// backup opens with this password, the file was damaged: take the
+		// backup back.
+		if backup, backupErr := readExisting(path+BackupSuffix, defaultCacheDir); backupErr == nil && backup.AppLock && backup.Sealed != nil {
+			if plainB, keyB, errB := passlock.Open(*backup.Sealed, password); errB == nil {
+				if restoreErr := copyAtomic(path+BackupSuffix, path); restoreErr == nil {
+					stored, plain, key, err = backup, plainB, keyB, nil
+				} else {
+					clear(plainB)
+					keyB.Wipe()
+				}
+			}
+		}
+	}
 	if err != nil {
 		return Settings{}, nil, err
 	}
@@ -561,8 +582,12 @@ func olderFormatOf(path string) (int, bool) {
 // hold the secrets protected as they were back then, so they go when their
 // protection changes (app password set, changed or reset).
 func RemoveLegacyBackups(path string) error {
+	suffixes := []string{BackupSuffix}
 	for _, format := range olderFormats {
-		backup := path + format.backupSuffix
+		suffixes = append(suffixes, format.backupSuffix)
+	}
+	for _, suffix := range suffixes {
+		backup := path + suffix
 		if err := os.Remove(backup); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("delete %s: %w", backup, err)
 		}
@@ -594,7 +619,7 @@ const maxSetAside = 20
 // formats.
 func readFile(path, defaultCacheDir string) (fileFormat, error) {
 	stored := fileFormat{Settings: Defaults(defaultCacheDir)}
-	data, err := os.ReadFile(path)
+	data, err := readRetrying(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return stored, nil
 	}
@@ -771,14 +796,114 @@ func Save(path string, s Settings, key *passlock.Key) error {
 	if err := backUpLegacyFile(path); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(append([]byte{}, fileHeader...), protected...), 0o600); err != nil {
-		return fmt.Errorf("write settings: %w", err)
+	if err := backUpCurrent(path); err != nil {
+		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := writeAtomic(path, append(append([]byte{}, fileHeader...), protected...)); err != nil {
 		return fmt.Errorf("write settings: %w", err)
 	}
 	return nil
+}
+
+// BackupSuffix names the copy of the last settings file that could be read.
+// It holds the secrets protected exactly like the settings file itself.
+const BackupSuffix = ".bak"
+
+// RestoredError: the settings file could not be read, and the backup of
+// the version before was put back in its place.
+type RestoredError struct {
+	Cause error
+}
+
+func (e *RestoredError) Error() string {
+	return fmt.Sprintf("your settings file could not be read (%v); the copy of the version before was restored, "+
+		"so the last change may be missing", e.Cause)
+}
+
+// backUpCurrent keeps the settings file as it is now as BackupSuffix, but
+// only if it can be read: a damaged file must never replace a good backup.
+func backUpCurrent(path string) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if _, err := readFile(path, ""); err != nil {
+		return nil
+	}
+	if err := copyAtomic(path, path+BackupSuffix); err != nil {
+		return fmt.Errorf("back up the settings: %w", err)
+	}
+	return nil
+}
+
+// restoreBackup reads the backup and, if it is good, puts it in place of
+// the damaged settings file, which is kept aside first.
+func restoreBackup(path, defaultCacheDir string) (fileFormat, error) {
+	backup, err := readExisting(path+BackupSuffix, defaultCacheDir)
+	if err != nil {
+		return fileFormat{}, err
+	}
+	if _, err := os.Stat(path); err == nil {
+		if _, err := SetAside(path); err != nil {
+			return fileFormat{}, err
+		}
+	}
+	if err := copyAtomic(path+BackupSuffix, path); err != nil {
+		return fileFormat{}, err
+	}
+	return backup, nil
+}
+
+// readExisting is readFile for a file that must exist.
+func readExisting(path, defaultCacheDir string) (fileFormat, error) {
+	if _, err := os.Stat(path); err != nil {
+		return fileFormat{}, err
+	}
+	return readFile(path, defaultCacheDir)
+}
+
+// readRetrying reads a file, trying again for a moment: a virus scanner or
+// a backup program may hold it open just now.
+func readRetrying(path string) ([]byte, error) {
+	var data []byte
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if data, err = os.ReadFile(path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return data, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return data, err
+}
+
+func copyAtomic(from, to string) error {
+	data, err := readRetrying(from)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(to, data)
+}
+
+// writeAtomic replaces path with data. The data is flushed to the disk
+// before the rename, so that a power cut never leaves an empty or half
+// written file under the name.
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // backUpLegacyFile copies a file of an older format before it is replaced,

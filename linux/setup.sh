@@ -429,7 +429,11 @@ install_rclone() {
 
 # as_user runs a command as the desktop user, who runs rclone.
 as_user() {
-	runuser -u "$CB_USER" -- "$@"
+	if [[ "$(id -un)" == "$CB_USER" ]]; then
+		"$@"
+	else
+		runuser -u "$CB_USER" -- "$@"
+	fi
 }
 
 # rc runs rclone as the desktop user with CryptBridge's configuration.
@@ -777,7 +781,15 @@ verify_keys() {
 	step "Checking the keys"
 	local path raw check_name opened checked
 	path="$(normalise_path "$CB_VAULT_PATH")"
-	if ! raw="$(rc lsf "$CLOUD_REMOTE:$path" 2>/dev/null)" || [[ -z "$raw" ]]; then
+	if list_folder "$path"; then
+		raw="$LISTING"
+	else
+		# Only a missing folder is an empty one; anything else (network,
+		# sign-in) must not lead to a new vault beside the old one.
+		[[ "$LISTING_ERROR" == *"directory not found"* ]] || die "The folder '$path' could not be read: $LISTING_ERROR"
+		raw=""
+	fi
+	if [[ -z "$raw" ]]; then
 		warn "The folder '$path' is empty or does not exist yet."
 		confirm "Create a NEW vault there with these keys?" n || die "Nothing changed. Check the folder name."
 		rc mkdir "$VAULT_REMOTE:"
@@ -804,6 +816,21 @@ verify_keys() {
 		return
 	fi
 	die "These keys do NOT open the vault in '$path' ($opened of $checked names). Check password, salt and settings — nothing was changed."
+}
+
+# list_folder PATH — lists the folder PATH of the cloud into LISTING. If that
+# fails, rclone's message is in LISTING_ERROR (kept apart from the listing,
+# where rclone's notices would look like names).
+list_folder() {
+	local errfile
+	errfile="$(mktemp)"
+	if LISTING="$(rc lsf "$CLOUD_REMOTE:$1" 2>"$errfile")"; then
+		rm -f "$errfile"
+		return 0
+	fi
+	LISTING_ERROR="$(<"$errfile")"
+	rm -f "$errfile"
+	return 1
 }
 
 # verify_by_content PATH RAW — for vaults whose names prove nothing: the
@@ -1124,7 +1151,34 @@ pending_uploads() {
 		echo 0
 		return
 	fi
-	{ grep -rlE '"Dirty": *true' "$notes" 2>/dev/null || true; } | wc -l
+	# Counted as waiting: every note that does not say "uploaded", also one
+	# that cannot be read (as in the Windows program).
+	local total clean
+	total="$(find "$notes" -type f 2>/dev/null | wc -l)"
+	clean="$({ grep -rlE '"Dirty": *false' "$notes" 2>/dev/null || true; } | wc -l)"
+	echo $((total - clean))
+}
+
+# preflight ID — run by the mount service of vault ID before it mounts, as
+# the desktop user: succeeds only if the vault's cloud folder is there and
+# the keys open it. Checks quickly: the check file, or a few names.
+preflight() {
+	[[ "$1" =~ ^[0-9]+$ ]] || die "Usage: cryptbridge preflight NUMBER"
+	load_settings
+	select_vault "$1"
+	VAULT_ENCRYPTION="$(conf_value "$VAULT_REMOTE" filename_encryption)"
+	VAULT_DIRNAMES="$(conf_value "$VAULT_REMOTE" directory_name_encryption)"
+	local path raw check_name opened checked
+	path="$(normalise_path "$CB_VAULT_PATH")"
+	list_folder "$path" || die "Vault '$CB_VAULT_NAME' not mounted: its folder '$path' could not be read: $LISTING_ERROR"
+	raw="$LISTING"
+	[[ -n "$raw" ]] || die "Vault '$CB_VAULT_NAME' not mounted: its folder '$path' is empty. Was it renamed or moved in the cloud?"
+	[[ "${VAULT_ENCRYPTION:-standard}" == "standard" ]] || return 0 # names prove nothing; the folder is there
+	check_name="$(rc backend encode "$VAULT_REMOTE:" "$CHECK_FILE")"
+	[[ $'\n'"$raw"$'\n' == *$'\n'"$check_name"$'\n'* ]] && return 0
+	read -r opened checked < <(decrypt_names "$raw")
+	((checked == 0 || opened == checked)) ||
+		die "Vault '$CB_VAULT_NAME' not mounted: the keys do not open the folder '$path' ($opened of $checked names)."
 }
 
 # remove_vault_dir — removes the folder of the selected vault, which is empty
@@ -1647,6 +1701,10 @@ Group=$CB_GROUP
 ExecStartPre=-/usr/bin/fusermount3 -uz "$dir"
 # A switched-off vault has no folder, so that players do not show it.
 ExecStartPre=/usr/bin/mkdir -p "$dir"
+# Mount only if the vault is still in its cloud folder and the keys open it:
+# a renamed or emptied folder would otherwise show as an empty vault, and
+# files put in would start a second vault. Fails (and retries) while offline.
+ExecStartPre=$SELF_INSTALLED preflight $CB_VAULT_ID
 # The check file stays in the vault for the key check, but neither the folder
 # nor WebDAV (which serves the folder) shows it: people took it for clutter.
 ExecStart=$RCLONE_BIN mount $VAULT_REMOTE: "$dir" \\
@@ -2404,12 +2462,12 @@ setup() {
 	choose_cache
 	choose_webdav_account
 	choose_address
+	install_self # the vault services call it before they mount (preflight)
 	write_units
 	start_services
 	setup_firewall
 	check_https
 	setup_fail2ban
-	install_self
 	setup_desktop
 	save_settings
 	summary
@@ -2453,6 +2511,7 @@ main() {
 		restart_services
 		;;
 	uninstall) uninstall ;;
+	preflight) preflight "${2:-}" ;;
 	version) echo "$CRYPTBRIDGE_VERSION" ;;
 	*) die "Unknown command '$1'. Use: setup, menu, status, vault [add|on|off|delete], streaming [on|off], restart, uninstall, version" ;;
 	esac

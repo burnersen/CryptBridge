@@ -232,7 +232,18 @@ func writeState(path string, state State) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("write state: %w", err)
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync() // on disk before the rename: a power cut leaves no empty file
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

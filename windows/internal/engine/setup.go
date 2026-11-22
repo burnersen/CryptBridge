@@ -566,6 +566,28 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 		}
 	}
 
+	if cache.Dir != old.Cache.Dir {
+		// Files waiting in the old cache would never be uploaded from there.
+		if waiting, err := waitingInCache(old.Cache.Dir); err != nil {
+			return err
+		} else if waiting > 0 {
+			return fmt.Errorf("%d file(s) in the cache %s still wait to be written into their vaults. "+
+				"Connect the drives and let them finish before you move the cache", waiting, old.Cache.Dir)
+		}
+	}
+
+	// rclone fixes its cache folder and its memory buffer when it starts:
+	// stop it first, the next connect starts a fresh one with the new values.
+	// Stopped before saving: a failed stop changes nothing.
+	if (cache.Dir != old.Cache.Dir || buffer != bufferOf(old)) && client != nil {
+		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		e.client = nil
+		e.mu.Unlock()
+	}
+
 	updated := old.Clone()
 	updated.Cache = cache
 	updated.AutoReconnect = o.AutoReconnect
@@ -578,19 +600,26 @@ func (e *Engine) UpdateOptions(ctx context.Context, o Options) error {
 	e.mu.Lock()
 	e.settings = updated
 	e.mu.Unlock()
-
-	// rclone fixes its cache folder and its memory buffer when it starts:
-	// stop it, the next connect starts a fresh one with the new values.
-	if (cache.Dir != old.Cache.Dir || buffer != bufferOf(old)) && client != nil {
-		e.mu.Lock()
-		e.client = nil
-		e.mu.Unlock()
-		if err := rcd.Stop(ctx, client, e.paths.StateFile); err != nil {
-			return err
-		}
-	}
 	e.publish()
 	return nil
+}
+
+// waitingInCache counts the files below cacheDir that wait for their upload,
+// in the caches of all vaults, also of vaults CryptBridge no longer knows.
+func waitingInCache(cacheDir string) (int, error) {
+	remotes, err := drive.CacheRemotes(cacheDir)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, remote := range remotes {
+		waiting, err := drive.WaitingUploads(cacheDir, remote)
+		if err != nil {
+			return 0, err
+		}
+		total += waiting
+	}
+	return total, nil
 }
 
 // anyDriveBusy reports whether a drive is connected or wanted.

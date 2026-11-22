@@ -15,7 +15,7 @@ import (
 func TestSessionWatcherDeliversEvents(t *testing.T) {
 	for round := 1; round <= 2; round++ { // the second round finds the window class already registered
 		events := make(chan sessionEvent, 4)
-		w, err := startSessionWatcher(func(e sessionEvent) { events <- e })
+		w, err := startSessionWatcher(func(e sessionEvent) { events <- e }, nil)
 		if err != nil {
 			t.Fatalf("round %d: %v", round, err)
 		}

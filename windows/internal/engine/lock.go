@@ -525,11 +525,22 @@ func (e *Engine) Reset(ctx context.Context) error {
 	e.mu.Unlock()
 	e.wipeTraces()
 	backupErr := removeOldBackup(e.paths.SettingsFile)
+	// Files that still waited for their upload stay in the cache, but with
+	// the keys gone they can no longer be written into their vaults.
+	notice := ""
+	if waiting, err := waitingInCache(fresh.Cache.Dir); err == nil && waiting > 0 {
+		notice = fmt.Sprintf("%d file(s) had not been written into their vaults yet. They stay in the cache folder %s, "+
+			"but CryptBridge can no longer upload them; copy them out of it only with plain rclone and the keys "+
+			"from the emergency sheet.", waiting, fresh.Cache.Dir)
+	}
 
 	if err := e.prepareLocked(ctx); err != nil {
 		e.setPhase(PhaseError, err.Error())
 		return backupErr
 	}
 	e.settleLocked(ctx, false)
+	if notice != "" {
+		e.setPhase(PhaseSetup, notice)
+	}
 	return backupErr
 }
