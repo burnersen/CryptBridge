@@ -275,6 +275,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	prereq.CleanUp(e.paths.BinDir) // leftovers of an earlier rclone download
 
 	loaded, loadErr := settings.Load(e.paths.SettingsFile, e.paths.CacheDir)
+	notice := ""
+	var restored *settings.RestoredError
+	if errors.As(loadErr, &restored) {
+		notice, loadErr = restored.Error(), nil
+	}
 	if loadErr != nil {
 		loadErr = e.setAsideUnreadable(loadErr)
 	}
@@ -295,6 +300,16 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	e.actionMu.Lock()
 	defer e.actionMu.Unlock()
+	if notice != "" {
+		defer func() {
+			e.mu.Lock()
+			phase := e.phase
+			e.mu.Unlock()
+			if phase != PhaseError {
+				e.setPhase(phase, notice)
+			}
+		}()
+	}
 	if loaded.AppLock {
 		e.startLockedLocked(ctx)
 		return nil

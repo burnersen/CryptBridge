@@ -67,6 +67,9 @@ firewall* once more.
 - The connection inside the home network is plain HTTP, without TLS.
 - Changes from the network (full access only) go into the drive's upload queue, like files copied in
   Explorer.
+- An upload over the network that breaks off (Wi-Fi lost, app closed) is not undone: WebDAV has no way
+  to tell rclone that the file is incomplete, so the part already sent stays as a shorter file and is
+  uploaded into the vault like that. Check large uploads afterwards, or copy them on this PC.
 - The LAN passwords are stored like the vault keys: encrypted with your Windows account, and sealed with
   the app password when the app lock is on.
 

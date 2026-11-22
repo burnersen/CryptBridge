@@ -81,7 +81,7 @@ func (a *App) startup(ctx context.Context) {
 			return
 		}
 		a.askForPasswordIfWanted()
-		session, err := startSessionWatcher(a.onSessionEvent)
+		session, err := startSessionWatcher(a.onSessionEvent, a.shutdownBlocker)
 		if err != nil {
 			a.showError("CryptBridge cannot notice when Windows is locked", err)
 			return
@@ -148,6 +148,14 @@ func (a *App) applyTheme(theme string) {
 func (a *App) onSessionEvent(event sessionEvent) {
 	snap := a.core.Snapshot()
 	if !snap.AppLock {
+		if event == sessionEnding {
+			// Without app lock, close the drives and stop rclone cleanly
+			// instead of letting Windows kill it; renewed sign-ins are kept.
+			ctx, cancel := context.WithTimeout(a.coreCtx, sessionEndTimeout)
+			defer cancel()
+			a.CancelSignIn()
+			_ = a.core.Shutdown(ctx, true)
+		}
 		return
 	}
 	switch event {
@@ -164,6 +172,15 @@ func (a *App) onSessionEvent(event sessionEvent) {
 	case sessionUnlocked:
 		a.askForPasswordIfWanted()
 	}
+}
+
+// shutdownBlocker tells Windows why signing out or shutting down should
+// wait: files that are not in their vaults yet.
+func (a *App) shutdownBlocker() string {
+	if n := a.core.Snapshot().PendingUploads(); n > 0 {
+		return fmt.Sprintf("%d file(s) are still being written into your vaults. Wait a moment, or they are uploaded after the next start.", n)
+	}
+	return ""
 }
 
 // askForPasswordIfWanted shows the window with the password field when

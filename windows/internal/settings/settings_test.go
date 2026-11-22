@@ -714,3 +714,39 @@ func TestConvertLockedLANOfVersion05(t *testing.T) {
 		}
 	}
 }
+
+func TestDamagedFileIsRestoredFromBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.dat")
+	first, second := twoVaults(), twoVaults()
+	second.Theme = ThemeDark
+	if err := Save(path, first, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, second, nil); err != nil { // the first version becomes the backup
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil { // what a power cut can leave
+		t.Fatal(err)
+	}
+	got, err := Load(path, `C:\other`)
+	var restored *RestoredError
+	if !errors.As(err, &restored) {
+		t.Fatalf("Load = %v, want a RestoredError", err)
+	}
+	if !reflect.DeepEqual(got, first) {
+		t.Fatalf("restored %+v, want the version before", got)
+	}
+	if _, err := Load(path, `C:\other`); err != nil {
+		t.Fatalf("the restored file does not load: %v", err)
+	}
+	// A damaged file must never replace the good backup.
+	if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backUpCurrent(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readExisting(path+BackupSuffix, ""); err != nil {
+		t.Fatalf("the backup was replaced by the damaged file: %v", err)
+	}
+}

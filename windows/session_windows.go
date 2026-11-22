@@ -23,8 +23,12 @@ import (
 // window, never shown: Windows sends the sign-out messages only to those.
 type sessionWatcher struct {
 	onEvent func(sessionEvent)
-	hwnd    uintptr
-	done    chan struct{}
+	// busy returns why Windows should not end the session now ("" if
+	// nothing is in the way): the reason is shown on the screen where
+	// Windows lists the programs that hold up shutting down.
+	busy func() string
+	hwnd uintptr
+	done chan struct{}
 }
 
 type sessionEvent int
@@ -65,6 +69,8 @@ var (
 	procGetModuleHandle   = kernel32.NewProc("GetModuleHandleW")
 	procWTSRegister       = wtsapi32.NewProc("WTSRegisterSessionNotification")
 	procWTSUnregister     = wtsapi32.NewProc("WTSUnRegisterSessionNotification")
+	procBlockReasonCreate = user32.NewProc("ShutdownBlockReasonCreate")
+	procBlockReasonDelete = user32.NewProc("ShutdownBlockReasonDestroy")
 	sessionWindowProcAddr = windows.NewCallback(sessionWindowProc) // created once: Windows keeps it for good
 )
 
@@ -97,8 +103,8 @@ var (
 // onEvent is called for sessionLocked and sessionUnlocked on a goroutine of
 // its own; for sessionEnding it is called directly and must finish quickly,
 // because Windows ends the program soon after.
-func startSessionWatcher(onEvent func(sessionEvent)) (*sessionWatcher, error) {
-	w := &sessionWatcher{onEvent: onEvent, done: make(chan struct{})}
+func startSessionWatcher(onEvent func(sessionEvent), busy func() string) (*sessionWatcher, error) {
+	w := &sessionWatcher{onEvent: onEvent, busy: busy, done: make(chan struct{})}
 	created := make(chan error, 1)
 	go func() {
 		goruntime.LockOSThread() // the window's messages arrive only on this thread
@@ -181,7 +187,19 @@ func sessionWindowProc(hwnd, message, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 	case wmQueryEndSession:
-		return 1 // never stand in the way of signing out
+		// Uploads still running: ask Windows to wait, with the reason. The
+		// user can still sign out anyway; the files then stay in the cache
+		// and are uploaded after the next start.
+		if w.busy != nil {
+			if reason := w.busy(); reason != "" {
+				if text, err := windows.UTF16PtrFromString(reason); err == nil {
+					_, _, _ = procBlockReasonCreate.Call(hwnd, uintptr(unsafe.Pointer(text)))
+					return 0
+				}
+			}
+		}
+		_, _, _ = procBlockReasonDelete.Call(hwnd)
+		return 1
 	case wmEndSession:
 		if wParam != 0 { // the session really ends
 			w.onEvent(sessionEnding)

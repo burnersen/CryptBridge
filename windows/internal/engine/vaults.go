@@ -608,7 +608,7 @@ func (e *Engine) disconnectVaultLocked(ctx context.Context, v settings.Vault, fo
 // ensureNoUploads returns an *UploadsPendingError if a drive is uploading,
 // looking twice so that a file written a moment ago is not missed.
 func (e *Engine) ensureNoUploads(ctx context.Context, client *rcd.Client, v settings.Vault, first drive.Status) error {
-	if pending := first.PendingUploads(); pending > 0 {
+	if pending := e.pendingOf(v, first); pending > 0 {
 		return &UploadsPendingError{Count: pending}
 	}
 	select {
@@ -620,10 +620,29 @@ func (e *Engine) ensureNoUploads(ctx context.Context, client *rcd.Client, v sett
 	if err != nil {
 		return err
 	}
-	if pending := second.PendingUploads(); pending > 0 {
+	if pending := e.pendingOf(v, second); pending > 0 {
 		return &UploadsPendingError{Count: pending}
 	}
 	return nil
+}
+
+// pendingOf counts the files of a drive that are not safely in the vault
+// yet. rclone's upload queue knows a file only once it is closed; a file
+// that is still being copied onto the drive is only marked "Dirty" in the
+// cache. Disconnecting then would cut it off, and rclone would upload the
+// cut-off file later as if it were complete. So the larger count wins.
+func (e *Engine) pendingOf(v settings.Vault, status drive.Status) int {
+	pending := status.PendingUploads()
+	if !status.Mounted {
+		return pending
+	}
+	e.mu.Lock()
+	cacheDir := e.settings.Cache.Dir
+	e.mu.Unlock()
+	if dirty, err := drive.WaitingUploads(cacheDir, remoteName(v.ID)); err == nil && dirty > pending {
+		return dirty
+	}
+	return pending
 }
 
 // ensureNoUploadsAnywhere is ensureNoUploads for all connected drives,
@@ -642,7 +661,7 @@ func (e *Engine) ensureNoUploadsAnywhere(ctx context.Context, vaults []settings.
 			if err != nil {
 				return 0, false, err
 			}
-			total += status.PendingUploads()
+			total += e.pendingOf(v, status)
 			mounted = mounted || status.Mounted
 		}
 		return total, mounted, nil

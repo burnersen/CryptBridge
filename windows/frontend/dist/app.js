@@ -446,8 +446,13 @@ function updateCard(c, v, s) {
     (v.kind === "cloud" ? ` — keep the drive connected until they are in ${v.accountName}.` : ".");
   renderTransfers(c.transfers, d.transfers || []);
 
-  show(c.message, !!v.message);
-  c.message.textContent = v.message || "";
+  // Problems of the cache that rclone reports only in its statistics.
+  const cacheProblems = [];
+  if (d.cacheOutOfSpace) cacheProblems.push("The disk of the cache is full: nothing more can be written to this drive until space is freed.");
+  if (d.cacheErroredFiles > 0) cacheProblems.push(`${d.cacheErroredFiles} file(s) could not be written into the vault; rclone keeps trying. See the rclone log.`);
+  const message = [v.message, ...cacheProblems].filter(Boolean).join(" ");
+  show(c.message, !!message);
+  c.message.textContent = message;
   c.message.className = "drive-message " + kind;
 
   c.toggle.textContent = toggleLabel(v);
