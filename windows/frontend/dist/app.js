@@ -1810,6 +1810,8 @@ $("btn-save-settings").addEventListener("click", () => run(null, async () => {
     result.textContent = "Saved.";
   } catch (err) {
     result.textContent = errorText(err);
+    // A refused move of the cache: show the folder that is still in use.
+    if (/move the cache|change the cache/.test(errorText(err))) $("opt-cache-dir").value = snapshot.cacheDir;
   }
 }));
 
