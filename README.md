@@ -28,6 +28,8 @@ you.
 
 ---
 
+> ⚠️ **Before you start:** CryptBridge is free hobby software without any warranty, and you use it at your own risk. Keep backups of your important files and print every vault's emergency sheet: lost keys cannot be recovered. Details in the disclaimer at the end.
+
 ## Why CryptBridge?
 
 Whatever you upload to a cloud is only as private as your provider and your account allow. CryptBridge
@@ -56,7 +58,7 @@ drive such as `Z:`. Copy files in, open them, play films, delete them, just as o
 - 🌍 **Stream from anywhere** *(optional, for advanced users)*. One script turns a rented Linux server
   into an HTTPS streaming server for all your vaults, from all five clouds.
 - 🆓 **Free, open and without lock-in.** No ads, no tracking, no CryptBridge account. Every vault's
-  emergency sheet shows how to open it with plain rclone, so your files never depend on CryptBridge.
+  emergency sheet shows how to open it with plain rclone, so your files do not depend on CryptBridge.
 
 ## See it in action
 
@@ -132,7 +134,7 @@ flowchart TB
 - No cloud, no sign-in: the folder only ever holds locked files, so a copy of it is a locked backup.
 - A USB vault connects when its stick is plugged in, and its drive closes within about two seconds when
   the stick is pulled out.
-- Copies of a vault (a backup on a second stick) are never mixed up with the original.
+- CryptBridge tells copies of a vault (a backup on a second stick) apart from the original.
 
 **📺 Home network (LAN access)** · [guide](docs/lan-access.md)
 - A **streaming access** (read-only) for TVs and players, and a separate **full access** for file apps.
@@ -176,19 +178,19 @@ No copy and paste at hand? Save the block as a file and read it from there; the
 > 4. **Use the LAN access only in your home network.** There the files travel unlocked, protected by a
 >    password only. Never open it to the internet; use a VPN instead.
 
-**What CryptBridge takes care of:**
+**What CryptBridge is built to take care of:**
 
-- **Wrong keys are caught before they can do harm.** rclone never says "wrong password": with wrong keys
+- **Wrong keys are checked for before they can do harm.** rclone never says "wrong password": with wrong keys
   a vault just looks empty, and new files would be locked with the wrong keys, splitting your vault in
   two. CryptBridge tests the keys when you add a vault and every time before its drive appears.
-- **No vault is overwritten by mistake.** A new vault is only created in an empty folder, never inside
-  another vault, and two vaults never share a folder.
+- **Protection against overwriting a vault.** A new vault is only created in an empty folder, not inside
+  another vault, and two vaults do not share a folder.
 - **Your keys stay yours.** Settings are encrypted with your Windows account (DPAPI), and with the app
   lock also with Argon2id and AES-256. rclone keeps its configuration in memory only. Locking closes all
   drives and deletes the cache.
 - **No typing errors between PC and server.** Sign-in and keys travel in an encrypted transfer block with
   a one-time code.
-- **Uploads are never cut off silently,** and drives come back by themselves after a crash or a cloud
+- **Uploads are not cut off silently,** and drives try to come back by themselves after a crash or a cloud
   hiccup.
 
 All details, including the small check file `.cryptbridge-vault` in every vault: [Security](docs/security.md).
@@ -304,3 +306,9 @@ Their copyright notices and full license texts are in the repositories linked ab
 ## ☕ Support
 
 CryptBridge is free and made in my spare time, on my own hardware and electricity bill. If it keeps your files safe and your films playing and you'd like to say thanks, you can [drop a little something in the tip jar on Ko-fi](https://ko-fi.com/burnersen), it keeps motivation and coffee flowing. ☕ Completely optional, and either way: thank you for using it!
+
+## ⚠️ Disclaimer
+
+CryptBridge is free hobby software, provided **"as is", without any warranty or condition of any kind**. It was built and tested with care, but you use it **at your own risk**. Keep your own backups of anything important, outside the vault, and keep every vault's emergency sheet: lost keys cannot be recovered by anyone, the author included.
+
+Where this README describes what CryptBridge does, checks or never does, that is how it is designed to work, not a promise or guarantee: software can have bugs, and systems, services and other programs do not always behave as expected. As far as the applicable law allows, the author is not liable for any damages or data loss arising from the use of this software. See sections 15 and 16 of the [license](LICENSE).
