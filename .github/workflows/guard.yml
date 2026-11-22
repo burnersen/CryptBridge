@@ -1,0 +1,77 @@
+# Security guard: once a day, looks for published security flaws in Go and
+# in the Go modules this program uses. If there is one, it updates, tests and
+# publishes a new patch version by itself (release notes included). If that
+# does not work, it publishes nothing and opens an issue instead.
+# Logic: .github/guard/guard.sh. Settings for this repo: the env block below.
+# Started by hand with "dry run", it shows what it would do and changes nothing.
+name: Security guard
+
+on:
+  schedule:
+    - cron: '53 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: show what would happen, change nothing'
+        type: boolean
+        default: true
+      simulate:
+        description: 'With dry run only: act as if Go had a flaw, to test the whole way'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: security-guard
+
+jobs:
+  guard:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GOTOOLCHAIN: local
+      GUARD_DRY: ${{ inputs.dry_run == true }}
+      GUARD_SIMULATE: ${{ inputs.simulate == true }}
+      GUARD_NAME: 'CryptBridge'
+      GUARD_MODULES: 'windows'
+      GUARD_GO: gomod
+      GUARD_TEST: 'cd windows && go vet ./... && go test ./...'
+      GUARD_NOTES: '.github/release-notes/{V}.md'
+      GUARD_RELEASE: 'dry_run=false'
+      GUARD_LANG: en
+      GUARD_VERSION_SPOTS: |
+        VERSION|.
+        windows/wails.json|"productVersion"
+        linux/setup.sh|CRYPTBRIDGE_VERSION=
+      GUARD_FOOTER: |
+        ## Updating
+
+        - **Windows:** quit CryptBridge (wait until no uploads are running), replace `CryptBridge.exe` with the new one and start it.
+        - **Server:** nothing to do.
+
+        ## Downloads
+
+        - `CryptBridge.exe`: Windows 11 (64-bit), needs [WinFsp](https://winfsp.dev/rel/)
+        - `setup.sh`: Linux server (Ubuntu / Debian)
+    steps:
+      - uses: actions/checkout@v5
+      # The newest Go, used for the update.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - run: echo "GUARD_STABLE_GOROOT=$(go env GOROOT)" >> "$GITHUB_ENV"
+      # The Go the program ships with now, used for the scan.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: windows/go.mod
+          cache: false
+      - run: bash .github/guard/guard.sh
